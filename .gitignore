@@ -1,0 +1,6 @@
+build/
+.vs/
+*.user
+*.suo
+*.ninja_deps
+*.ninja_log
