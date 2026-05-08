@@ -19,6 +19,16 @@ struct CodegenOptions {
     bool allowUnsupported = false;
 };
 
+struct CodegenPerformanceCounters {
+    size_t linesVisited = 0;
+    size_t regexCalls = 0;
+    size_t memberAccessScans = 0;
+    size_t structLookupCalls = 0;
+    size_t functionLookupCalls = 0;
+    size_t cachedRewriteHits = 0;
+    size_t cachedRewriteMisses = 0;
+};
+
 struct CodegenResult {
     bool ok = false;
     std::string output;
@@ -38,6 +48,7 @@ struct CodegenResult {
     size_t functionInterfaceMaxEvaluateDepth = 0;
     size_t functionInterfaceEvaluateTempLimit = 8;
     std::unordered_map<std::string, long long> passTimings;
+    CodegenPerformanceCounters performanceCounters;
 };
 
 class Phase1Codegen {
@@ -201,6 +212,7 @@ private:
     const StructInfo* findStruct(std::string_view name) const;
     const FieldInfo* findField(const StructInfo& info, std::string_view name) const;
     const MethodInfo* findMethod(const StructInfo& info, std::string_view name) const;
+    bool structUsesDeallocate(const StructInfo& info) const;
 
     std::vector<std::string> lowerZincBody(const std::vector<std::string>& lines);
     std::vector<std::string> extractZincLambdas(const std::vector<std::string>& lines, SourceLocation loc);
@@ -225,6 +237,8 @@ private:
     mutable std::unordered_map<std::string, size_t> functionInterfaceIndexByName_;
     std::vector<FunctionInfo> functions_;
     std::unordered_map<std::string, size_t> functionIndexByName_;
+    std::unordered_map<std::string, std::vector<std::string>> functionInterfaceParamTypesByFunction_;
+    std::vector<size_t> arrayStructIndexes_;
     std::vector<LambdaInfo> lambdas_;
     std::unordered_map<const Decl*, std::vector<std::string>> processedZincFunctionBodies_;
     std::unordered_map<const MethodDecl*, std::vector<std::string>> processedZincMethodBodies_;
@@ -244,6 +258,11 @@ private:
     mutable size_t functionInterfaceMaxEvaluateDepth_ = 0;
     static constexpr size_t functionInterfaceEvaluateTempLimit_ = 8;
     std::unordered_map<std::string, long long> passTimings_;
+    mutable CodegenPerformanceCounters performanceCounters_;
+    mutable std::unordered_map<std::string, const StructInfo*> structLookupCache_;
+    mutable std::unordered_map<std::string, const FunctionInfo*> functionLookupCache_;
+    mutable std::unordered_map<std::string, bool> arrayStructReceiverCache_;
+    mutable std::unordered_map<std::string, bool> structDeallocateCache_;
     const Decl* mainFunction_ = nullptr;
     const Decl* mainContainer_ = nullptr;
 };

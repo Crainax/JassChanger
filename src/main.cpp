@@ -40,6 +40,7 @@ struct Timings {
     long long comparison = 0;
     long long total = 0;
     std::unordered_map<std::string, long long> codegenPasses;
+    CodegenPerformanceCounters performanceCounters;
 };
 
 long long elapsedMs(std::chrono::steady_clock::time_point start, std::chrono::steady_clock::time_point end) {
@@ -327,6 +328,19 @@ std::string emitAst(const Program& program) {
 
 void writeCodegenPassesJson(std::ostream& out, const std::unordered_map<std::string, long long>& timings, int indent);
 
+void writePerformanceCountersJson(std::ostream& out, const CodegenPerformanceCounters& counters, int indent) {
+    std::string pad(static_cast<size_t>(indent), ' ');
+    out << "{\n"
+        << pad << "  \"linesVisited\": " << counters.linesVisited << ",\n"
+        << pad << "  \"regexCalls\": " << counters.regexCalls << ",\n"
+        << pad << "  \"memberAccessScans\": " << counters.memberAccessScans << ",\n"
+        << pad << "  \"structLookupCalls\": " << counters.structLookupCalls << ",\n"
+        << pad << "  \"functionLookupCalls\": " << counters.functionLookupCalls << ",\n"
+        << pad << "  \"cachedRewriteHits\": " << counters.cachedRewriteHits << ",\n"
+        << pad << "  \"cachedRewriteMisses\": " << counters.cachedRewriteMisses << "\n"
+        << pad << "}";
+}
+
 std::string emitStatsJson(const SourceManager& sources,
                           const PreprocessStats& pp,
                           const ParserStats& parser,
@@ -398,6 +412,9 @@ std::string emitStatsJson(const SourceManager& sources,
         << "  },\n"
         << "  \"codegenPasses\": ";
     writeCodegenPassesJson(out, timings.codegenPasses, 2);
+    out << ",\n"
+        << "  \"performanceCounters\": ";
+    writePerformanceCountersJson(out, timings.performanceCounters, 2);
     out << "\n"
         << "}\n";
     return out.str();
@@ -712,6 +729,194 @@ void writeForwardCyclesJson(std::ostream& out, const OutputSyntaxReport& syntax,
     writeIssueArrayJson(out, syntax.trueFunctionCycles, indent, 100);
 }
 
+bool isCompilerGeneratedFunctionName(std::string_view name) {
+    return name.rfind("vjassc__", 0) == 0 || name.rfind("vjlambda__", 0) == 0 ||
+           name.find("__wrapper") != std::string_view::npos;
+}
+
+std::string classifyPhase12TriageBucket(const PjassErrorGroup& group, const PjassErrorExample& example) {
+    if (group.kind == "returnMissingValue") {
+        return isCompilerGeneratedFunctionName(example.functionName) ? "returnMissingValue.generatedWrapper"
+                                                                     : "returnMissingValue.sourceFunction";
+    }
+    if (group.kind == "callbackCodeSignatureMismatch") {
+        if (example.generatedText.find("TriggerAddCondition") != std::string::npos ||
+            example.generatedText.find("Condition(") != std::string::npos ||
+            example.generatedText.find("Filter(") != std::string::npos) {
+            return "callbackCodeSignatureMismatch.unknownContext";
+        }
+        return "callbackCodeSignatureMismatch.unknownContext";
+    }
+    if (group.kind == "other" && example.message.find("Call expected instead of set") != std::string::npos) {
+        return "statementShape.callExpectedInsteadOfSet";
+    }
+    if (group.kind == "undefinedVariable" || group.kind == "unresolvedKnownSourceSymbol") {
+        std::string symbol = extractPjassSymbolForReport(example.message);
+        std::string bucket = provenanceBucketForSymbol(symbol, group.kind);
+        if (bucket == "EnvironmentProvidedByYDWE" || bucket == "CommonBlizzardProvided") {
+            return "undefinedVariable.environment";
+        }
+        if (bucket == "PrivatePublicRewriteMiss" || bucket == "GeneratedHelperMiss" ||
+            group.kind == "unresolvedKnownSourceSymbol") {
+            return "undefinedVariable.rewriteMiss";
+        }
+        return "undefinedVariable.sourceMissing";
+    }
+    if (group.kind == "forwardFunctionReference" || group.kind == "forwardLambdaReference") {
+        return example.generatedText.rfind("    call ", 0) == 0 ? "forwardFunctionReference.safeExecuteFunc"
+                                                                : "forwardFunctionReference.needsDispatcher";
+    }
+    if (group.kind == "undefinedFunction") {
+        return "undefinedFunction.trueMissing";
+    }
+    return group.kind;
+}
+
+std::string probableOriginForPhase12Bucket(const std::string& bucket) {
+    if (bucket == "returnMissingValue.generatedWrapper") {
+        return "compiler-generated function requires a safe default return";
+    }
+    if (bucket == "returnMissingValue.sourceFunction") {
+        return "source function or source lowering path needs provenance review";
+    }
+    if (bucket == "callbackCodeSignatureMismatch.unknownContext") {
+        return "raw code callback has no proven argument source";
+    }
+    if (bucket == "statementShape.callExpectedInsteadOfSet") {
+        return "Zinc statement lowering emitted set for a discarded call";
+    }
+    if (bucket == "undefinedVariable.rewriteMiss") {
+        return "known source symbol or generated-name rewrite was missed";
+    }
+    if (bucket == "undefinedVariable.environment") {
+        return "symbol belongs to validation environment";
+    }
+    if (bucket == "undefinedVariable.sourceMissing") {
+        return "source symbol provenance is still unresolved";
+    }
+    if (bucket == "forwardFunctionReference.safeExecuteFunc") {
+        return "callee is declared after caller and needs signature-aware bridging";
+    }
+    if (bucket == "forwardFunctionReference.needsDispatcher") {
+        return "callee is declared after caller but cannot use a trivial bridge";
+    }
+    if (bucket == "undefinedFunction.trueMissing") {
+        return "function is external or missing from generated output";
+    }
+    return "unclassified PJASS issue";
+}
+
+std::string suggestedFixForPhase12Bucket(const std::string& bucket) {
+    if (bucket == "returnMissingValue.generatedWrapper") {
+        return "append generated default return";
+    }
+    if (bucket == "returnMissingValue.sourceFunction") {
+        return "classify source policy or repair lowering that dropped source returns";
+    }
+    if (bucket == "callbackCodeSignatureMismatch.unknownContext") {
+        return "do not adapt until callback argument provenance is known";
+    }
+    if (bucket == "statementShape.callExpectedInsteadOfSet") {
+        return "fix statement lowering";
+    }
+    if (bucket == "undefinedVariable.rewriteMiss") {
+        return "fix symbol rewrite";
+    }
+    if (bucket == "undefinedVariable.environment") {
+        return "document environment policy";
+    }
+    if (bucket == "forwardFunctionReference.safeExecuteFunc") {
+        return "verify signature before ExecuteFunc bridge";
+    }
+    if (bucket == "forwardFunctionReference.needsDispatcher") {
+        return "preserve as dispatcher/source limitation until safe";
+    }
+    if (bucket == "undefinedFunction.trueMissing") {
+        return "classify external map initializer or missing source declaration";
+    }
+    return "inspect manually";
+}
+
+void writePhase12TriageJson(std::ostream& out, const PjassResult& pjass, int indent) {
+    std::string pad(static_cast<size_t>(indent), ' ');
+    const std::vector<std::string> requiredBuckets = {
+        "returnMissingValue.generatedWrapper",
+        "returnMissingValue.sourceFunction",
+        "callbackCodeSignatureMismatch.knownContext",
+        "callbackCodeSignatureMismatch.unknownContext",
+        "statementShape.callExpectedInsteadOfSet",
+        "undefinedVariable.sourceMissing",
+        "undefinedVariable.rewriteMiss",
+        "undefinedVariable.environment",
+        "undefinedFunction.trueMissing",
+        "undefinedFunction.forwardCycle",
+        "forwardFunctionReference.safeExecuteFunc",
+        "forwardFunctionReference.needsDispatcher",
+    };
+    std::map<std::string, std::vector<PjassErrorExample>> examplesByBucket;
+    for (const auto& bucket : requiredBuckets) {
+        examplesByBucket[bucket];
+    }
+    for (const auto& group : pjass.errorGroups) {
+        for (const auto& example : group.examples) {
+            std::string bucket = classifyPhase12TriageBucket(group, example);
+            auto& examples = examplesByBucket[bucket];
+            if (examples.size() < 20) {
+                examples.push_back(example);
+            }
+        }
+    }
+
+    out << "{\n" << pad << "  \"topGroups\": [";
+    if (!pjass.errorGroups.empty()) {
+        out << "\n";
+        for (size_t i = 0; i < pjass.errorGroups.size(); ++i) {
+            const auto& group = pjass.errorGroups[i];
+            out << pad << "    {\"kind\": ";
+            writeJsonString(out, group.kind);
+            out << ", \"count\": " << group.count << "}" << (i + 1 == pjass.errorGroups.size() ? "\n" : ",\n");
+        }
+        out << pad << "  ";
+    }
+    out << "],\n" << pad << "  \"examplesByGroup\": {";
+    if (!examplesByBucket.empty()) {
+        out << "\n";
+        size_t bucketIndex = 0;
+        for (const auto& [bucket, examples] : examplesByBucket) {
+            out << pad << "    ";
+            writeJsonString(out, bucket);
+            out << ": [";
+            if (!examples.empty()) {
+                out << "\n";
+                for (size_t i = 0; i < examples.size(); ++i) {
+                    const auto& example = examples[i];
+                    bool generated = isCompilerGeneratedFunctionName(example.functionName);
+                    out << pad << "      {\n"
+                        << pad << "        \"sourceFunction\": ";
+                    writeJsonString(out, generated ? "" : example.functionName);
+                    out << ",\n" << pad << "        \"generatedFunction\": ";
+                    writeJsonString(out, example.functionName);
+                    out << ",\n" << pad << "        \"generatedLine\": " << example.generatedLine << ",\n"
+                        << pad << "        \"generatedText\": ";
+                    writeJsonString(out, example.generatedText);
+                    out << ",\n" << pad << "        \"probableOrigin\": ";
+                    writeJsonString(out, probableOriginForPhase12Bucket(bucket));
+                    out << ",\n" << pad << "        \"isCompilerGenerated\": " << (generated ? "true" : "false") << ",\n"
+                        << pad << "        \"suggestedFixClass\": ";
+                    writeJsonString(out, suggestedFixForPhase12Bucket(bucket));
+                    out << ",\n" << pad << "        \"message\": ";
+                    writeJsonString(out, example.message);
+                    out << "\n" << pad << "      }" << (i + 1 == examples.size() ? "\n" : ",\n");
+                }
+                out << pad << "    ";
+            }
+            out << "]" << (++bucketIndex == examplesByBucket.size() ? "\n" : ",\n");
+        }
+        out << pad << "  ";
+    }
+    out << "}\n" << pad << "}";
+}
+
 void writePerformanceJson(std::ostream& out, const Timings& timings, int indent) {
     std::string pad(static_cast<size_t>(indent), ' ');
     std::vector<std::pair<std::string, long long>> hotspots(timings.codegenPasses.begin(), timings.codegenPasses.end());
@@ -721,6 +926,8 @@ void writePerformanceJson(std::ostream& out, const Timings& timings, int indent)
     out << "{\n"
         << pad << "  \"passes\": ";
     writeCodegenPassesJson(out, timings.codegenPasses, indent + 2);
+    out << ",\n" << pad << "  \"counters\": ";
+    writePerformanceCountersJson(out, timings.performanceCounters, indent + 2);
     out << ",\n" << pad << "  \"hotspots\": [";
     if (!hotspots.empty()) {
         out << "\n";
@@ -743,7 +950,7 @@ std::string emitValidationReportJson(const CliOptions& options,
                                      const Timings& timings) {
     std::ostringstream out;
     out << "{\n"
-        << "  \"phase\": 11,\n"
+        << "  \"phase\": 12,\n"
         << "  \"input\": ";
     writeJsonString(out, pathToGenericString(options.inputPath));
     out << ",\n  \"output\": ";
@@ -822,6 +1029,8 @@ std::string emitValidationReportJson(const CliOptions& options,
     writeCallbackAdaptersJson(out, pjass, 2);
     out << ",\n  \"forwardCycles\": ";
     writeForwardCyclesJson(out, syntax, 2);
+    out << ",\n  \"phase12Triage\": ";
+    writePhase12TriageJson(out, pjass, 2);
     out << ",\n  \"performance\": ";
     writePerformanceJson(out, timings, 2);
     out << ",\n  \"comparison\": {\n"
@@ -857,6 +1066,8 @@ std::string emitValidationReportJson(const CliOptions& options,
         << "  },\n"
         << "  \"codegenPasses\": ";
     writeCodegenPassesJson(out, timings.codegenPasses, 2);
+    out << ",\n  \"performanceCounters\": ";
+    writePerformanceCountersJson(out, timings.performanceCounters, 2);
     out << "\n"
         << "}\n";
     return out.str();
@@ -1066,6 +1277,7 @@ int main(int argc, char** argv) {
         auto codegenEnd = std::chrono::steady_clock::now();
         timings.codegen = elapsedMs(codegenStart, codegenEnd);
         timings.codegenPasses = codegen.passTimings;
+        timings.performanceCounters = codegen.performanceCounters;
         expandedProgram.stats.lambdasLowered = codegen.lambdasLowered;
         if (codegen.lambdasGeneratedFunctions > expandedProgram.stats.lambdas) {
             expandedProgram.stats.lambdas = codegen.lambdasGeneratedFunctions;

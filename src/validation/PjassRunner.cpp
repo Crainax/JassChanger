@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -10,6 +11,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace vjassc {
@@ -58,6 +60,11 @@ bool containsAny(const std::string& text, const std::vector<std::string>& needle
         }
     }
     return false;
+}
+
+bool isPjassSummaryLine(const std::string& line) {
+    return line.find(" failed with ") != std::string::npos ||
+           line.rfind("Parse failed:", 0) == 0;
 }
 
 std::string classifyPjassLine(const std::string& line, const std::string& generatedLine = {}) {
@@ -149,20 +156,65 @@ std::string classifyPjassLine(const std::string& line, const std::string& genera
     return "other";
 }
 
+bool parsePjassLocation(const std::string& line, std::filesystem::path& path, size_t& lineNumber) {
+    for (size_t colon = 0; colon < line.size(); ++colon) {
+        if (line[colon] != ':' || colon + 1 >= line.size() ||
+            !std::isdigit(static_cast<unsigned char>(line[colon + 1]))) {
+            continue;
+        }
+        size_t numberStart = colon + 1;
+        size_t numberEnd = numberStart;
+        while (numberEnd < line.size() && std::isdigit(static_cast<unsigned char>(line[numberEnd]))) {
+            ++numberEnd;
+        }
+        if (numberEnd >= line.size() || line[numberEnd] != ':') {
+            continue;
+        }
+        try {
+            path = line.substr(0, colon);
+            lineNumber = static_cast<size_t>(std::stoull(line.substr(numberStart, numberEnd - numberStart)));
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+    return false;
+}
+
 size_t parseGeneratedLineNumber(const std::string& line) {
-    size_t firstColon = line.find(':');
-    if (firstColon == std::string::npos) {
-        return 0;
+    std::filesystem::path path;
+    size_t number = 0;
+    if (parsePjassLocation(line, path, number)) {
+        return number;
     }
-    size_t secondColon = line.find(':', firstColon + 1);
-    if (secondColon == std::string::npos || secondColon <= firstColon + 1) {
-        return 0;
+    return 0;
+}
+
+std::filesystem::path inferGeneratedOutputPath(const std::string& text) {
+    std::istringstream in(text);
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.empty() || line.find("Parse successful") != std::string::npos) {
+            continue;
+        }
+        std::filesystem::path path;
+        size_t number = 0;
+        if (parsePjassLocation(line, path, number) && !path.empty()) {
+            return path;
+        }
     }
-    std::string number = line.substr(firstColon + 1, secondColon - firstColon - 1);
+    return {};
+}
+
+std::string readInferredGeneratedOutput(const std::string& text) {
+    std::filesystem::path inferred = inferGeneratedOutputPath(text);
+    if (inferred.empty() || !std::filesystem::exists(inferred)) {
+        return {};
+    }
     try {
-        return static_cast<size_t>(std::stoull(number));
+        return readTextFile(inferred);
     } catch (...) {
-        return 0;
+        return {};
     }
 }
 
@@ -289,7 +341,7 @@ std::unordered_map<std::string, size_t> classifyPjassErrors(const std::string& t
     std::istringstream in(text);
     std::string line;
     while (std::getline(in, line)) {
-        if (line.empty() || line.find("Parse successful") != std::string::npos) {
+        if (line.empty() || line.find("Parse successful") != std::string::npos || isPjassSummaryLine(line)) {
             continue;
         }
         ++counts[classifyPjassLine(line)];
@@ -300,14 +352,16 @@ std::unordered_map<std::string, size_t> classifyPjassErrors(const std::string& t
 std::vector<PjassErrorGroup> groupPjassErrors(const std::string& text,
                                               const std::string& generatedOutput,
                                               size_t exampleLimit) {
-    std::vector<std::string> generatedLines = splitLines(generatedOutput);
+    std::string resolvedGeneratedOutput = generatedOutput.empty() ? readInferredGeneratedOutput(text) : generatedOutput;
+    std::vector<std::string> generatedLines = splitLines(resolvedGeneratedOutput);
     std::vector<std::string> currentFunctions = functionAtLines(generatedLines);
     std::unordered_map<std::string, size_t> defLines = functionDefinitionLines(generatedLines);
     std::map<std::string, PjassErrorGroup> groups;
+    std::unordered_set<std::string> seenGroupedErrors;
     std::istringstream in(text);
     std::string line;
     while (std::getline(in, line)) {
-        if (line.empty() || line.find("Parse successful") != std::string::npos) {
+        if (line.empty() || line.find("Parse successful") != std::string::npos || isPjassSummaryLine(line)) {
             continue;
         }
         size_t generatedLine = parseGeneratedLineNumber(line);
@@ -322,6 +376,11 @@ std::vector<PjassErrorGroup> groupPjassErrors(const std::string& text,
             if (def != defLines.end() && generatedLine != 0 && def->second > generatedLine) {
                 kind = symbol.rfind("vjlambda__", 0) == 0 ? "forwardLambdaReference" : "forwardFunctionReference";
             }
+        }
+        std::string dedupeKey = kind + "|" + std::to_string(generatedLine) + "|" +
+                                (kind == "callbackCodeSignatureMismatch" ? generatedText : line);
+        if (!seenGroupedErrors.insert(std::move(dedupeKey)).second) {
+            continue;
         }
         auto& group = groups[kind];
         if (group.kind.empty()) {

@@ -169,6 +169,13 @@ int main(int argc, char** argv) {
         {"phase11_source_missing_return_not_patched", "", fixtures / "phase11_source_missing_return_not_patched.expected.j"},
         {"phase11_execute_func_bridge_noarg_cycle", "", fixtures / "phase11_execute_func_bridge_noarg_cycle.expected.j"},
         {"phase11_environment_symbol_report", "", fixtures / "phase11_environment_symbol_report.expected.j"},
+        {"phase12_zinc_string_equals_call", "", fixtures / "phase12_zinc_string_equals_call.expected.j"},
+        {"phase12_zinc_arithmetic_continuation", "", fixtures / "phase12_zinc_arithmetic_continuation.expected.j"},
+        {"phase12_zinc_else_if_tail_return", "", fixtures / "phase12_zinc_else_if_tail_return.expected.j"},
+        {"phase12_array_struct_receiver_rewrite", "", fixtures / "phase12_array_struct_receiver_rewrite.expected.j"},
+        {"phase12_struct_deallocate", "", fixtures / "phase12_struct_deallocate.expected.j"},
+        {"phase12_lambda_default_return", "", fixtures / "phase12_lambda_default_return.expected.j"},
+        {"phase12_zinc_method_interface_param", "", fixtures / "phase12_zinc_method_interface_param.expected.j"},
     };
 
     bool ok = true;
