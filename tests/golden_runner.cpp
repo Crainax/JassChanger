@@ -160,6 +160,7 @@ int main(int argc, char** argv) {
         {"phase9_instance_method_interface", "", fixtures / "phase9_instance_method_interface.expected.j"},
         {"phase9_zinc_public_block_globals", "", fixtures / "phase9_zinc_public_block_globals.expected.j"},
         {"phase9_static_this_field", "", fixtures / "phase9_static_this_field.expected.j"},
+        {"phase10_zinc_chain_interface_continuation", "", fixtures / "phase10_zinc_chain_interface_continuation.expected.j"},
     };
 
     bool ok = true;

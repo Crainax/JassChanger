@@ -1,6 +1,6 @@
 # vjassc
 
-`vjassc` is a C++20 phase-9 compiler prototype for lowering a supported subset of vJASS/Zinc to plain Warcraft III JASS.
+`vjassc` is a C++20 phase-10 compiler prototype for lowering a supported subset of vJASS/Zinc to plain Warcraft III JASS.
 
 Phase 1 built the compiler foundation: file loading, preprocessing, lexing, top-level parsing, library sorting, minimal public/private rewriting, basic Zinc function lowering, diagnostics, stats, and golden fixture tests.
 
@@ -20,10 +20,12 @@ Phase 8 legalizes more generated JASS by splitting comma-separated locals, norma
 
 Phase 9 shrinks the remaining PJASS blocker set by lowering struct-returning method chains, adapting instance methods to function-interface signatures, propagating Zinc public/private block access to global rewrites, handling static `this.` field references, and adding PJASS blocker categories plus codegen pass timings. The real sample still does not pass PJASS, but grouped PJASS errors are reduced from the Phase 8 baseline of 3144 to 889 while syntax-lite and init validation remain green.
 
+Phase 10 focuses on PJASS blocker compression for the real sample: multi-line Zinc method-chain continuations, `+` expression continuations, explicit function-interface references in ordinary call arguments, struct support return typing, and malformed discarded field-call statements. PJASS still does not pass, but grouped errors are reduced from the Phase 9 baseline of 889 to 360 while syntax-lite, init validation, duplicate-name checks, and local-order checks remain green.
+
 ## Repository Layout
 
 - `src/`: compiler implementation
-- `tests/fixtures/`: golden cases for the supported phase-1/2/3/4/5/6/7/8/9 subset
+- `tests/fixtures/`: golden cases for the supported phase-1/2/3/4/5/6/7/8/9/10 subset
 - `samples/input.j`: large real input used for scan-only validation
 - `samples/output_jasshelper.j`: legacy JassHelper output reference for later phases
 - `jasshelper/`: old compiler package, kept for behavior comparisons when needed
@@ -36,6 +38,7 @@ Phase 9 shrinks the remaining PJASS blocker set by lowering struct-returning met
 - `docs/phase7_status.md`: phase-7 PJASS blocker cleanup status and remaining blockers
 - `docs/phase8_status.md`: phase-8 declaration-order, local/control/member lowering, and PJASS triage status
 - `docs/phase9_status.md`: phase-9 PJASS semantic blocker compression, validation report, and profiling status
+- `docs/phase10_status.md`: phase-10 PJASS blocker compression, remaining blocker report, and profiling status
 
 ## Build
 
@@ -86,11 +89,13 @@ build/vjassc samples/input.j -o build/input.phase8.out.j --emit-stats build/inpu
 build/vjassc samples/input.j -o build/input.phase8.pjass.out.j --emit-stats build/input.phase8.pjass.stats.json --emit-validation-report build/input.phase8.pjass.validation.json --compare-jasshelper samples/output_jasshelper.j --check-output-syntax-lite --validate-pjass --pjass jasshelper/pjass.exe --common jasshelper/common.j --blizzard jasshelper/blizzard.j
 build/vjassc samples/input.j -o build/input.phase9.out.j --emit-stats build/input.phase9.codegen.stats.json --emit-validation-report build/input.phase9.validation.json --compare-jasshelper samples/output_jasshelper.j --check-output-syntax-lite
 build/vjassc samples/input.j -o build/input.phase9.pjass.out.j --emit-stats build/input.phase9.pjass.stats.json --emit-validation-report build/input.phase9.pjass.validation.json --compare-jasshelper samples/output_jasshelper.j --check-output-syntax-lite --validate-pjass --pjass jasshelper/pjass.exe --common jasshelper/common.j --blizzard jasshelper/blizzard.j
+build/vjassc samples/input.j -o build/input.phase10.out.j --emit-stats build/input.phase10.codegen.stats.json --emit-validation-report build/input.phase10.validation.json --compare-jasshelper samples/output_jasshelper.j --check-output-syntax-lite
+build/vjassc samples/input.j -o build/input.phase10.pjass.out.j --emit-stats build/input.phase10.pjass.stats.json --emit-validation-report build/input.phase10.pjass.validation.json --compare-jasshelper samples/output_jasshelper.j --check-output-syntax-lite --validate-pjass --pjass jasshelper/pjass.exe --common jasshelper/common.j --blizzard jasshelper/blizzard.j
 build/vjassc tests/fixtures/phase4_function_interface_execute.in.j -o build/phase4_function_interface_execute.out.j
 ```
 
 ## Phase Boundary
 
-Phase 9 can generate a complete plain-JASS candidate for the real `samples/input.j`, run syntax-lite validation, write a grouped validation report, run PJASS when paths are provided, validate main/init helper wiring, compare coarse output structure with `samples/output_jasshelper.j`, and emit codegen pass timings.
+Phase 10 can generate a complete plain-JASS candidate for the real `samples/input.j`, run syntax-lite validation, write a grouped validation report, run PJASS when paths are provided, validate main/init helper wiring, compare coarse output structure with `samples/output_jasshelper.j`, and emit codegen pass timings.
 
-The current output is not yet a JassHelper replacement. PJASS execution is wired up but still fails on remaining source-lowering gaps such as deeper method chains on returned struct instances, callback/code signature adaptation, unresolved environment/source symbols, return mismatches, nested generated index expressions, and a few true cyclic forward references. `--allow-unsupported` is only for scan-only validation and statistics; it does not make partial code generation safe.
+The current output is not yet a JassHelper replacement. PJASS execution is wired up but still fails on remaining source-lowering gaps such as unresolved environment/source symbols, integer/boolean conversion mismatches, callback/code signature adaptation, return mismatches, and a few true cyclic forward references. `--allow-unsupported` is only for scan-only validation and statistics; it does not make partial code generation safe.
