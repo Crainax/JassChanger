@@ -144,6 +144,17 @@ int main(int argc, char** argv) {
         {"phase7_multidim_global_zinc", "", fixtures / "phase7_multidim_global_zinc.expected.j"},
         {"phase7_lambda_private_multidim", "", fixtures / "phase7_lambda_private_multidim.expected.j"},
         {"phase7_struct_bare_members", "", fixtures / "phase7_struct_bare_members.expected.j"},
+        {"phase8_lambda_before_use", "", fixtures / "phase8_lambda_before_use.expected.j"},
+        {"phase8_lambda_calls_helper", "", fixtures / "phase8_lambda_calls_helper.expected.j"},
+        {"phase8_indexed_struct_field", "", fixtures / "phase8_indexed_struct_field.expected.j"},
+        {"phase8_indexed_struct_method", "", fixtures / "phase8_indexed_struct_method.expected.j"},
+        {"phase8_nested_indexed_struct_field", "", fixtures / "phase8_nested_indexed_struct_field.expected.j"},
+        {"phase8_zinc_inline_if_return", "", fixtures / "phase8_zinc_inline_if_return.expected.j"},
+        {"phase8_zinc_inline_if_call", "", fixtures / "phase8_zinc_inline_if_call.expected.j"},
+        {"phase8_zinc_inline_if_assignment", "", fixtures / "phase8_zinc_inline_if_assignment.expected.j"},
+        {"phase8_comma_local_simple", "", fixtures / "phase8_comma_local_simple.expected.j"},
+        {"phase8_comma_local_initializer", "", fixtures / "phase8_comma_local_initializer.expected.j"},
+        {"phase8_comma_local_array", "", fixtures / "phase8_comma_local_array.expected.j"},
     };
 
     bool ok = true;

@@ -6,7 +6,9 @@
 #include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <regex>
 #include <sstream>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace vjassc {
@@ -141,6 +143,89 @@ bool hasChainedIndexing(const std::string& text) {
     return false;
 }
 
+bool hasTopLevelComma(const std::string& text) {
+    bool inString = false;
+    bool inRaw = false;
+    bool escaped = false;
+    int parens = 0;
+    int brackets = 0;
+    for (size_t i = 0; i < text.size(); ++i) {
+        char c = text[i];
+        if (!inString && !inRaw && i + 1 < text.size() && c == '/' && text[i + 1] == '/') {
+            return false;
+        }
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                inString = false;
+            }
+            continue;
+        }
+        if (inRaw) {
+            if (c == '\'') {
+                inRaw = false;
+            }
+            continue;
+        }
+        if (c == '"') {
+            inString = true;
+        } else if (c == '\'') {
+            inRaw = true;
+        } else if (c == '(') {
+            ++parens;
+        } else if (c == ')' && parens > 0) {
+            --parens;
+        } else if (c == '[') {
+            ++brackets;
+        } else if (c == ']' && brackets > 0) {
+            --brackets;
+        } else if (c == ',' && parens == 0 && brackets == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool hasIndexedStructMemberResidue(const std::string& text) {
+    static const std::regex pattern(R"(\[[^\]]+\]\s*\.\s*[A-Za-z_$])");
+    return std::regex_search(text, pattern);
+}
+
+bool hasInlineZincControlResidue(const std::string& text) {
+    std::string t = trim(text);
+    if (!startsWithWord(t, "if")) {
+        return false;
+    }
+    size_t open = t.find('(');
+    if (open == std::string::npos) {
+        return false;
+    }
+    int depth = 0;
+    size_t close = std::string::npos;
+    for (size_t i = open; i < t.size(); ++i) {
+        if (t[i] == '(') {
+            ++depth;
+        } else if (t[i] == ')') {
+            --depth;
+            if (depth == 0) {
+                close = i;
+                break;
+            }
+        }
+    }
+    if (close == std::string::npos) {
+        return false;
+    }
+    std::string after = trim(std::string_view(t).substr(close + 1));
+    if (startsWithWord(after, "then")) {
+        return false;
+    }
+    return startsWithWord(after, "return") || startsWithWord(after, "call") || startsWithWord(after, "set");
+}
+
 std::string functionNameFromHeader(const std::string& line) {
     std::istringstream in(line);
     std::string word;
@@ -224,6 +309,116 @@ bool containsCallInMain(std::string_view output, const std::string& callName) {
         }
     }
     return false;
+}
+
+std::string blankProtectedForAnalysis(const std::string& line) {
+    std::string out;
+    out.reserve(line.size());
+    bool inString = false;
+    bool inRaw = false;
+    bool escaped = false;
+    for (size_t i = 0; i < line.size(); ++i) {
+        if (!inString && !inRaw && i + 1 < line.size() && line[i] == '/' && line[i + 1] == '/') {
+            break;
+        }
+        char c = line[i];
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                inString = false;
+            }
+            out.push_back(' ');
+            continue;
+        }
+        if (inRaw) {
+            if (c == '\'') {
+                inRaw = false;
+            }
+            out.push_back(' ');
+            continue;
+        }
+        if (c == '"') {
+            inString = true;
+            out.push_back(' ');
+            continue;
+        }
+        if (c == '\'') {
+            inRaw = true;
+            out.push_back(' ');
+            continue;
+        }
+        out.push_back(c);
+    }
+    return out;
+}
+
+std::vector<ValidationIssue> findForwardFunctionReferences(std::string_view output, bool lambdaOnly) {
+    std::vector<std::string> lines;
+    std::istringstream in{std::string(output)};
+    std::string line;
+    while (std::getline(in, line)) {
+        lines.push_back(line);
+    }
+
+    std::unordered_map<std::string, size_t> definitions;
+    for (size_t i = 0; i < lines.size(); ++i) {
+        std::string t = trim(stripProtected(lines[i]));
+        if (startsWithWord(t, "function")) {
+            std::string name = functionNameFromHeader(t);
+            if (!name.empty()) {
+                definitions[name] = i + 1;
+            }
+        }
+    }
+
+    std::vector<ValidationIssue> issues;
+    std::regex functionRef(R"(\bfunction\s+([A-Za-z_$][A-Za-z0-9_$]*)\b)");
+    std::regex callLike(R"(\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\()");
+    std::string currentFunction;
+    for (size_t i = 0; i < lines.size(); ++i) {
+        std::string t = trim(stripProtected(lines[i]));
+        if (startsWithWord(t, "function")) {
+            currentFunction = functionNameFromHeader(t);
+            continue;
+        }
+        if (startsWithWord(t, "endfunction")) {
+            currentFunction.clear();
+            continue;
+        }
+        if (currentFunction.empty()) {
+            continue;
+        }
+        std::string code = blankProtectedForAnalysis(lines[i]);
+        auto add = [&](const std::string& name) {
+            if (name.empty() || name == currentFunction) {
+                return;
+            }
+            if (lambdaOnly != (name.rfind("vjlambda__", 0) == 0)) {
+                return;
+            }
+            auto def = definitions.find(name);
+            if (def != definitions.end() && def->second > i + 1) {
+                issues.push_back(ValidationIssue{lambdaOnly ? "forwardLambdaReference" : "forwardFunctionReference",
+                                                 i + 1,
+                                                 "reference before declaration: " + name + " in " + currentFunction,
+                                                 trim(lines[i])});
+            }
+        };
+        for (std::sregex_iterator it(code.begin(), code.end(), functionRef), end; it != end; ++it) {
+            add((*it)[1].str());
+        }
+        for (std::sregex_iterator it(code.begin(), code.end(), callLike), end; it != end; ++it) {
+            std::string name = (*it)[1].str();
+            if (name == "function" || name == "if" || name == "call" || name == "set" || name == "return") {
+                continue;
+            }
+            add(name);
+        }
+    }
+    return issues;
 }
 
 size_t linePositionInMain(std::string_view output, const std::string& callName) {
@@ -397,6 +592,16 @@ OutputSyntaxReport analyzeOutputSyntaxLite(std::string_view output) {
         if (hasChainedIndexing(t)) {
             addIssue(report, "noMultidimensionalArray", lineNo, "residual chained array indexing", line);
         }
+        if (hasIndexedStructMemberResidue(t)) {
+            ValidationIssue issue{"indexedStructMemberResidue", lineNo, "residual indexed struct member access", trim(line)};
+            report.indexedStructMemberResidues.push_back(issue);
+            addIssue(report, issue.check, issue.line, issue.message, issue.snippet);
+        }
+        if (hasInlineZincControlResidue(t)) {
+            ValidationIssue issue{"inlineZincControlResidue", lineNo, "residual inline Zinc control form", trim(line)};
+            report.inlineZincControlResidues.push_back(issue);
+            addIssue(report, issue.check, issue.line, issue.message, issue.snippet);
+        }
         if (startsWithWord(t, "function")) {
             if (inFunction) {
                 addIssue(report, "noNestedFunction", lineNo, "function declaration nested in function", line);
@@ -423,6 +628,11 @@ OutputSyntaxReport analyzeOutputSyntaxLite(std::string_view output) {
         }
         if (inFunction) {
             if (startsWithWord(t, "local")) {
+                if (hasTopLevelComma(trim(std::string_view(t).substr(5)))) {
+                    ValidationIssue issue{"commaSeparatedLocal", lineNo, "comma-separated local declaration remains", trim(line)};
+                    report.commaLocalResidues.push_back(issue);
+                    addIssue(report, issue.check, issue.line, issue.message, issue.snippet);
+                }
                 if (sawExecutableInFunction) {
                     addIssue(report, "localOrder", lineNo, "local declaration after executable statement", line);
                 }
@@ -461,6 +671,8 @@ OutputSyntaxReport analyzeOutputSyntaxLite(std::string_view output) {
     if (report.metrics.duplicateGlobalNames != 0) {
         addIssue(report, "duplicateGlobalNames", 0, "duplicate global declarations remain", "");
     }
+    report.forwardFunctionReferences = findForwardFunctionReferences(output, false);
+    report.forwardLambdaReferences = findForwardFunctionReferences(output, true);
     return report;
 }
 

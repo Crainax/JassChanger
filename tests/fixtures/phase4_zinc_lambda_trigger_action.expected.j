@@ -5,14 +5,14 @@ globals
 endglobals
 
 
+function vjlambda__1 takes nothing returns nothing
+    call BJDebugMsg("x")
+endfunction
+
 function Test takes trigger t returns nothing
     call TriggerAddAction(t, function vjlambda__1)
 endfunction
 
-
-function vjlambda__1 takes nothing returns nothing
-    call BJDebugMsg("x")
-endfunction
 
 function vjassc__init_structs takes nothing returns nothing
 endfunction

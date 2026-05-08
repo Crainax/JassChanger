@@ -166,11 +166,11 @@ private:
     std::string rewriteStructExpression(const std::string& line,
                                         const StructInfo* currentStruct,
                                         const std::unordered_map<std::string, std::string>& localTypes) const;
-    std::string rewriteLocalDeclLine(const std::string& line,
-                                     const StructInfo* currentStruct,
-                                     std::unordered_map<std::string, std::string>& localTypes,
-                                     std::unordered_map<std::string, ArrayShape>* localArrayShapes,
-                                     std::vector<std::string>& extraLines) const;
+    std::vector<std::string> rewriteLocalDeclLine(const std::string& line,
+                                                  const StructInfo* currentStruct,
+                                                  std::unordered_map<std::string, std::string>& localTypes,
+                                                  std::unordered_map<std::string, ArrayShape>* localArrayShapes,
+                                                  std::vector<std::string>& extraLines) const;
     std::string rewriteArrayAccesses(const std::string& line,
                                      const std::unordered_map<std::string, ArrayShape>* localArrayShapes) const;
     std::vector<std::string> lowerStatementLine(const std::string& line, LoweringContext& ctx) const;
@@ -218,6 +218,7 @@ private:
     std::unordered_map<const Decl*, size_t> structIndexByDecl_;
     std::unordered_map<std::string, size_t> structIndexByName_;
     std::unordered_map<std::string, ArrayShape> globalArrayShapes_;
+    std::unordered_map<std::string, std::string> globalStructTypes_;
     mutable std::vector<FunctionInterfaceInfo> functionInterfaces_;
     mutable std::unordered_map<std::string, size_t> functionInterfaceIndexByName_;
     std::vector<FunctionInfo> functions_;

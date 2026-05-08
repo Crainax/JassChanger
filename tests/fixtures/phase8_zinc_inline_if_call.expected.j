@@ -5,15 +5,11 @@ globals
 endglobals
 
 
-function vjlambda__1 takes nothing returns nothing
-    call BJDebugMsg("x")
+function Test takes boolean flag returns nothing
+    if (flag) then
+    call BJDebugMsg("ok")
+    endif
 endfunction
-
-function Test takes nothing returns nothing
-    local code c
-    set c = function vjlambda__1
-endfunction
-
 
 function vjassc__init_structs takes nothing returns nothing
 endfunction

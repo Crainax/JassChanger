@@ -5,18 +5,16 @@ globals
 endglobals
 
 
-function vjlambda__2 takes nothing returns nothing
-    call BJDebugMsg("nested")
+function Helper takes nothing returns nothing
+    call BJDebugMsg("helper")
 endfunction
 
 function vjlambda__1 takes nothing returns nothing
-    call TimerStart(CreateTimer(), 1.0, false, function vjlambda__2)
+    call Helper()
 endfunction
 
-function Test takes nothing returns nothing
-    local group g
-    set g = CreateGroup()
-    call ForGroup(g, function vjlambda__1)
+function Test takes trigger t returns nothing
+    call TriggerAddAction(t, function vjlambda__1)
 endfunction
 
 

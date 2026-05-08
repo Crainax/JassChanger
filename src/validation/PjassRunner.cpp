@@ -6,8 +6,10 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <regex>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace vjassc {
@@ -59,10 +61,28 @@ bool containsAny(const std::string& text, const std::vector<std::string>& needle
 }
 
 std::string classifyPjassLine(const std::string& line, const std::string& generatedLine = {}) {
-    if (containsAny(line, {"Undefined function", "undeclared function", "not declared function"})) {
+    if (containsAny(generatedLine, {"][", "[9][16]", "[8][4]", "[14][6]"})) {
+        return "invalidArraySyntax";
+    }
+    if (std::regex_search(generatedLine, std::regex(R"(\[[^\]]+\]\s*\.\s*[A-Za-z_$])"))) {
+        return "indexedStructMemberResidue";
+    }
+    if (std::regex_search(generatedLine, std::regex(R"(^\s*if\s*\(.+\)\s*(return|call|set)\b)"))) {
+        return "inlineZincControlResidue";
+    }
+    if (std::regex_search(generatedLine, std::regex(R"(^\s*local\s+[A-Za-z_$][A-Za-z0-9_$]*(?:\s+array)?\s+[^,\r\n]+,)"))) {
+        return "commaSeparatedLocal";
+    }
+    if (containsAny(line, {"Undefined function", "Undeclared function", "undeclared function", "not declared function"})) {
+        if (line.find("vjlambda__") != std::string::npos) {
+            return "forwardLambdaReference";
+        }
         return "undefinedFunction";
     }
-    if (containsAny(line, {"Undefined variable", "Undeclared variable", "not declared"})) {
+    if (containsAny(line, {"Undefined variable", "Undeclared variable", "undeclared variable", "not declared"})) {
+        if (line.find("vjassc__") != std::string::npos) {
+            return "unresolvedGeneratedHelper";
+        }
         return "undefinedVariable";
     }
     if (containsAny(line, {"Expected endfunction", "endfunction"})) {
@@ -81,12 +101,11 @@ std::string classifyPjassLine(const std::string& line, const std::string& genera
         containsAny(line, {"return", "Return"})) {
         return "returnMismatch";
     }
+    if (containsAny(line, {" is uninitialized", "uninitialized"})) {
+        return "uninitializedVariable";
+    }
     if (containsAny(line, {"local", "Local"})) {
         return "localOrder";
-    }
-    if (containsAny(generatedLine, {"[9][16]", "[8][4]", "[14][6]"}) ||
-        generatedLine.find("][") != std::string::npos) {
-        return "invalidArraySyntax";
     }
     if (containsAny(line, {"native", "Native", "global ordering", "declaration order"})) {
         return "nativeTypeGlobalOrdering";
@@ -140,6 +159,66 @@ std::vector<std::string> excerptForLine(const std::vector<std::string>& lines, s
     return out;
 }
 
+std::string functionNameFromHeader(const std::string& line) {
+    std::istringstream in(line);
+    std::string word;
+    std::string name;
+    in >> word >> name;
+    return name;
+}
+
+std::vector<std::string> functionAtLines(const std::vector<std::string>& lines) {
+    std::vector<std::string> out(lines.size() + 1);
+    std::string current;
+    for (size_t i = 0; i < lines.size(); ++i) {
+        std::string t = lines[i];
+        size_t first = t.find_first_not_of(" \t");
+        if (first != std::string::npos) {
+            t = t.substr(first);
+        }
+        if (t.rfind("function ", 0) == 0) {
+            current = functionNameFromHeader(t);
+        }
+        out[i + 1] = current;
+        if (t.rfind("endfunction", 0) == 0) {
+            current.clear();
+        }
+    }
+    return out;
+}
+
+std::unordered_map<std::string, size_t> functionDefinitionLines(const std::vector<std::string>& lines) {
+    std::unordered_map<std::string, size_t> defs;
+    for (size_t i = 0; i < lines.size(); ++i) {
+        std::string t = lines[i];
+        size_t first = t.find_first_not_of(" \t");
+        if (first != std::string::npos) {
+            t = t.substr(first);
+        }
+        if (t.rfind("function ", 0) == 0) {
+            std::string name = functionNameFromHeader(t);
+            if (!name.empty()) {
+                defs[name] = i + 1;
+            }
+        }
+    }
+    return defs;
+}
+
+std::string extractPjassSymbol(const std::string& line) {
+    static const std::vector<std::regex> patterns = {
+        std::regex(R"((?:Undefined|Undeclared|undeclared) function ([A-Za-z_$][A-Za-z0-9_$]*))"),
+        std::regex(R"((?:Undefined|Undeclared|undeclared) variable ([A-Za-z_$][A-Za-z0-9_$]*))"),
+    };
+    for (const auto& pattern : patterns) {
+        std::smatch match;
+        if (std::regex_search(line, match, pattern)) {
+            return match[1].str();
+        }
+    }
+    return {};
+}
+
 } // namespace
 
 PjassResolvedPaths resolvePjassPaths(const std::filesystem::path& cwd,
@@ -190,6 +269,8 @@ std::unordered_map<std::string, size_t> classifyPjassErrors(const std::string& t
 
 std::vector<PjassErrorGroup> groupPjassErrors(const std::string& text, const std::string& generatedOutput) {
     std::vector<std::string> generatedLines = splitLines(generatedOutput);
+    std::vector<std::string> currentFunctions = functionAtLines(generatedLines);
+    std::unordered_map<std::string, size_t> defLines = functionDefinitionLines(generatedLines);
     std::map<std::string, PjassErrorGroup> groups;
     std::istringstream in(text);
     std::string line;
@@ -203,6 +284,13 @@ std::vector<PjassErrorGroup> groupPjassErrors(const std::string& text, const std
             generatedText = generatedLines[generatedLine - 1];
         }
         std::string kind = classifyPjassLine(line, generatedText);
+        std::string symbol = extractPjassSymbol(line);
+        if (!symbol.empty() && containsAny(line, {"Undefined function", "Undeclared function", "undeclared function"})) {
+            auto def = defLines.find(symbol);
+            if (def != defLines.end() && generatedLine != 0 && def->second > generatedLine) {
+                kind = symbol.rfind("vjlambda__", 0) == 0 ? "forwardLambdaReference" : "forwardFunctionReference";
+            }
+        }
         auto& group = groups[kind];
         if (group.kind.empty()) {
             group.kind = kind;
@@ -213,7 +301,17 @@ std::vector<PjassErrorGroup> groupPjassErrors(const std::string& text, const std
             group.firstMessage = line;
         }
         if (group.examples.size() < 20) {
-            group.examples.push_back(PjassErrorExample{generatedLine, line, excerptForLine(generatedLines, generatedLine)});
+            std::string functionName;
+            if (generatedLine > 0 && generatedLine < currentFunctions.size()) {
+                functionName = currentFunctions[generatedLine];
+            }
+            group.examples.push_back(PjassErrorExample{
+                generatedLine,
+                functionName,
+                generatedText,
+                line,
+                excerptForLine(generatedLines, generatedLine),
+            });
         }
     }
 
@@ -256,8 +354,10 @@ PjassResult runPjass(const PjassOptions& options) {
     result.stdoutText = readTextFile(options.stdoutPath);
     result.stderrText = readTextFile(options.stderrPath);
     result.ok = rc == 0;
-    result.errorSummary = classifyPjassErrors(result.stdoutText + "\n" + result.stderrText);
     result.errorGroups = groupPjassErrors(result.stdoutText + "\n" + result.stderrText, readTextFile(options.scriptPath));
+    for (const auto& group : result.errorGroups) {
+        result.errorSummary[group.kind] = group.count;
+    }
     (void)options.timeoutMs;
     return result;
 }

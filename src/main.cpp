@@ -485,6 +485,12 @@ void writePjassGroupsJson(std::ostream& out, const std::vector<PjassErrorGroup>&
                     const auto& example = group.examples[j];
                     out << pad << "      {\n"
                         << pad << "        \"generatedLine\": " << example.generatedLine << ",\n"
+                        << pad << "        \"function\": ";
+                    writeJsonString(out, example.functionName);
+                    out << ",\n"
+                        << pad << "        \"text\": ";
+                    writeJsonString(out, example.generatedText);
+                    out << ",\n"
                         << pad << "        \"message\": ";
                     writeJsonString(out, example.message);
                     out << ",\n" << pad << "        \"excerpt\": ";
@@ -520,6 +526,16 @@ std::string emitValidationReportJson(const CliOptions& options,
     out << ",\n    \"issueCount\": " << syntax.issues.size() << ",\n"
         << "    \"issuesPreview\": ";
     writeIssueArrayJson(out, syntax.issues, 4, 20);
+    out << ",\n    \"forwardFunctionReferences\": ";
+    writeIssueArrayJson(out, syntax.forwardFunctionReferences, 4, 20);
+    out << ",\n    \"forwardLambdaReferences\": ";
+    writeIssueArrayJson(out, syntax.forwardLambdaReferences, 4, 20);
+    out << ",\n    \"commaLocalResidues\": ";
+    writeIssueArrayJson(out, syntax.commaLocalResidues, 4, 20);
+    out << ",\n    \"indexedStructMemberResidues\": ";
+    writeIssueArrayJson(out, syntax.indexedStructMemberResidues, 4, 20);
+    out << ",\n    \"inlineZincControlResidues\": ";
+    writeIssueArrayJson(out, syntax.inlineZincControlResidues, 4, 20);
     out << ",\n    \"metrics\": ";
     writeMetricsJson(out, syntax.metrics, 4);
     out << "\n  },\n  \"init\": {\n"

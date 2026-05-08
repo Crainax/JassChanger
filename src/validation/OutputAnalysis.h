@@ -41,6 +41,11 @@ struct OutputSyntaxReport {
     OutputMetrics metrics;
     std::vector<std::string> residualSourceForms;
     std::vector<ValidationIssue> issues;
+    std::vector<ValidationIssue> forwardFunctionReferences;
+    std::vector<ValidationIssue> forwardLambdaReferences;
+    std::vector<ValidationIssue> commaLocalResidues;
+    std::vector<ValidationIssue> indexedStructMemberResidues;
+    std::vector<ValidationIssue> inlineZincControlResidues;
 };
 
 struct InitValidationReport {

@@ -19,6 +19,8 @@ struct PjassOptions {
 
 struct PjassErrorExample {
     size_t generatedLine = 0;
+    std::string functionName;
+    std::string generatedText;
     std::string message;
     std::vector<std::string> excerpt;
 };
