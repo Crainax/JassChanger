@@ -100,7 +100,7 @@ CliParseResult parseCli(int argc, char** argv) {
 }
 
 void printHelp(std::ostream& out) {
-    out << "vjassc phase1 - vJass/Zinc to JASS compiler prototype\n"
+    out << "vjassc phase2 - vJass/Zinc to JASS compiler prototype\n"
         << "\n"
         << "Usage:\n"
         << "  vjassc <input.j> -o <output.j> [--debug|--release]\n"
@@ -113,7 +113,7 @@ void printHelp(std::ostream& out) {
         << "  --scan-only                  Read, preprocess, lex, parse, and emit diagnostics/stats only\n"
         << "  --emit-preprocessed <path>   Write preprocessed logical source\n"
         << "  --emit-tokens <path>         Write token stream\n"
-        << "  --emit-ast <path>            Write phase1 AST dump\n"
+        << "  --emit-ast <path>            Write AST dump\n"
         << "  --emit-stats <path>          Write JSON statistics\n"
         << "  --import-path <dir>          Add import search directory; may be repeated\n"
         << "  --allow-unsupported          Allow unsupported declarations during scan-only\n"
@@ -122,7 +122,7 @@ void printHelp(std::ostream& out) {
 }
 
 void printVersion(std::ostream& out) {
-    out << "vjassc phase1 0.1.0\n";
+    out << "vjassc phase2 0.2.0\n";
 }
 
 } // namespace vjassc

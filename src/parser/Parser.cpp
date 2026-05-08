@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <optional>
 #include <regex>
 #include <sstream>
 #include <unordered_set>
@@ -23,10 +24,30 @@ bool isCommentOrEmpty(const std::string& text) {
     return t.empty() || t.rfind("//", 0) == 0;
 }
 
+bool isIdentStart(char c) {
+    return std::isalpha(static_cast<unsigned char>(c)) || c == '_' || c == '$';
+}
+
+bool isIdentPart(char c) {
+    return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '$';
+}
+
+std::string readIdent(const std::string& text, size_t& index) {
+    if (index >= text.size() || !isIdentStart(text[index])) {
+        return {};
+    }
+    size_t start = index++;
+    while (index < text.size() && isIdentPart(text[index])) {
+        ++index;
+    }
+    return text.substr(start, index - start);
+}
+
 bool startsAnyTypeDecl(const std::string& t) {
     static const std::unordered_set<std::string> types = {
         "integer", "real", "boolean", "string", "code", "handle", "unit", "player", "timer",
-        "trigger", "effect", "group", "force", "rect", "location", "item", "destructable"
+        "trigger", "effect", "group", "force", "rect", "location", "item", "destructable",
+        "widget", "image", "sound", "region", "hashtable", "boolexpr", "dialog", "button"
     };
     std::string word = firstWord(t);
     return types.contains(word);
@@ -128,7 +149,11 @@ int braceDelta(const std::string& text) {
     bool inString = false;
     bool inRaw = false;
     bool escaped = false;
-    for (char c : text) {
+    for (size_t i = 0; i < text.size(); ++i) {
+        char c = text[i];
+        if (!inString && !inRaw && i + 1 < text.size() && c == '/' && text[i + 1] == '/') {
+            break;
+        }
         if (inString) {
             if (escaped) {
                 escaped = false;
@@ -158,12 +183,314 @@ int braceDelta(const std::string& text) {
     return delta;
 }
 
+std::string stripLineComment(std::string text) {
+    bool inString = false;
+    bool inRaw = false;
+    bool escaped = false;
+    for (size_t i = 0; i + 1 < text.size(); ++i) {
+        char c = text[i];
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                inString = false;
+            }
+            continue;
+        }
+        if (inRaw) {
+            if (c == '\'') {
+                inRaw = false;
+            }
+            continue;
+        }
+        if (c == '"') {
+            inString = true;
+            continue;
+        }
+        if (c == '\'') {
+            inRaw = true;
+            continue;
+        }
+        if (c == '/' && text[i + 1] == '/') {
+            return trim(std::string_view(text).substr(0, i));
+        }
+    }
+    return trim(text);
+}
+
 std::string stripTrailingSemicolon(std::string text) {
     text = trim(text);
     if (!text.empty() && text.back() == ';') {
         text.pop_back();
     }
     return trim(text);
+}
+
+std::vector<std::string> splitCommaListRespectingQuotesAndBrackets(std::string_view text) {
+    std::vector<std::string> parts;
+    std::string current;
+    bool inString = false;
+    bool inRaw = false;
+    bool escaped = false;
+    int parens = 0;
+    int brackets = 0;
+    int braces = 0;
+    for (size_t i = 0; i < text.size(); ++i) {
+        char c = text[i];
+        if (inString) {
+            current.push_back(c);
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                inString = false;
+            }
+            continue;
+        }
+        if (inRaw) {
+            current.push_back(c);
+            if (c == '\'') {
+                inRaw = false;
+            }
+            continue;
+        }
+        if (c == '"') {
+            inString = true;
+            current.push_back(c);
+            continue;
+        }
+        if (c == '\'') {
+            inRaw = true;
+            current.push_back(c);
+            continue;
+        }
+        if (c == '(') {
+            ++parens;
+        } else if (c == ')' && parens > 0) {
+            --parens;
+        } else if (c == '[') {
+            ++brackets;
+        } else if (c == ']' && brackets > 0) {
+            --brackets;
+        } else if (c == '{') {
+            ++braces;
+        } else if (c == '}' && braces > 0) {
+            --braces;
+        } else if (c == ',' && parens == 0 && brackets == 0 && braces == 0) {
+            parts.push_back(trim(current));
+            current.clear();
+            continue;
+        }
+        current.push_back(c);
+    }
+    if (!current.empty() || !parts.empty()) {
+        parts.push_back(trim(current));
+    }
+    return parts;
+}
+
+std::optional<size_t> findTopLevelChar(std::string_view text, char needle) {
+    bool inString = false;
+    bool inRaw = false;
+    bool escaped = false;
+    int parens = 0;
+    int brackets = 0;
+    int braces = 0;
+    for (size_t i = 0; i < text.size(); ++i) {
+        char c = text[i];
+        if (!inString && !inRaw && i + 1 < text.size() && c == '/' && text[i + 1] == '/') {
+            return std::nullopt;
+        }
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                inString = false;
+            }
+            continue;
+        }
+        if (inRaw) {
+            if (c == '\'') {
+                inRaw = false;
+            }
+            continue;
+        }
+        if (c == '"') {
+            inString = true;
+        } else if (c == '\'') {
+            inRaw = true;
+        } else if (c == '(') {
+            ++parens;
+        } else if (c == ')' && parens > 0) {
+            --parens;
+        } else if (c == '[') {
+            ++brackets;
+        } else if (c == ']' && brackets > 0) {
+            --brackets;
+        } else if (c == '{') {
+            ++braces;
+        } else if (c == '}' && braces > 0) {
+            --braces;
+        } else if (c == needle && parens == 0 && brackets == 0 && braces == 0) {
+            return i;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<size_t> findWordPos(std::string_view text, std::string_view word) {
+    for (size_t i = 0; i + word.size() <= text.size(); ++i) {
+        if (text.substr(i, word.size()) != word) {
+            continue;
+        }
+        bool left = i == 0 || !(std::isalnum(static_cast<unsigned char>(text[i - 1])) || text[i - 1] == '_');
+        bool right = i + word.size() == text.size() ||
+                     !(std::isalnum(static_cast<unsigned char>(text[i + word.size()])) || text[i + word.size()] == '_');
+        if (left && right) {
+            return i;
+        }
+    }
+    return std::nullopt;
+}
+
+TypeRef parseTypeRef(std::string text, SourceLocation loc) {
+    text = trim(text);
+    TypeRef type;
+    type.loc = loc;
+    if (startsWithWord(text, "constant")) {
+        text = trim(std::string_view(text).substr(8));
+    }
+    size_t idx = 0;
+    type.name = readIdent(text, idx);
+    std::string rest = trim(std::string_view(text).substr(idx));
+    if (startsWithWord(rest, "array")) {
+        type.isArray = true;
+    }
+    return type;
+}
+
+std::vector<ParamDecl> parseParamList(std::string text, SourceLocation loc) {
+    std::vector<ParamDecl> params;
+    text = trim(text);
+    if (text.empty() || text == "nothing") {
+        return params;
+    }
+    for (auto part : splitCommaListRespectingQuotesAndBrackets(text)) {
+        part = trim(part);
+        if (part.empty()) {
+            continue;
+        }
+        size_t idx = 0;
+        std::string typeName = readIdent(part, idx);
+        std::string rest = trim(std::string_view(part).substr(idx));
+        bool arrayType = false;
+        if (startsWithWord(rest, "array")) {
+            arrayType = true;
+            rest = trim(std::string_view(rest).substr(5));
+        }
+        size_t nameIdx = 0;
+        std::string name = readIdent(rest, nameIdx);
+        if (!typeName.empty() && !name.empty()) {
+            params.push_back(ParamDecl{TypeRef{typeName, loc, arrayType}, name, loc});
+        }
+    }
+    return params;
+}
+
+std::vector<FieldDecl> parseFieldDecls(const LogicalLine& logical) {
+    std::string line = stripTrailingSemicolon(stripLineComment(logical.text));
+    if (line.empty()) {
+        return {};
+    }
+    std::string access = parseAccessPrefix(line);
+    if (startsWithWord(line, "method") || startsWithWord(line, "static method") ||
+        startsWithWord(line, "function") || startsWithWord(line, "module") ||
+        startsWithWord(line, "implement") || startsWithWord(line, "static if") ||
+        startsWithWord(line, "stub") || startsWithWord(line, "operator") ||
+        startsWithWord(line, "super")) {
+        return {};
+    }
+
+    FieldDecl base;
+    base.access = access;
+    base.loc = logical.loc;
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        if (startsWithWord(line, "static")) {
+            base.isStatic = true;
+            line = trim(std::string_view(line).substr(6));
+            changed = true;
+        } else if (startsWithWord(line, "constant")) {
+            base.isConstant = true;
+            line = trim(std::string_view(line).substr(8));
+            changed = true;
+        } else if (startsWithWord(line, "readonly")) {
+            base.isReadonly = true;
+            line = trim(std::string_view(line).substr(8));
+            changed = true;
+        }
+    }
+
+    size_t idx = 0;
+    std::string typeName = readIdent(line, idx);
+    if (typeName.empty()) {
+        return {};
+    }
+    std::string rest = trim(std::string_view(line).substr(idx));
+    bool typeArray = false;
+    if (startsWithWord(rest, "array")) {
+        typeArray = true;
+        rest = trim(std::string_view(rest).substr(5));
+    }
+    if (rest.empty()) {
+        return {};
+    }
+
+    std::vector<FieldDecl> fields;
+    for (auto part : splitCommaListRespectingQuotesAndBrackets(rest)) {
+        part = trim(part);
+        if (part.empty()) {
+            continue;
+        }
+        std::string declarator = part;
+        std::string initializer;
+        if (auto eq = findTopLevelChar(part, '=')) {
+            declarator = trim(std::string_view(part).substr(0, *eq));
+            initializer = trim(std::string_view(part).substr(*eq + 1));
+        }
+        size_t nameIdx = 0;
+        std::string name = readIdent(declarator, nameIdx);
+        if (name.empty()) {
+            continue;
+        }
+        std::string suffix = trim(std::string_view(declarator).substr(nameIdx));
+        FieldDecl field = base;
+        field.name = name;
+        field.type = TypeRef{typeName, logical.loc, typeArray};
+        field.isArray = typeArray;
+        field.initializer = initializer;
+        if (suffix == "[]") {
+            field.isArray = true;
+            field.type.isArray = true;
+        } else if (suffix.size() >= 3 && suffix.front() == '[' && suffix.back() == ']') {
+            field.isArray = true;
+            field.isFixedArray = true;
+            std::string sizeText = trim(std::string_view(suffix).substr(1, suffix.size() - 2));
+            try {
+                field.fixedArraySize = std::stoi(sizeText);
+            } catch (...) {
+                field.fixedArraySize = 0;
+            }
+        }
+        fields.push_back(std::move(field));
+    }
+    return fields;
 }
 
 } // namespace
@@ -182,6 +509,8 @@ const char* declKindName(DeclKind kind) {
         return "Library";
     case DeclKind::Scope:
         return "Scope";
+    case DeclKind::Struct:
+        return "Struct";
     case DeclKind::Unsupported:
         return "Unsupported";
     }
@@ -226,13 +555,7 @@ void Parser::preScanUnsupported(const std::vector<LogicalLine>& lines) {
         if (startsWithWord(accessText, "optional")) {
             accessText = trim(std::string_view(accessText).substr(8));
         }
-        if (startsWithWord(accessText, "struct")) {
-            ++stats_.structsUnsupported;
-            diagnostics_.unsupported(logical.loc, "struct");
-        } else if (startsWithWord(accessText, "static method") || startsWithWord(accessText, "method")) {
-            ++stats_.methodsUnsupported;
-            diagnostics_.unsupported(logical.loc, "method");
-        } else if (startsWithWord(accessText, "module")) {
+        if (startsWithWord(accessText, "module")) {
             ++stats_.modulesUnsupported;
             diagnostics_.unsupported(logical.loc, "module");
         } else if (startsWithWord(accessText, "static if")) {
@@ -260,16 +583,23 @@ std::vector<Decl> Parser::parseJassRange(const std::vector<LogicalLine>& lines, 
         }
 
         if (logical.mode == SyntaxMode::Zinc) {
-            if (startsWithWord(t, "library") || startsWithWord(t, "scope")) {
+            std::string accessText = t;
+            (void)parseAccessPrefix(accessText);
+            if (startsWithWord(accessText, "library") || startsWithWord(accessText, "scope")) {
                 decls.push_back(parseZincLibrary(lines, index));
                 continue;
             }
-            if (startsWithWord(t, "function")) {
+            if (startsWithWord(accessText, "function")) {
                 decls.push_back(parseZincFunction(lines, index));
                 continue;
             }
-            if (startsWithWord(t, "struct")) {
-                decls.push_back(parseZincUnsupportedBlock(lines, index, "struct"));
+            if (startsWithWord(accessText, "struct")) {
+                decls.push_back(parseZincStruct(lines, index));
+                continue;
+            }
+            if (startsWithWord(accessText, "method") || startsWithWord(accessText, "static method")) {
+                diagnostics_.error(logical.loc, "method declaration outside struct");
+                ++index;
                 continue;
             }
             ++index;
@@ -308,11 +638,14 @@ std::vector<Decl> Parser::parseJassRange(const std::vector<LogicalLine>& lines, 
                 ++stats_.types;
                 decls.push_back(std::move(decl));
                 ++index;
-            } else if (startsWithWord(t, "struct")) {
-                decls.push_back(parseUnsupportedBlock(lines, index, "struct", "endstruct"));
-            } else if (startsWithWord(t, "module")) {
+            } else if (startsWithWord(accessText, "struct")) {
+                decls.push_back(parseJassStruct(lines, index));
+            } else if (startsWithWord(accessText, "method") || startsWithWord(accessText, "static method")) {
+                diagnostics_.error(logical.loc, "method declaration outside struct");
+                ++index;
+            } else if (startsWithWord(accessText, "module") || startsWithWord(accessText, "optional module")) {
                 decls.push_back(parseUnsupportedBlock(lines, index, "module", "endmodule"));
-            } else if (startsWithWord(t, "static if")) {
+            } else if (startsWithWord(accessText, "static if")) {
                 Decl decl;
                 decl.kind = DeclKind::Unsupported;
                 decl.loc = logical.loc;
@@ -406,6 +739,166 @@ Decl Parser::parseJassLibraryOrScope(const std::vector<LogicalLine>& lines, size
     return decl;
 }
 
+Decl Parser::parseJassStruct(const std::vector<LogicalLine>& lines, size_t& index) {
+    const auto& start = lines[index];
+    std::string header = trim(start.text);
+    std::string accessText = header;
+    std::string access = parseAccessPrefix(accessText);
+    if (!startsWithWord(accessText, "struct")) {
+        diagnostics_.error(start.loc, "expected struct declaration");
+        ++index;
+        return Decl{};
+    }
+    accessText = trim(std::string_view(accessText).substr(6));
+    size_t idx = 0;
+    std::string name = readIdent(accessText, idx);
+    std::string tail = trim(std::string_view(accessText).substr(idx));
+
+    Decl decl;
+    decl.kind = DeclKind::Struct;
+    decl.mode = SyntaxMode::JassLike;
+    decl.loc = start.loc;
+    decl.access = access;
+    decl.name = name;
+    decl.lines.push_back(start.text);
+    if (startsWithWord(tail, "extends")) {
+        tail = trim(std::string_view(tail).substr(7));
+        size_t extIdx = 0;
+        decl.extendsName = readIdent(tail, extIdx);
+        decl.isArrayStruct = decl.extendsName == "array";
+        if (!decl.extendsName.empty() && decl.extendsName != "array") {
+            diagnostics_.unsupported(start.loc, "struct extends " + decl.extendsName);
+            Decl child;
+            child.kind = DeclKind::Unsupported;
+            child.mode = SyntaxMode::JassLike;
+            child.loc = start.loc;
+            child.unsupportedFeature = "struct extends";
+            child.lines.push_back(start.text);
+            decl.children.push_back(std::move(child));
+        }
+    }
+    ++index;
+
+    bool closed = false;
+    while (index < lines.size()) {
+        std::string t = trim(lines[index].text);
+        if (isCommentOrEmpty(t)) {
+            ++index;
+            continue;
+        }
+        if (startsWithWord(t, "endstruct")) {
+            decl.lines.push_back(lines[index].text);
+            ++index;
+            closed = true;
+            break;
+        }
+
+        std::string memberText = t;
+        (void)parseAccessPrefix(memberText);
+        if (startsWithWord(memberText, "static method") || startsWithWord(memberText, "method")) {
+            decl.methods.push_back(parseJassMethod(lines, index));
+            continue;
+        }
+        if (startsWithWord(memberText, "function")) {
+            diagnostics_.error(lines[index].loc, "function declaration inside struct is not supported");
+            decl.children.push_back(parseUnsupportedBlock(lines, index, "function in struct", "endfunction"));
+            continue;
+        }
+        if (startsWithWord(memberText, "module") || startsWithWord(memberText, "implement")) {
+            Decl child;
+            child.kind = DeclKind::Unsupported;
+            child.mode = SyntaxMode::JassLike;
+            child.loc = lines[index].loc;
+            child.unsupportedFeature = "module";
+            child.lines.push_back(lines[index].text);
+            decl.children.push_back(std::move(child));
+            ++index;
+            continue;
+        }
+        if (startsWithWord(memberText, "static if")) {
+            decl.children.push_back(parseUnsupportedBlock(lines, index, "static if", "endif"));
+            continue;
+        }
+        if (startsWithWord(memberText, "stub") || startsWithWord(memberText, "operator") ||
+            startsWithWord(memberText, "super") || startsWithWord(memberText, "interface") ||
+            startsWithWord(memberText, "delegate")) {
+            Decl child;
+            child.kind = DeclKind::Unsupported;
+            child.mode = SyntaxMode::JassLike;
+            child.loc = lines[index].loc;
+            child.unsupportedFeature = firstWord(memberText);
+            child.lines.push_back(lines[index].text);
+            decl.children.push_back(std::move(child));
+            ++index;
+            continue;
+        }
+        auto fields = parseFieldDecls(lines[index]);
+        decl.fields.insert(decl.fields.end(), fields.begin(), fields.end());
+        ++index;
+    }
+    if (!closed) {
+        diagnostics_.error(start.loc, "missing endstruct for struct '" + decl.name + "'");
+    }
+    return decl;
+}
+
+MethodDecl Parser::parseJassMethod(const std::vector<LogicalLine>& lines, size_t& index) {
+    const auto& start = lines[index];
+    std::string header = trim(start.text);
+    std::string accessText = header;
+    std::string access = parseAccessPrefix(accessText);
+    MethodDecl method;
+    method.mode = SyntaxMode::JassLike;
+    method.loc = start.loc;
+    method.access = access;
+    if (startsWithWord(accessText, "static")) {
+        method.isStatic = true;
+        accessText = trim(std::string_view(accessText).substr(6));
+    }
+    if (!startsWithWord(accessText, "method")) {
+        diagnostics_.error(start.loc, "expected method declaration");
+        ++index;
+        return method;
+    }
+    accessText = trim(std::string_view(accessText).substr(6));
+    if (startsWithWord(accessText, "operator")) {
+        method.isOperator = true;
+    }
+    size_t nameIdx = 0;
+    method.name = readIdent(accessText, nameIdx);
+    std::string tail = trim(std::string_view(accessText).substr(nameIdx));
+    auto takes = findWordPos(tail, "takes");
+    auto returns = findWordPos(tail, "returns");
+    if (takes && returns && *returns > *takes) {
+        std::string params = trim(std::string_view(tail).substr(*takes + 5, *returns - (*takes + 5)));
+        method.params = parseParamList(params, start.loc);
+        method.returnType = parseTypeRef(std::string(std::string_view(tail).substr(*returns + 7)), start.loc);
+    } else {
+        method.returnType = TypeRef{"nothing", start.loc, false};
+    }
+    if (method.returnType.name.empty()) {
+        method.returnType = TypeRef{"nothing", start.loc, false};
+    }
+    method.isOnDestroy = method.name == "onDestroy";
+    method.isOnInit = method.name == "onInit";
+    ++index;
+    bool closed = false;
+    while (index < lines.size()) {
+        std::string t = trim(lines[index].text);
+        if (startsWithWord(t, "endmethod")) {
+            ++index;
+            closed = true;
+            break;
+        }
+        method.bodyLines.push_back(lines[index]);
+        ++index;
+    }
+    if (!closed) {
+        diagnostics_.error(start.loc, "missing endmethod for method '" + method.name + "'");
+    }
+    return method;
+}
+
 Decl Parser::parseUnsupportedBlock(const std::vector<LogicalLine>& lines, size_t& index, const std::string& feature, const std::string& endWord) {
     Decl decl;
     decl.kind = DeclKind::Unsupported;
@@ -493,8 +986,15 @@ std::vector<Decl> Parser::parseZincMembers(const std::vector<LogicalLine>& lines
             Decl fn = parseZincFunction(lines, index);
             fn.access = access;
             decls.push_back(std::move(fn));
-        } else if (startsWithWord(accessText, "struct") || startsWithWord(accessText, "method")) {
-            decls.push_back(parseZincUnsupportedBlock(lines, index, startsWithWord(accessText, "struct") ? "struct" : "method"));
+        } else if (startsWithWord(accessText, "struct")) {
+            decls.push_back(parseZincStruct(lines, index));
+        } else if (startsWithWord(accessText, "method") || startsWithWord(accessText, "static method")) {
+            diagnostics_.error(lines[index].loc, "method declaration outside struct");
+            ++index;
+        } else if (startsWithWord(accessText, "module") || startsWithWord(accessText, "optional module")) {
+            decls.push_back(parseZincUnsupportedBlock(lines, index, "module"));
+        } else if (startsWithWord(accessText, "static if")) {
+            decls.push_back(parseZincUnsupportedBlock(lines, index, "static if"));
         } else if (startsAnyTypeDecl(accessText) || startsWithWord(accessText, "constant")) {
             Decl globals;
             globals.kind = DeclKind::GlobalBlock;
@@ -554,6 +1054,233 @@ Decl Parser::parseZincFunction(const std::vector<LogicalLine>& lines, size_t& in
         ++index;
     }
     return decl;
+}
+
+Decl Parser::parseZincStruct(const std::vector<LogicalLine>& lines, size_t& index) {
+    const auto& start = lines[index];
+    std::string header = trim(start.text);
+    std::string accessText = header;
+    std::string access = parseAccessPrefix(accessText);
+    if (!startsWithWord(accessText, "struct")) {
+        diagnostics_.error(start.loc, "expected struct declaration");
+        ++index;
+        return Decl{};
+    }
+    accessText = trim(std::string_view(accessText).substr(6));
+    size_t nameIdx = 0;
+    std::string name = readIdent(accessText, nameIdx);
+    std::string tail = trim(std::string_view(accessText).substr(nameIdx));
+
+    Decl decl;
+    decl.kind = DeclKind::Struct;
+    decl.mode = SyntaxMode::Zinc;
+    decl.loc = start.loc;
+    decl.access = access;
+    decl.name = name;
+    decl.lines.push_back(start.text);
+    if (tail.rfind("[]", 0) == 0) {
+        decl.isArrayStruct = true;
+        tail = trim(std::string_view(tail).substr(2));
+    }
+    if (startsWithWord(tail, "extends")) {
+        tail = trim(std::string_view(tail).substr(7));
+        size_t extIdx = 0;
+        decl.extendsName = readIdent(tail, extIdx);
+        decl.isArrayStruct = decl.extendsName == "array";
+        if (!decl.extendsName.empty() && decl.extendsName != "array") {
+            diagnostics_.unsupported(start.loc, "struct extends " + decl.extendsName);
+            Decl child;
+            child.kind = DeclKind::Unsupported;
+            child.mode = SyntaxMode::Zinc;
+            child.loc = start.loc;
+            child.unsupportedFeature = "struct extends";
+            child.lines.push_back(start.text);
+            decl.children.push_back(std::move(child));
+        }
+    }
+
+    std::vector<LogicalLine> body;
+    bool seenOpen = false;
+    int depth = 0;
+    while (index < lines.size()) {
+        const auto& logical = lines[index];
+        std::string text = logical.text;
+        int delta = braceDelta(text);
+        if (!seenOpen) {
+            size_t brace = text.find('{');
+            if (brace != std::string::npos) {
+                seenOpen = true;
+                std::string after = text.substr(brace + 1);
+                int afterDelta = braceDelta(after);
+                depth = 1 + afterDelta;
+                if (depth <= 0) {
+                    size_t close = after.rfind('}');
+                    std::string before = close == std::string::npos ? after : after.substr(0, close);
+                    if (!trim(before).empty()) {
+                        body.push_back(LogicalLine{SyntaxMode::Zinc, logical.loc, before});
+                    }
+                    ++index;
+                    break;
+                }
+                if (!trim(after).empty()) {
+                    body.push_back(LogicalLine{SyntaxMode::Zinc, logical.loc, after});
+                }
+            }
+            ++index;
+            continue;
+        }
+        if (depth + delta <= 0) {
+            size_t close = text.rfind('}');
+            std::string before = close == std::string::npos ? text : text.substr(0, close);
+            if (!trim(before).empty()) {
+                body.push_back(LogicalLine{SyntaxMode::Zinc, logical.loc, before});
+            }
+            ++index;
+            break;
+        }
+        body.push_back(logical);
+        depth += delta;
+        ++index;
+    }
+    if (!seenOpen) {
+        diagnostics_.error(start.loc, "missing '{' for struct '" + decl.name + "'");
+    }
+
+    size_t bodyIndex = 0;
+    while (bodyIndex < body.size()) {
+        std::string t = trim(body[bodyIndex].text);
+        if (isCommentOrEmpty(t) || t == "}") {
+            ++bodyIndex;
+            continue;
+        }
+        std::string memberText = t;
+        (void)parseAccessPrefix(memberText);
+        if (startsWithWord(memberText, "static method") || startsWithWord(memberText, "method")) {
+            decl.methods.push_back(parseZincMethod(body, bodyIndex));
+            continue;
+        }
+        if (startsWithWord(memberText, "module") || startsWithWord(memberText, "optional module") ||
+            startsWithWord(memberText, "implement")) {
+            decl.children.push_back(parseZincUnsupportedBlock(body, bodyIndex, "module"));
+            continue;
+        }
+        if (startsWithWord(memberText, "static if")) {
+            decl.children.push_back(parseZincUnsupportedBlock(body, bodyIndex, "static if"));
+            continue;
+        }
+        if (startsWithWord(memberText, "stub") || startsWithWord(memberText, "operator") ||
+            startsWithWord(memberText, "super") || startsWithWord(memberText, "interface") ||
+            startsWithWord(memberText, "delegate")) {
+            Decl child;
+            child.kind = DeclKind::Unsupported;
+            child.mode = SyntaxMode::Zinc;
+            child.loc = body[bodyIndex].loc;
+            child.unsupportedFeature = firstWord(memberText);
+            child.lines.push_back(body[bodyIndex].text);
+            decl.children.push_back(std::move(child));
+            ++bodyIndex;
+            continue;
+        }
+        auto fields = parseFieldDecls(body[bodyIndex]);
+        decl.fields.insert(decl.fields.end(), fields.begin(), fields.end());
+        ++bodyIndex;
+    }
+
+    return decl;
+}
+
+MethodDecl Parser::parseZincMethod(const std::vector<LogicalLine>& lines, size_t& index) {
+    const auto& start = lines[index];
+    std::string header = trim(start.text);
+    std::string accessText = header;
+    std::string access = parseAccessPrefix(accessText);
+    MethodDecl method;
+    method.mode = SyntaxMode::Zinc;
+    method.loc = start.loc;
+    method.access = access;
+    if (startsWithWord(accessText, "static")) {
+        method.isStatic = true;
+        accessText = trim(std::string_view(accessText).substr(6));
+    }
+    if (!startsWithWord(accessText, "method")) {
+        diagnostics_.error(start.loc, "expected method declaration");
+        ++index;
+        return method;
+    }
+    accessText = trim(std::string_view(accessText).substr(6));
+    if (startsWithWord(accessText, "operator")) {
+        method.isOperator = true;
+    }
+    size_t open = accessText.find('(');
+    size_t close = open == std::string::npos ? std::string::npos : accessText.find(')', open);
+    std::string namePart = open == std::string::npos ? accessText : std::string(accessText.substr(0, open));
+    namePart = trim(namePart);
+    size_t nameIdx = 0;
+    method.name = readIdent(namePart, nameIdx);
+    if (open != std::string::npos && close != std::string::npos) {
+        method.params = parseParamList(accessText.substr(open + 1, close - open - 1), start.loc);
+    }
+    method.returnType = TypeRef{"nothing", start.loc, false};
+    size_t arrow = close == std::string::npos ? std::string::npos : accessText.find("->", close);
+    if (arrow != std::string::npos) {
+        std::string after = trim(std::string_view(accessText).substr(arrow + 2));
+        size_t brace = after.find('{');
+        if (brace != std::string::npos) {
+            after = trim(std::string_view(after).substr(0, brace));
+        }
+        if (!after.empty()) {
+            method.returnType = parseTypeRef(after, start.loc);
+        }
+    }
+    method.isOnDestroy = method.name == "onDestroy";
+    method.isOnInit = method.name == "onInit";
+
+    bool seenOpen = false;
+    int depth = 0;
+    while (index < lines.size()) {
+        const auto& logical = lines[index];
+        std::string text = logical.text;
+        int delta = braceDelta(text);
+        if (!seenOpen) {
+            size_t brace = text.find('{');
+            if (brace != std::string::npos) {
+                seenOpen = true;
+                std::string after = text.substr(brace + 1);
+                int afterDelta = braceDelta(after);
+                depth = 1 + afterDelta;
+                if (depth <= 0) {
+                    size_t closeBrace = after.rfind('}');
+                    std::string before = closeBrace == std::string::npos ? after : after.substr(0, closeBrace);
+                    if (!trim(before).empty()) {
+                        method.bodyLines.push_back(LogicalLine{SyntaxMode::Zinc, logical.loc, before});
+                    }
+                    ++index;
+                    break;
+                }
+                if (!trim(after).empty()) {
+                    method.bodyLines.push_back(LogicalLine{SyntaxMode::Zinc, logical.loc, after});
+                }
+            }
+            ++index;
+            continue;
+        }
+        if (depth + delta <= 0) {
+            size_t closeBrace = text.rfind('}');
+            std::string before = closeBrace == std::string::npos ? text : text.substr(0, closeBrace);
+            if (!trim(before).empty()) {
+                method.bodyLines.push_back(LogicalLine{SyntaxMode::Zinc, logical.loc, before});
+            }
+            ++index;
+            break;
+        }
+        method.bodyLines.push_back(logical);
+        depth += delta;
+        ++index;
+    }
+    if (!seenOpen) {
+        diagnostics_.error(start.loc, "missing '{' for method '" + method.name + "'");
+    }
+    return method;
 }
 
 Decl Parser::parseZincUnsupportedBlock(const std::vector<LogicalLine>& lines, size_t& index, const std::string& feature) {

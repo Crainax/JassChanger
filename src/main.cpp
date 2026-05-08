@@ -85,7 +85,33 @@ void emitAstDecl(std::ostream& out, const Decl& decl, int indent) {
     if (!decl.unsupportedFeature.empty()) {
         out << ", unsupported: " << decl.unsupportedFeature;
     }
+    if (decl.isArrayStruct) {
+        out << ", arrayStruct: true";
+    }
     out << ", mode: " << modeName(decl.mode) << '\n';
+    for (const auto& field : decl.fields) {
+        out << pad << "  - field: " << field.name << ", type: " << field.type.name;
+        if (field.isStatic) {
+            out << ", static";
+        }
+        if (field.isArray) {
+            out << ", array";
+        }
+        if (field.isFixedArray) {
+            out << ", fixedSize: " << field.fixedArraySize;
+        }
+        if (!field.initializer.empty()) {
+            out << ", initializer: " << field.initializer;
+        }
+        out << '\n';
+    }
+    for (const auto& method : decl.methods) {
+        out << pad << "  - method: " << method.name;
+        if (method.isStatic) {
+            out << ", static";
+        }
+        out << ", returns: " << method.returnType.name << ", params: " << method.params.size() << '\n';
+    }
     for (const auto& child : decl.children) {
         emitAstDecl(out, child, indent + 2);
     }
@@ -180,6 +206,7 @@ int main(int argc, char** argv) {
     auto parseEnd = std::chrono::steady_clock::now();
 
     Timings timings;
+    timings.read = sources.readElapsedMs();
     timings.preprocess = elapsedMs(ppStart, ppEnd);
     timings.lex = elapsedMs(lexStart, lexEnd);
     timings.parse = elapsedMs(parseStart, parseEnd);
