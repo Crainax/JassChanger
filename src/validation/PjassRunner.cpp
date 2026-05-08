@@ -64,6 +64,15 @@ std::string classifyPjassLine(const std::string& line, const std::string& genera
     if (containsAny(generatedLine, {"][", "[9][16]", "[8][4]", "[14][6]"})) {
         return "invalidArraySyntax";
     }
+    if (containsAny(line, {"must not take any arguments when used as code",
+                           "Cannot convert codereturnsboolean to integer",
+                           "Cannot convert code to boolexpr"})) {
+        return "callbackCodeSignatureMismatch";
+    }
+    if (std::regex_search(generatedLine, std::regex(R"((\)|\])\s*\.\s*[A-Za-z_$])")) ||
+        std::regex_search(generatedLine, std::regex(R"(^\s*call\s+\.\s*[A-Za-z_$])"))) {
+        return "methodChainReceiverResidue";
+    }
     if (std::regex_search(generatedLine, std::regex(R"(\[[^\]]+\]\s*\.\s*[A-Za-z_$])"))) {
         return "indexedStructMemberResidue";
     }
@@ -83,6 +92,15 @@ std::string classifyPjassLine(const std::string& line, const std::string& genera
         if (line.find("vjassc__") != std::string::npos) {
             return "unresolvedGeneratedHelper";
         }
+        if (line.find("HASH_TIMER") != std::string::npos || line.find("HASH_ABILITY") != std::string::npos) {
+            return "unresolvedPublicGlobal";
+        }
+        if (line.find("uiHT") != std::string::npos || line.find("KEY_TOTAL") != std::string::npos) {
+            return "unresolvedKnownSourceSymbol";
+        }
+        if (line.find("yd_") != std::string::npos || line.find("bj_") != std::string::npos) {
+            return "unresolvedEnvironmentSymbol";
+        }
         return "undefinedVariable";
     }
     if (containsAny(line, {"Expected endfunction", "endfunction"})) {
@@ -97,8 +115,10 @@ std::string classifyPjassLine(const std::string& line, const std::string& genera
     if (containsAny(line, {"multiply defined", "Duplicate", "already defined"})) {
         return "duplicateDeclaration";
     }
-    if (containsAny(line, {"Missing return", "Missing linebreak before return"}) ||
-        containsAny(line, {"return", "Return"})) {
+    if (containsAny(line, {"Missing return", "Missing linebreak before return"})) {
+        return "returnMissingValue";
+    }
+    if (containsAny(line, {"return", "Return"})) {
         return "returnMismatch";
     }
     if (containsAny(line, {" is uninitialized", "uninitialized"})) {

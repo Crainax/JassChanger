@@ -1389,6 +1389,65 @@ std::vector<Decl> Parser::parseZincMembers(const std::vector<LogicalLine>& lines
         }
         std::string accessText = t;
         std::string access = parseAccessPrefix(accessText);
+        if (!access.empty() && !accessText.empty() && accessText.front() == '{') {
+            std::vector<LogicalLine> body;
+            bool seenOpen = false;
+            int depth = 0;
+            while (index < lines.size()) {
+                const auto& logical = lines[index];
+                std::string text = logical.text;
+                if (!seenOpen) {
+                    size_t brace = text.find('{');
+                    if (brace != std::string::npos) {
+                        seenOpen = true;
+                        depth = 1;
+                        std::string after = text.substr(brace + 1);
+                        int afterDelta = braceDelta(after);
+                        if (depth + afterDelta <= 0) {
+                            size_t close = after.rfind('}');
+                            std::string before = close == std::string::npos ? after : after.substr(0, close);
+                            if (!trim(before).empty()) {
+                                body.push_back(LogicalLine{SyntaxMode::Zinc, logical.loc, before});
+                            }
+                            ++index;
+                            break;
+                        }
+                        if (!trim(after).empty()) {
+                            body.push_back(LogicalLine{SyntaxMode::Zinc, logical.loc, after});
+                        }
+                        depth += afterDelta;
+                    }
+                    ++index;
+                    continue;
+                }
+
+                int delta = braceDelta(text);
+                if (depth + delta <= 0) {
+                    size_t close = text.rfind('}');
+                    std::string before = close == std::string::npos ? text : text.substr(0, close);
+                    if (!trim(before).empty()) {
+                        body.push_back(LogicalLine{SyntaxMode::Zinc, logical.loc, before});
+                    }
+                    ++index;
+                    break;
+                }
+                body.push_back(logical);
+                depth += delta;
+                ++index;
+            }
+
+            auto nested = parseZincMembers(body);
+            for (auto& child : nested) {
+                if (child.access.empty()) {
+                    child.access = access;
+                }
+                if (child.kind == DeclKind::GlobalBlock) {
+                    child.access = access;
+                }
+                decls.push_back(std::move(child));
+            }
+            continue;
+        }
         if (startsWithWord(accessText, "function interface") || isFunctionTypeDecl(t)) {
             Decl decl = parseFunctionInterface(lines[index]);
             decl.mode = SyntaxMode::Zinc;

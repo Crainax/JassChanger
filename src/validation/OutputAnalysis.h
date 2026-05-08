@@ -46,6 +46,11 @@ struct OutputSyntaxReport {
     std::vector<ValidationIssue> commaLocalResidues;
     std::vector<ValidationIssue> indexedStructMemberResidues;
     std::vector<ValidationIssue> inlineZincControlResidues;
+    std::vector<ValidationIssue> methodChainCallResultResidues;
+    std::vector<ValidationIssue> callbackCodeSignatureResidues;
+    std::vector<ValidationIssue> unresolvedKnownSourceSymbols;
+    std::vector<ValidationIssue> returnMismatchLikelyResidues;
+    std::vector<ValidationIssue> trueFunctionCycles;
 };
 
 struct InitValidationReport {

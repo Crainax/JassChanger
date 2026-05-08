@@ -12,6 +12,7 @@
 #include "validation/OutputAnalysis.h"
 #include "validation/PjassRunner.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cctype>
 #include <filesystem>
@@ -36,6 +37,7 @@ struct Timings {
     long long pjass = 0;
     long long comparison = 0;
     long long total = 0;
+    std::unordered_map<std::string, long long> codegenPasses;
 };
 
 long long elapsedMs(std::chrono::steady_clock::time_point start, std::chrono::steady_clock::time_point end) {
@@ -314,6 +316,8 @@ std::string emitAst(const Program& program) {
     return out.str();
 }
 
+void writeCodegenPassesJson(std::ostream& out, const std::unordered_map<std::string, long long>& timings, int indent);
+
 std::string emitStatsJson(const SourceManager& sources,
                           const PreprocessStats& pp,
                           const ParserStats& parser,
@@ -382,7 +386,10 @@ std::string emitStatsJson(const SourceManager& sources,
         << "    \"pjass\": " << timings.pjass << ",\n"
         << "    \"comparison\": " << timings.comparison << ",\n"
         << "    \"total\": " << timings.total << "\n"
-        << "  }\n"
+        << "  },\n"
+        << "  \"codegenPasses\": ";
+    writeCodegenPassesJson(out, timings.codegenPasses, 2);
+    out << "\n"
         << "}\n";
     return out.str();
 }
@@ -464,6 +471,27 @@ void writePjassSummaryJson(std::ostream& out, const std::unordered_map<std::stri
     out << "}";
 }
 
+void writeCodegenPassesJson(std::ostream& out, const std::unordered_map<std::string, long long>& timings, int indent) {
+    std::string pad(static_cast<size_t>(indent), ' ');
+    std::vector<std::string> keys;
+    keys.reserve(timings.size());
+    for (const auto& [key, _] : timings) {
+        keys.push_back(key);
+    }
+    std::sort(keys.begin(), keys.end());
+    out << "{";
+    if (!keys.empty()) {
+        out << "\n";
+        for (size_t i = 0; i < keys.size(); ++i) {
+            out << pad << "  ";
+            writeJsonString(out, keys[i]);
+            out << ": " << timings.at(keys[i]) << (i + 1 == keys.size() ? "\n" : ",\n");
+        }
+        out << pad;
+    }
+    out << "}";
+}
+
 void writePjassGroupsJson(std::ostream& out, const std::vector<PjassErrorGroup>& groups, int indent) {
     std::string pad(static_cast<size_t>(indent), ' ');
     out << "[";
@@ -536,6 +564,16 @@ std::string emitValidationReportJson(const CliOptions& options,
     writeIssueArrayJson(out, syntax.indexedStructMemberResidues, 4, 20);
     out << ",\n    \"inlineZincControlResidues\": ";
     writeIssueArrayJson(out, syntax.inlineZincControlResidues, 4, 20);
+    out << ",\n    \"methodChainCallResultResidues\": ";
+    writeIssueArrayJson(out, syntax.methodChainCallResultResidues, 4, 20);
+    out << ",\n    \"callbackCodeSignatureResidues\": ";
+    writeIssueArrayJson(out, syntax.callbackCodeSignatureResidues, 4, 20);
+    out << ",\n    \"unresolvedKnownSourceSymbols\": ";
+    writeIssueArrayJson(out, syntax.unresolvedKnownSourceSymbols, 4, 20);
+    out << ",\n    \"returnMismatchLikelyResidues\": ";
+    writeIssueArrayJson(out, syntax.returnMismatchLikelyResidues, 4, 20);
+    out << ",\n    \"trueFunctionCycles\": ";
+    writeIssueArrayJson(out, syntax.trueFunctionCycles, 4, 20);
     out << ",\n    \"metrics\": ";
     writeMetricsJson(out, syntax.metrics, 4);
     out << "\n  },\n  \"init\": {\n"
@@ -605,7 +643,10 @@ std::string emitValidationReportJson(const CliOptions& options,
         << "    \"pjass\": " << timings.pjass << ",\n"
         << "    \"comparison\": " << timings.comparison << ",\n"
         << "    \"total\": " << timings.total << "\n"
-        << "  }\n"
+        << "  },\n"
+        << "  \"codegenPasses\": ";
+    writeCodegenPassesJson(out, timings.codegenPasses, 2);
+    out << "\n"
         << "}\n";
     return out.str();
 }
@@ -703,6 +744,7 @@ int main(int argc, char** argv) {
         codegen = generator.generate(expandedProgram);
         auto codegenEnd = std::chrono::steady_clock::now();
         timings.codegen = elapsedMs(codegenStart, codegenEnd);
+        timings.codegenPasses = codegen.passTimings;
         expandedProgram.stats.lambdasLowered = codegen.lambdasLowered;
         if (codegen.lambdasGeneratedFunctions > expandedProgram.stats.lambdas) {
             expandedProgram.stats.lambdas = codegen.lambdasGeneratedFunctions;

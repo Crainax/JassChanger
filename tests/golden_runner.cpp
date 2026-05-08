@@ -155,6 +155,11 @@ int main(int argc, char** argv) {
         {"phase8_comma_local_simple", "", fixtures / "phase8_comma_local_simple.expected.j"},
         {"phase8_comma_local_initializer", "", fixtures / "phase8_comma_local_initializer.expected.j"},
         {"phase8_comma_local_array", "", fixtures / "phase8_comma_local_array.expected.j"},
+        {"phase9_method_chain_function_receiver", "", fixtures / "phase9_method_chain_function_receiver.expected.j"},
+        {"phase9_method_chain_nested_receiver", "", fixtures / "phase9_method_chain_nested_receiver.expected.j"},
+        {"phase9_instance_method_interface", "", fixtures / "phase9_instance_method_interface.expected.j"},
+        {"phase9_zinc_public_block_globals", "", fixtures / "phase9_zinc_public_block_globals.expected.j"},
+        {"phase9_static_this_field", "", fixtures / "phase9_static_this_field.expected.j"},
     };
 
     bool ok = true;

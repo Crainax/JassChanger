@@ -37,6 +37,7 @@ struct CodegenResult {
     size_t functionObjectCalls = 0;
     size_t functionInterfaceMaxEvaluateDepth = 0;
     size_t functionInterfaceEvaluateTempLimit = 8;
+    std::unordered_map<std::string, long long> passTimings;
 };
 
 class Phase1Codegen {
@@ -166,6 +167,7 @@ private:
     std::string rewriteStructExpression(const std::string& line,
                                         const StructInfo* currentStruct,
                                         const std::unordered_map<std::string, std::string>& localTypes) const;
+    std::string rewriteReceiverChains(const std::string& line, const StructInfo* currentStruct) const;
     std::vector<std::string> rewriteLocalDeclLine(const std::string& line,
                                                   const StructInfo* currentStruct,
                                                   std::unordered_map<std::string, std::string>& localTypes,
@@ -241,6 +243,7 @@ private:
     mutable size_t functionObjectCalls_ = 0;
     mutable size_t functionInterfaceMaxEvaluateDepth_ = 0;
     static constexpr size_t functionInterfaceEvaluateTempLimit_ = 8;
+    std::unordered_map<std::string, long long> passTimings_;
     const Decl* mainFunction_ = nullptr;
     const Decl* mainContainer_ = nullptr;
 };

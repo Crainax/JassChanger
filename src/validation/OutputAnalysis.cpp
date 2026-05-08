@@ -194,6 +194,30 @@ bool hasIndexedStructMemberResidue(const std::string& text) {
     return std::regex_search(text, pattern);
 }
 
+bool hasMethodChainCallResultResidue(const std::string& text) {
+    static const std::regex callResultPattern(R"((\)|\])\s*\.\s*[A-Za-z_$])");
+    static const std::regex orphanCallPattern(R"(^\s*call\s+\.\s*[A-Za-z_$])");
+    return std::regex_search(text, callResultPattern) || std::regex_search(text, orphanCallPattern);
+}
+
+std::string knownSourceSymbolInLine(const std::string& text) {
+    for (const char* symbol : {"HASH_TIMER", "HASH_ABILITY", "uiHT", "KEY_TOTAL"}) {
+        if (containsWord(text, symbol)) {
+            return symbol;
+        }
+    }
+    return {};
+}
+
+std::string callbackTargetInLine(const std::string& text) {
+    static const std::regex pattern(R"(TriggerAdd(?:Action|Condition)\s*\([^,]+,\s*(?:Condition\s*\(\s*)?function\s+([A-Za-z_$][A-Za-z0-9_$]*))");
+    std::smatch match;
+    if (std::regex_search(text, match, pattern)) {
+        return match[1].str();
+    }
+    return {};
+}
+
 bool hasInlineZincControlResidue(const std::string& text) {
     std::string t = trim(text);
     if (!startsWithWord(t, "if")) {
@@ -531,7 +555,10 @@ OutputSyntaxReport analyzeOutputSyntaxLite(std::string_view output) {
     std::string line;
     bool inFunction = false;
     bool sawExecutableInFunction = false;
+    bool sawReturnInFunction = false;
     std::string currentReturnType;
+    std::string currentFunctionName;
+    size_t currentFunctionLine = 0;
     size_t functionDepth = 0;
     size_t lineNo = 0;
     const std::vector<std::string> forbiddenWords = {
@@ -602,6 +629,31 @@ OutputSyntaxReport analyzeOutputSyntaxLite(std::string_view output) {
             report.inlineZincControlResidues.push_back(issue);
             addIssue(report, issue.check, issue.line, issue.message, issue.snippet);
         }
+        if (hasMethodChainCallResultResidue(t)) {
+            report.methodChainCallResultResidues.push_back(ValidationIssue{
+                "methodChainCallResultResidue",
+                lineNo,
+                "method chain on call or indexed result remains",
+                trim(line),
+            });
+        }
+        if (std::string symbol = knownSourceSymbolInLine(t); !symbol.empty()) {
+            report.unresolvedKnownSourceSymbols.push_back(ValidationIssue{
+                "knownSourceSymbol",
+                lineNo,
+                "known source/environment symbol remains: " + symbol,
+                trim(line),
+            });
+        }
+        if (std::string callbackTarget = callbackTargetInLine(t); !callbackTarget.empty() &&
+            callbackTarget.rfind("vjlambda__", 0) == 0) {
+            report.callbackCodeSignatureResidues.push_back(ValidationIssue{
+                "callbackCodeSignatureCandidate",
+                lineNo,
+                "lambda target is passed as a raw code callback: " + callbackTarget,
+                trim(line),
+            });
+        }
         if (startsWithWord(t, "function")) {
             if (inFunction) {
                 addIssue(report, "noNestedFunction", lineNo, "function declaration nested in function", line);
@@ -609,7 +661,10 @@ OutputSyntaxReport analyzeOutputSyntaxLite(std::string_view output) {
             inFunction = true;
             ++functionDepth;
             sawExecutableInFunction = false;
+            sawReturnInFunction = false;
             currentReturnType = returnTypeFromHeader(t);
+            currentFunctionName = functionNameFromHeader(t);
+            currentFunctionLine = lineNo;
             if (t.find(" takes ") == std::string::npos || currentReturnType.empty()) {
                 addIssue(report, "validFunctionHeader", lineNo, "invalid function header", line);
             }
@@ -619,11 +674,22 @@ OutputSyntaxReport analyzeOutputSyntaxLite(std::string_view output) {
             if (!inFunction || functionDepth == 0) {
                 addIssue(report, "balancedFunctions", lineNo, "endfunction without function", line);
             } else {
+                if (!currentReturnType.empty() && currentReturnType != "nothing" && !sawReturnInFunction) {
+                    report.returnMismatchLikelyResidues.push_back(ValidationIssue{
+                        "missingReturnCandidate",
+                        currentFunctionLine,
+                        "function returning " + currentReturnType + " has no explicit return: " + currentFunctionName,
+                        currentFunctionName,
+                    });
+                }
                 --functionDepth;
             }
             inFunction = functionDepth > 0;
             sawExecutableInFunction = false;
+            sawReturnInFunction = false;
             currentReturnType.clear();
+            currentFunctionName.clear();
+            currentFunctionLine = 0;
             continue;
         }
         if (inFunction) {
@@ -640,6 +706,7 @@ OutputSyntaxReport analyzeOutputSyntaxLite(std::string_view output) {
                 sawExecutableInFunction = true;
             }
             if (startsWithWord(t, "return")) {
+                sawReturnInFunction = true;
                 std::string returnLine = trim(stripLineCommentPreservingLiterals(line));
                 std::string expr = trim(std::string_view(returnLine).substr(6));
                 if (currentReturnType == "nothing" && !expr.empty()) {
@@ -673,6 +740,14 @@ OutputSyntaxReport analyzeOutputSyntaxLite(std::string_view output) {
     }
     report.forwardFunctionReferences = findForwardFunctionReferences(output, false);
     report.forwardLambdaReferences = findForwardFunctionReferences(output, true);
+    for (const auto& issue : report.forwardFunctionReferences) {
+        report.trueFunctionCycles.push_back(ValidationIssue{
+            "trueFunctionCycleCandidate",
+            issue.line,
+            issue.message,
+            issue.snippet,
+        });
+    }
     return report;
 }
 

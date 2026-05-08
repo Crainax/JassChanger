@@ -224,10 +224,10 @@ void SymbolTable::collectGlobalNames(const Decl& globalBlock, const std::vector<
         std::string access;
         std::string name = extractGlobalName(line, access);
         if (!name.empty()) {
-            std::string effectiveAccess = access.empty() ? "private" : access;
+            std::string effectiveAccess = access.empty() ? (globalBlock.access.empty() ? "private" : globalBlock.access) : access;
             std::string scopedName = makeScopedName(scopePath, effectiveAccess, name);
             map.replacements[name] = scopedName;
-            if (access == "public") {
+            if (effectiveAccess == "public") {
                 publicReplacements_[name] = scopedName;
             }
         }
