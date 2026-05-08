@@ -15,12 +15,55 @@ enum class DeclKind {
     Function,
     Library,
     Scope,
+    Struct,
     Unsupported,
 };
 
 struct Requirement {
     std::string name;
     bool optional = false;
+};
+
+struct TypeRef {
+    std::string name;
+    SourceLocation loc;
+    bool isArray = false;
+};
+
+struct ParamDecl {
+    TypeRef type;
+    std::string name;
+    SourceLocation loc;
+};
+
+struct FieldDecl {
+    std::string name;
+    TypeRef type;
+    std::string access;
+    SourceLocation loc;
+    bool isStatic = false;
+    bool isConstant = false;
+    bool isReadonly = false;
+    bool isArray = false;
+    bool isFixedArray = false;
+    int fixedArraySize = 0;
+    std::string initializer;
+    std::string generatedName;
+};
+
+struct MethodDecl {
+    std::string name;
+    std::string access;
+    SyntaxMode mode = SyntaxMode::JassLike;
+    SourceLocation loc;
+    bool isStatic = false;
+    bool isOperator = false;
+    bool isOnDestroy = false;
+    bool isOnInit = false;
+    std::vector<ParamDecl> params;
+    TypeRef returnType;
+    std::vector<LogicalLine> bodyLines;
+    std::string generatedName;
 };
 
 struct Decl {
@@ -32,9 +75,15 @@ struct Decl {
     std::string initializer;
     std::string unsupportedFeature;
     bool libraryOnce = false;
+    bool isArrayStruct = false;
+    std::string extendsName;
     std::vector<Requirement> requirements;
     std::vector<std::string> lines;
     std::vector<Decl> children;
+    std::vector<FieldDecl> fields;
+    std::vector<MethodDecl> methods;
+    std::string generatedName;
+    std::string prefix;
 };
 
 struct ParserStats {

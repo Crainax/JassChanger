@@ -49,6 +49,11 @@ bool runCommand(const std::string& command, bool expectSuccess = true) {
 }
 
 bool runGolden(const fs::path& exe, const fs::path& fixtures, const fs::path& outDir, const std::string& name, const std::string& extraArgs, const fs::path& expected) {
+    std::cerr << "running fixture " << name;
+    if (!extraArgs.empty()) {
+        std::cerr << " " << extraArgs;
+    }
+    std::cerr << "\n";
     fs::path out = outDir / (name + ".out.j");
     std::string command = exe.string() + " " + quote(fixtures / (name + ".in.j")) + " -o " + quote(out) + " " + extraArgs;
     if (!runCommand(command)) {
@@ -64,6 +69,13 @@ bool runGolden(const fs::path& exe, const fs::path& fixtures, const fs::path& ou
     return true;
 }
 
+bool runExpectFail(const fs::path& exe, const fs::path& fixtures, const fs::path& outDir, const std::string& name, const std::string& extraArgs) {
+    std::cerr << "running negative fixture " << name << "\n";
+    fs::path out = outDir / (name + ".out.j");
+    std::string command = exe.string() + " " + quote(fixtures / (name + ".in.j")) + " -o " + quote(out) + " " + extraArgs;
+    return runCommand(command, false);
+}
+
 int main(int argc, char** argv) {
     if (argc != 4) {
         std::cerr << "usage: golden_runner <vjassc> <fixtures> <out-dir>\n";
@@ -74,28 +86,54 @@ int main(int argc, char** argv) {
     fs::path outDir = argv[3];
     fs::create_directories(outDir);
 
+    struct GoldenCase {
+        std::string name;
+        std::string args;
+        fs::path expected;
+    };
+
+    std::vector<GoldenCase> cases = {
+        {"01_globals_native", "", fixtures / "01_globals_native.expected.j"},
+        {"02_debug_release", "--release", fixtures / "02_debug_release.expected.release.j"},
+        {"02_debug_release", "--debug", fixtures / "02_debug_release.expected.debug.j"},
+        {"03_novjass", "", fixtures / "03_novjass.expected.j"},
+        {"04_import_root", "", fixtures / "04_import_root.expected.j"},
+        {"05_textmacro", "", fixtures / "05_textmacro.expected.j"},
+        {"06_library_sort", "", fixtures / "06_library_sort.expected.j"},
+        {"07_zinc_basic", "", fixtures / "07_zinc_basic.expected.j"},
+        {"08_private_public", "", fixtures / "08_private_public.expected.j"},
+        {"09_unsupported_struct", "", fixtures / "09_unsupported_struct.expected.j"},
+        {"phase2_struct_basic_vjass", "", fixtures / "phase2_struct_basic_vjass.expected.j"},
+        {"phase2_method_vjass", "", fixtures / "phase2_method_vjass.expected.j"},
+        {"phase2_static_vjass", "", fixtures / "phase2_static_vjass.expected.j"},
+        {"phase2_custom_create_vjass", "", fixtures / "phase2_custom_create_vjass.expected.j"},
+        {"phase2_destroy_on_destroy_vjass", "", fixtures / "phase2_destroy_on_destroy_vjass.expected.j"},
+        {"phase2_on_init_vjass", "", fixtures / "phase2_on_init_vjass.expected.j"},
+        {"phase2_library_struct_vjass", "", fixtures / "phase2_library_struct_vjass.expected.j"},
+        {"phase2_zinc_basic", "", fixtures / "phase2_zinc_basic.expected.j"},
+        {"phase2_zinc_array", "", fixtures / "phase2_zinc_array.expected.j"},
+        {"phase2_fixed_array_zinc", "", fixtures / "phase2_fixed_array_zinc.expected.j"},
+        {"phase2_static_code_ref", "", fixtures / "phase2_static_code_ref.expected.j"},
+        {"phase2_real_fragment_zinc", "", fixtures / "phase2_real_fragment_zinc.expected.j"},
+    };
+
     bool ok = true;
-    ok = runGolden(exe, fixtures, outDir, "01_globals_native", "", fixtures / "01_globals_native.expected.j") && ok;
-    ok = runGolden(exe, fixtures, outDir, "02_debug_release", "--release", fixtures / "02_debug_release.expected.release.j") && ok;
-    ok = runGolden(exe, fixtures, outDir, "02_debug_release", "--debug", fixtures / "02_debug_release.expected.debug.j") && ok;
-    ok = runGolden(exe, fixtures, outDir, "03_novjass", "", fixtures / "03_novjass.expected.j") && ok;
-    ok = runGolden(exe, fixtures, outDir, "04_import_root", "", fixtures / "04_import_root.expected.j") && ok;
-    ok = runGolden(exe, fixtures, outDir, "05_textmacro", "", fixtures / "05_textmacro.expected.j") && ok;
-    ok = runGolden(exe, fixtures, outDir, "06_library_sort", "", fixtures / "06_library_sort.expected.j") && ok;
-    ok = runGolden(exe, fixtures, outDir, "07_zinc_basic", "", fixtures / "07_zinc_basic.expected.j") && ok;
-    ok = runGolden(exe, fixtures, outDir, "08_private_public", "", fixtures / "08_private_public.expected.j") && ok;
+    for (const auto& testCase : cases) {
+        ok = runGolden(exe, fixtures, outDir, testCase.name, testCase.args, testCase.expected) && ok;
+    }
+    ok = runExpectFail(exe, fixtures, outDir, "phase2_negative_duplicate_field", "") && ok;
+    ok = runExpectFail(exe, fixtures, outDir, "phase2_negative_method_outside_struct", "") && ok;
 
     fs::path stats = outDir / "09.stats.json";
     std::string scan = exe.string() + " " + quote(fixtures / "09_unsupported_struct.in.j") +
                        " --scan-only --allow-unsupported --emit-stats " + quote(stats);
     ok = runCommand(scan) && ok;
     std::string statsText = readFile(stats);
-    if (statsText.find("\"structsUnsupported\": 1") == std::string::npos) {
-        std::cerr << "09_unsupported_struct did not report structsUnsupported=1\n";
+    if (statsText.find("\"structsUnsupported\": 0") == std::string::npos ||
+        statsText.find("\"methodsUnsupported\": 0") == std::string::npos) {
+        std::cerr << "09_unsupported_struct did not report struct/method unsupported counters at 0\n";
         ok = false;
     }
-    std::string codegen = exe.string() + " " + quote(fixtures / "09_unsupported_struct.in.j") + " -o " + quote(outDir / "09.out.j");
-    ok = runCommand(codegen, false) && ok;
 
     return ok ? 0 : 1;
 }

@@ -1,8 +1,10 @@
 # vjassc
 
-`vjassc` is a C++20 phase-1 compiler prototype for lowering a supported subset of vJASS/Zinc to plain Warcraft III JASS.
+`vjassc` is a C++20 phase-2 compiler prototype for lowering a supported subset of vJASS/Zinc to plain Warcraft III JASS.
 
-Phase 1 builds the compiler foundation: file loading, preprocessing, lexing, top-level parsing, library sorting, minimal public/private rewriting, basic Zinc function lowering, diagnostics, stats, and golden fixture tests. It is not a complete JassHelper replacement.
+Phase 1 built the compiler foundation: file loading, preprocessing, lexing, top-level parsing, library sorting, minimal public/private rewriting, basic Zinc function lowering, diagnostics, stats, and golden fixture tests.
+
+Phase 2 adds structured vJASS/Zinc `struct` and `method` parsing plus basic lowering for fields, methods, static fields, static methods, `thistype`, default allocate/create/destroy, `onDestroy`, and static `onInit`. It is still not a complete JassHelper replacement: `module`, `static if`, `function interface`, lambda lowering, interface dispatch, delegate, operator overloads, stub/super, and other advanced extensions remain future work.
 
 ## Repository Layout
 
@@ -11,7 +13,8 @@ Phase 1 builds the compiler foundation: file loading, preprocessing, lexing, top
 - `samples/input.j`: large real input used for scan-only validation
 - `samples/output_jasshelper.j`: legacy JassHelper output reference for later phases
 - `jasshelper/`: old compiler package, kept for behavior comparisons when needed
-- `docs/phase1_status.md`: current implementation status and scan baseline
+- `docs/phase1_status.md`: phase-1 implementation status and scan baseline
+- `docs/phase2_status.md`: phase-2 implementation status and scan baseline
 
 ## Build
 
@@ -55,4 +58,4 @@ build/vjassc samples/input.j --scan-only --allow-unsupported --emit-stats build/
 
 ## Phase Boundary
 
-Phase 1 supports small vJASS/Zinc cases in its declared subset. It intentionally refuses code generation when unsupported declarations such as `struct`, `method`, `module`, `static if`, or `function interface` are present.
+Phase 2 supports small vJASS/Zinc struct/method cases in its declared subset. It intentionally refuses code generation when unsupported declarations such as `module`, `static if`, `function interface`, or unsupported lambda/module constructs are present. `--allow-unsupported` is only for scan-only validation and statistics; it does not make partial code generation safe.

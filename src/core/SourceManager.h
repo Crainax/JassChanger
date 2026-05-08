@@ -34,9 +34,11 @@ public:
     size_t fileCount() const { return files_.size(); }
     size_t totalBytes() const;
     size_t totalLines() const;
+    long long readElapsedMs() const { return readElapsedMs_; }
 
 private:
     std::vector<SourceFile> files_;
+    long long readElapsedMs_ = 0;
 };
 
 std::string normalizeNewlines(std::string text);

@@ -1,5 +1,6 @@
 #include "core/SourceManager.h"
 
+#include <chrono>
 #include <fstream>
 #include <sstream>
 
@@ -22,6 +23,7 @@ std::string normalizeNewlines(std::string text) {
 }
 
 std::optional<uint32_t> SourceManager::loadFile(const std::filesystem::path& path, std::string& error) {
+    auto start = std::chrono::steady_clock::now();
     std::ifstream in(path, std::ios::binary);
     if (!in) {
         error = "failed to open file: " + path.string();
@@ -42,6 +44,7 @@ std::optional<uint32_t> SourceManager::loadFile(const std::filesystem::path& pat
         }
     }
     files_.push_back(std::move(file));
+    readElapsedMs_ += std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
     return files_.back().id;
 }
 
