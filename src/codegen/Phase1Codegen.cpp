@@ -1025,12 +1025,21 @@ bool hasUnclosedContinuation(const std::string& rawLine) {
             --brackets;
         }
     }
-    return parens > 0 || brackets > 0 || line.back() == ',' || line.back() == '+';
+    auto endsWithWordToken = [&](std::string_view word) {
+        if (line.size() < word.size()) {
+            return false;
+        }
+        size_t pos = line.size() - word.size();
+        return line.compare(pos, word.size(), word) == 0 && (pos == 0 || !isIdentPart(line[pos - 1]));
+    };
+    return parens > 0 || brackets > 0 || line.back() == ',' || line.back() == '+' ||
+           line.ends_with("&&") || line.ends_with("||") || endsWithWordToken("and") || endsWithWordToken("or");
 }
 
 bool startsWithZincContinuationOperator(const std::string& rawLine) {
     std::string line = trim(stripLineCommentPreservingLiterals(rawLine));
-    return !line.empty() && line.front() == '+';
+    return !line.empty() && (line.front() == '+' || line.rfind("&&", 0) == 0 || line.rfind("||", 0) == 0 ||
+                             startsWithWord(line, "and") || startsWithWord(line, "or"));
 }
 
 std::vector<std::string> joinZincContinuationLines(const std::vector<std::string>& lines) {
@@ -1088,7 +1097,7 @@ std::vector<std::string> expandLeadingDotChains(const std::vector<std::string>& 
         bool nextIsLeadingDot = false;
         for (size_t lookahead = index + 1; lookahead < lines.size(); ++lookahead) {
             std::string next = trim(lines[lookahead]);
-            if (next.empty()) {
+            if (next.empty() || next.rfind("//", 0) == 0) {
                 continue;
             }
             nextIsLeadingDot = next.front() == '.';
@@ -1099,7 +1108,7 @@ std::vector<std::string> expandLeadingDotChains(const std::vector<std::string>& 
         }
         if (!nextReceiver.empty()) {
             receiver = nextReceiver;
-        } else if (!t.empty() && t.front() != '.') {
+        } else if (!t.empty() && t.front() != '.' && t.rfind("//", 0) != 0) {
             receiver.clear();
         }
     }
@@ -1919,6 +1928,8 @@ void Phase1Codegen::emitZincFunction(const Decl& decl, const Decl* container) {
         if (!type.empty() && !name.empty()) {
             if (findStruct(type) || findFunctionInterface(type)) {
                 localTypes[name] = type;
+            } else if (paramIndex < fnSig.paramTypes.size() && findStruct(fnSig.paramTypes[paramIndex])) {
+                localTypes[name] = fnSig.paramTypes[paramIndex];
             } else if (paramIndex < fnSig.paramTypes.size() && findFunctionInterface(fnSig.paramTypes[paramIndex])) {
                 localTypes[name] = fnSig.paramTypes[paramIndex];
             }
@@ -2823,82 +2834,206 @@ std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
                 text = replaceRegex(text, R"(\bthistype\s*\.\s*create\s*\()", currentStruct->prefix + "_create(");
             }
         }
-        for (const auto& info : structs_) {
-            auto legacyStructPrefixPattern = [&](std::string_view prefix) {
-                std::string pattern = "\\b" + std::string(prefix) + regexEscape(info.originalName) + "_";
-                std::string scopedPrefix = info.originalName + "_";
-                if (info.generatedName.rfind(scopedPrefix, 0) == 0) {
-                    std::string generatedSuffix = info.generatedName.substr(scopedPrefix.size());
-                    if (!generatedSuffix.empty()) {
-                        pattern += "(?!" + regexEscape(generatedSuffix) + "_)";
+        bool hasMemberAccess = text.find('.') != std::string::npos;
+        bool hasGeneratedStructPrefix = text.find("s__") != std::string::npos ||
+                                        text.find("sc__") != std::string::npos ||
+                                        text.find("si__") != std::string::npos;
+        if (hasMemberAccess || hasGeneratedStructPrefix) {
+            for (const auto& info : structs_) {
+                auto legacyStructPrefixPattern = [&](std::string_view prefix) {
+                    std::string pattern = "\\b" + std::string(prefix) + regexEscape(info.originalName) + "_";
+                    std::string scopedPrefix = info.originalName + "_";
+                    if (info.generatedName.rfind(scopedPrefix, 0) == 0) {
+                        std::string generatedSuffix = info.generatedName.substr(scopedPrefix.size());
+                        if (!generatedSuffix.empty()) {
+                            pattern += "(?!" + regexEscape(generatedSuffix) + "_)";
+                        }
+                    }
+                    return pattern;
+                };
+                if (text.find("si__" + info.originalName + "_") != std::string::npos) {
+                    text = replaceRegex(text, legacyStructPrefixPattern("si__"), "si__" + info.generatedName + "_");
+                }
+                if (text.find("sc__" + info.originalName + "_") != std::string::npos) {
+                    text = replaceRegex(text, legacyStructPrefixPattern("sc__"), "sc__" + info.generatedName + "_");
+                }
+                if (text.find("s__" + info.originalName + "_") != std::string::npos) {
+                    text = replaceRegex(text, legacyStructPrefixPattern("s__"), "s__" + info.generatedName + "_");
+                }
+                if (text.find(info.originalName) == std::string::npos) {
+                    continue;
+                }
+                std::string structName = regexEscape(info.originalName);
+                text = replaceRegex(text,
+                                    "\\b" + structName + R"(\s*\.\s*typeid\b)",
+                                    std::to_string(info.typeId));
+                for (const auto& method : info.methods) {
+                    if (method.isStatic || method.name == "create") {
+                        text = replaceRegex(text,
+                                            "\\bfunction\\s+" + structName + "\\s*\\.\\s*" + regexEscape(method.name) + "\\b",
+                                            "function " + method.generatedName);
+                        text = replaceRegex(text,
+                                            "\\b" + structName + "\\s*\\.\\s*" + regexEscape(method.name) + "\\s*\\(",
+                                            method.generatedName + "(");
                     }
                 }
-                return pattern;
-            };
-            if (text.find("si__" + info.originalName + "_") != std::string::npos) {
-                text = replaceRegex(text, legacyStructPrefixPattern("si__"), "si__" + info.generatedName + "_");
-            }
-            if (text.find("sc__" + info.originalName + "_") != std::string::npos) {
-                text = replaceRegex(text, legacyStructPrefixPattern("sc__"), "sc__" + info.generatedName + "_");
-            }
-            if (text.find("s__" + info.originalName + "_") != std::string::npos) {
-                text = replaceRegex(text, legacyStructPrefixPattern("s__"), "s__" + info.generatedName + "_");
-            }
-            if (text.find(info.originalName) == std::string::npos) {
-                continue;
-            }
-            std::string structName = regexEscape(info.originalName);
-            text = replaceRegex(text,
-                                "\\b" + structName + R"(\s*\.\s*typeid\b)",
-                                std::to_string(info.typeId));
-            for (const auto& method : info.methods) {
-                if (method.isStatic || method.name == "create") {
-                    text = replaceRegex(text,
-                                        "\\bfunction\\s+" + structName + "\\s*\\.\\s*" + regexEscape(method.name) + "\\b",
-                                        "function " + method.generatedName);
-                    text = replaceRegex(text,
-                                        "\\b" + structName + "\\s*\\.\\s*" + regexEscape(method.name) + "\\s*\\(",
-                                        method.generatedName + "(");
+                if (!info.isArrayStruct) {
+                    text = replaceRegex(text, "\\b" + structName + "\\s*\\.\\s*create\\s*\\(", info.prefix + "_create(");
+                    text = replaceRegex(text, "\\b" + structName + "\\s*\\.\\s*allocate\\s*\\(", info.prefix + "__allocate(");
                 }
-            }
-            if (!info.isArrayStruct) {
-                text = replaceRegex(text, "\\b" + structName + "\\s*\\.\\s*create\\s*\\(", info.prefix + "_create(");
-                text = replaceRegex(text, "\\b" + structName + "\\s*\\.\\s*allocate\\s*\\(", info.prefix + "__allocate(");
-            }
-            for (const auto& field : info.fields) {
-                if (field.isStatic) {
-                    text = replaceRegex(text,
-                                        "\\b" + structName + "\\s*\\.\\s*" + regexEscape(field.name) + "\\b",
-                                        field.generatedName);
-                    text = rewriteArrayAccesses(text, nullptr);
+                for (const auto& field : info.fields) {
+                    if (field.isStatic) {
+                        text = replaceRegex(text,
+                                            "\\b" + structName + "\\s*\\.\\s*" + regexEscape(field.name) + "\\b",
+                                            field.generatedName);
+                        text = rewriteArrayAccesses(text, nullptr);
+                    }
                 }
-            }
-            if (info.isArrayStruct) {
-                std::vector<std::string> receiverNames{info.originalName, info.generatedName};
-                for (const auto& receiverName : receiverNames) {
-                    std::string receiverPattern = "\\b" + regexEscape(receiverName) + R"(\s*\[\s*([^\]]+)\s*\])";
-                    for (const auto& field : info.fields) {
-                        if (field.isStatic) {
-                            continue;
+                if (info.isArrayStruct) {
+                    std::vector<std::string> receiverNames{info.originalName, info.generatedName};
+                    for (const auto& receiverName : receiverNames) {
+                        std::string receiverPattern = "\\b" + regexEscape(receiverName) + R"(\s*\[\s*([^\]]+)\s*\])";
+                        for (const auto& field : info.fields) {
+                            if (field.isStatic) {
+                                continue;
+                            }
+                            text = replaceRegex(text,
+                                                receiverPattern + R"(\s*\.\s*)" + regexEscape(field.name) + R"(\b)",
+                                                field.generatedName + "[$1]");
+                        }
+                        for (const auto& method : info.methods) {
+                            if (method.isStatic) {
+                                continue;
+                            }
+                            text = replaceRegex(text,
+                                                receiverPattern + R"(\s*\.\s*)" + regexEscape(method.name) + R"(\s*\()",
+                                                method.generatedName + "($1" + (method.decl->params.empty() ? "" : ", "));
                         }
                         text = replaceRegex(text,
-                                            receiverPattern + R"(\s*\.\s*)" + regexEscape(field.name) + R"(\b)",
-                                            field.generatedName + "[$1]");
+                                            receiverPattern,
+                                            "($1)");
                     }
-                    for (const auto& method : info.methods) {
-                        if (method.isStatic) {
-                            continue;
-                        }
-                        text = replaceRegex(text,
-                                            receiverPattern + R"(\s*\.\s*)" + regexEscape(method.name) + R"(\s*\()",
-                                            method.generatedName + "($1" + (method.decl->params.empty() ? "" : ", "));
-                    }
-                    text = replaceRegex(text,
-                                        receiverPattern,
-                                        "($1)");
                 }
             }
         }
+
+        auto rewriteNamedStructReceiver = [&](const StructInfo& varStruct, const std::string& receiverName) {
+            if (receiverName.empty() || text.find(receiverName) == std::string::npos) {
+                return;
+            }
+            bool changed = true;
+            int guard = 0;
+            while (changed && guard++ < 16) {
+                changed = false;
+                for (size_t pos = 0; pos < text.size();) {
+                    size_t namePos = text.find(receiverName, pos);
+                    if (namePos == std::string::npos) {
+                        break;
+                    }
+                    if (namePos > 0 && isIdentPart(text[namePos - 1])) {
+                        pos = namePos + receiverName.size();
+                        continue;
+                    }
+                    size_t afterName = namePos + receiverName.size();
+                    if (afterName < text.size() && isIdentPart(text[afterName])) {
+                        pos = afterName;
+                        continue;
+                    }
+
+                    size_t receiverEnd = afterName;
+                    size_t cursor = afterName;
+                    while (cursor < text.size() && std::isspace(static_cast<unsigned char>(text[cursor]))) {
+                        ++cursor;
+                    }
+                    while (cursor < text.size() && text[cursor] == '[') {
+                        size_t close = findMatchingBracketOutsideProtected(text, cursor);
+                        if (close == std::string::npos) {
+                            pos = cursor + 1;
+                            break;
+                        }
+                        receiverEnd = close + 1;
+                        cursor = receiverEnd;
+                        while (cursor < text.size() && std::isspace(static_cast<unsigned char>(text[cursor]))) {
+                            ++cursor;
+                        }
+                    }
+                    if (cursor >= text.size() || text[cursor] != '.') {
+                        pos = receiverEnd;
+                        continue;
+                    }
+                    size_t memberStart = cursor + 1;
+                    while (memberStart < text.size() && std::isspace(static_cast<unsigned char>(text[memberStart]))) {
+                        ++memberStart;
+                    }
+                    if (memberStart >= text.size() || !isIdentStart(text[memberStart])) {
+                        pos = memberStart;
+                        continue;
+                    }
+                    size_t memberEnd = memberStart + 1;
+                    while (memberEnd < text.size() && isIdentPart(text[memberEnd])) {
+                        ++memberEnd;
+                    }
+                    std::string memberName = text.substr(memberStart, memberEnd - memberStart);
+                    std::string receiverExpr = trim(text.substr(namePos, receiverEnd - namePos));
+                    size_t afterMember = memberEnd;
+                    while (afterMember < text.size() && std::isspace(static_cast<unsigned char>(text[afterMember]))) {
+                        ++afterMember;
+                    }
+
+                    if (!varStruct.isArrayStruct && memberName == "destroy" &&
+                        afterMember < text.size() && text[afterMember] == '(') {
+                        size_t close = findMatchingParen(text, afterMember);
+                        if (close == std::string::npos) {
+                            break;
+                        }
+                        if (trim(text.substr(afterMember + 1, close - afterMember - 1)).empty()) {
+                            std::string replacement = varStruct.prefix + "_destroy(" + receiverExpr + ")";
+                            text.replace(namePos, close + 1 - namePos, replacement);
+                            pos = namePos + replacement.size();
+                            changed = true;
+                            continue;
+                        }
+                    }
+
+                    if (afterMember < text.size() && text[afterMember] == '(') {
+                        const MethodInfo* method = findMethod(varStruct, memberName);
+                        if (method && !method->isStatic) {
+                            std::string replacement = method->generatedName + "(" + receiverExpr +
+                                                      (method->decl->params.empty() ? "" : ", ");
+                            text.replace(namePos, afterMember + 1 - namePos, replacement);
+                            pos = namePos + replacement.size();
+                            changed = true;
+                            continue;
+                        }
+                    }
+
+                    const FieldInfo* field = findField(varStruct, memberName);
+                    if (field && !field->isStatic) {
+                        if (field->isFixedArray && field->fixedArraySize > 0 && field->arrayDimensions.size() <= 1 &&
+                            afterMember < text.size() && text[afterMember] == '[') {
+                            size_t close = findMatchingBracketOutsideProtected(text, afterMember);
+                            if (close == std::string::npos) {
+                                break;
+                            }
+                            std::string indexExpr = trim(text.substr(afterMember + 1, close - afterMember - 1));
+                            std::string replacement = field->generatedName + "[" + receiverExpr + "*" +
+                                                      std::to_string(field->fixedArraySize) + "+" + indexExpr + "]";
+                            text.replace(namePos, close + 1 - namePos, replacement);
+                            pos = namePos + replacement.size();
+                            changed = true;
+                            continue;
+                        }
+                        std::string replacement = field->generatedName + "[" + receiverExpr + "]";
+                        text.replace(namePos, memberEnd - namePos, replacement);
+                        pos = namePos + replacement.size();
+                        changed = true;
+                        continue;
+                    }
+
+                    pos = memberEnd;
+                }
+            }
+        };
 
         if (currentStruct) {
             for (const auto& field : currentStruct->fields) {
@@ -2908,9 +3043,11 @@ std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
                     }
                 }
                 if (field.isStatic) {
-                    text = replaceRegex(text,
-                                        R"((^|[^A-Za-z0-9_$.]))" + regexEscape(field.name) + R"(\b)",
-                                        "$1" + field.generatedName);
+                    if (!localTypes.contains(field.name)) {
+                        text = replaceRegex(text,
+                                            R"((^|[^A-Za-z0-9_$.]))" + regexEscape(field.name) + R"(\b)",
+                                            "$1" + field.generatedName);
+                    }
                     text = replaceRegex(text,
                                         R"(\bthistype\s*\.\s*)" + regexEscape(field.name) + R"(\b)",
                                         field.generatedName);
@@ -2925,23 +3062,7 @@ std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
                                         field.generatedName);
                     text = rewriteArrayAccesses(text, nullptr);
                     if (const StructInfo* fieldStruct = findStruct(field.typeName)) {
-                        std::string receiverPattern = "\\b" + regexEscape(field.generatedName) + R"((\s*\[[^,\r\n]*\])?)";
-                        std::string receiverExpr = field.generatedName + "$1";
-                        for (const auto& nestedField : fieldStruct->fields) {
-                            if (!nestedField.isStatic) {
-                                text = replaceRegex(text,
-                                                    receiverPattern + R"(\s*\.\s*)" + regexEscape(nestedField.name) + R"(\b)",
-                                                    nestedField.generatedName + "[" + receiverExpr + "]");
-                            }
-                        }
-                        for (const auto& nestedMethod : fieldStruct->methods) {
-                            if (!nestedMethod.isStatic) {
-                                text = replaceRegex(text,
-                                                    receiverPattern + R"(\s*\.\s*)" + regexEscape(nestedMethod.name) + R"(\s*\()",
-                                                    nestedMethod.generatedName + "(" + receiverExpr +
-                                                        (nestedMethod.decl->params.empty() ? "" : ", "));
-                            }
-                        }
+                        rewriteNamedStructReceiver(*fieldStruct, field.generatedName);
                     }
                     continue;
                 }
@@ -3008,64 +3129,60 @@ std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
             if (!currentStruct->isArrayStruct && text.find("allocate") != std::string::npos) {
                 text = replaceRegex(text, R"(\ballocate\s*\()", currentStruct->prefix + "__allocate(");
             }
+            if (!currentStruct->isArrayStruct && !localTypes.contains("destroy") && text.find("destroy") != std::string::npos) {
+                for (size_t pos = 0; (pos = text.find("destroy", pos)) != std::string::npos;) {
+                    if (pos > 0 && (isIdentPart(text[pos - 1]) || text[pos - 1] == '.')) {
+                        pos += 7;
+                        continue;
+                    }
+                    size_t afterName = pos + 7;
+                    if (afterName < text.size() && isIdentPart(text[afterName])) {
+                        pos = afterName;
+                        continue;
+                    }
+                    while (afterName < text.size() && std::isspace(static_cast<unsigned char>(text[afterName]))) {
+                        ++afterName;
+                    }
+                    if (afterName >= text.size() || text[afterName] != '(') {
+                        pos = afterName;
+                        continue;
+                    }
+                    size_t close = findMatchingParen(text, afterName);
+                    if (close == std::string::npos) {
+                        break;
+                    }
+                    if (!trim(text.substr(afterName + 1, close - afterName - 1)).empty()) {
+                        pos = close + 1;
+                        continue;
+                    }
+                    std::string replacement = currentStruct->prefix + "_destroy(this)";
+                    text.replace(pos, close + 1 - pos, replacement);
+                    pos += replacement.size();
+                }
+            }
         }
 
-        auto rewriteStructReceiver = [&](const StructInfo& varStruct,
-                                         const std::string& receiverPattern,
-                                         const std::string& receiverExpr,
-                                         const std::string& scalarReceiverExpr) {
-            for (const auto& field : varStruct.fields) {
-                if (field.isStatic) {
+        if (text.find('.') != std::string::npos) {
+            for (const auto& [varName, typeName] : localTypes) {
+                if (text.find(varName) == std::string::npos) {
                     continue;
                 }
-                if (field.isFixedArray && field.fixedArraySize > 0 && field.arrayDimensions.size() <= 1) {
-                    text = replaceRegex(text,
-                                        receiverPattern + R"(\s*\.\s*)" + regexEscape(field.name) + R"(\s*\[\s*([^\]]+)\s*\])",
-                                        field.generatedName + "[" + receiverExpr + "*" + std::to_string(field.fixedArraySize) + "+$2]");
-                }
-                text = replaceRegex(text,
-                                    receiverPattern + R"(\s*\.\s*)" + regexEscape(field.name) + R"(\b)",
-                                    field.generatedName + "[" + receiverExpr + "]");
-            }
-            for (const auto& method : varStruct.methods) {
-                if (method.isStatic) {
+                const StructInfo* varStruct = typeName == "thistype" ? currentStruct : findStruct(typeName);
+                if (!varStruct) {
                     continue;
                 }
-                text = replaceRegex(text,
-                                    receiverPattern + R"(\s*\.\s*)" + regexEscape(method.name) + R"(\s*\()",
-                                    method.generatedName + "(" + receiverExpr + (method.decl->params.empty() ? "" : ", "));
+                rewriteNamedStructReceiver(*varStruct, varName);
             }
-            if (!varStruct.isArrayStruct) {
-                text = replaceRegex(text,
-                                    receiverPattern + R"(\s*\.\s*destroy\s*\(\s*\))",
-                                    varStruct.prefix + "_destroy(" + receiverExpr + ")");
+            for (const auto& [varName, typeName] : globalStructTypes_) {
+                if (text.find(varName) == std::string::npos) {
+                    continue;
+                }
+                const StructInfo* varStruct = findStruct(typeName);
+                if (!varStruct) {
+                    continue;
+                }
+                rewriteNamedStructReceiver(*varStruct, varName);
             }
-            (void)scalarReceiverExpr;
-        };
-
-        for (const auto& [varName, typeName] : localTypes) {
-            if (text.find(varName) == std::string::npos) {
-                continue;
-            }
-            const StructInfo* varStruct = typeName == "thistype" ? currentStruct : findStruct(typeName);
-            if (!varStruct) {
-                continue;
-            }
-            std::string var = regexEscape(varName);
-            std::string receiverPattern = "\\b" + var + R"((\s*\[[^,\r\n]*\])?)";
-            rewriteStructReceiver(*varStruct, receiverPattern, varName + "$1", varName);
-        }
-        for (const auto& [varName, typeName] : globalStructTypes_) {
-            if (text.find(varName) == std::string::npos) {
-                continue;
-            }
-            const StructInfo* varStruct = findStruct(typeName);
-            if (!varStruct) {
-                continue;
-            }
-            std::string var = regexEscape(varName);
-            std::string receiverPattern = "\\b" + var + R"((\s*\[[^,\r\n]*\])?)";
-            rewriteStructReceiver(*varStruct, receiverPattern, varName + "$1", varName);
         }
         return text;
     };
@@ -3457,10 +3574,10 @@ std::string Phase1Codegen::lowerFunctionValue(std::string expression,
         };
         return rewriteOutsideProtected(text, rewriteNormal);
     };
-    std::string lowered = rewriteFunctionNames(rewriteStructExpression(expression,
-                                                                       ctx.currentStruct,
-                                                                       ctx.localTypes ? *ctx.localTypes : std::unordered_map<std::string, std::string>{}),
-                                               ctx.currentStruct);
+    std::string structLowered = rewriteStructExpression(expression,
+                                                        ctx.currentStruct,
+                                                        ctx.localTypes ? *ctx.localTypes : std::unordered_map<std::string, std::string>{});
+    std::string lowered = rewriteFunctionNames(std::move(structLowered), ctx.currentStruct);
     lowered = rewriteExplicitInterfaceReferences(std::move(lowered));
     return rewriteCallArguments(std::move(lowered), ctx, prelude);
 }

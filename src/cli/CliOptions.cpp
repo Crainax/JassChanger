@@ -10,7 +10,8 @@ bool needsValue(const std::string& arg) {
            arg == "--emit-ast" || arg == "--emit-expanded-ast" || arg == "--emit-stats" ||
            arg == "--emit-validation-report" || arg == "--pjass" || arg == "--common" ||
            arg == "--blizzard" || arg == "--compare-jasshelper" || arg == "--pjass-timeout-ms" ||
-           arg == "--import-path";
+           arg == "--import-path" || arg == "--analyze-pjass-log" ||
+           arg == "--validate-existing-output" || arg == "--emit-pjass-examples";
 }
 
 } // namespace
@@ -50,6 +51,25 @@ CliParseResult parseCli(int argc, char** argv) {
             opt.checkOutputSyntaxLite = true;
         } else if (arg == "--validate-pjass") {
             opt.validatePjass = true;
+        } else if (arg == "--analyze-pjass-log") {
+            if (!requireValue(arg, opt.analyzePjassLogPath)) {
+                return result;
+            }
+        } else if (arg == "--validate-existing-output") {
+            if (!requireValue(arg, opt.validateExistingOutputPath)) {
+                return result;
+            }
+        } else if (arg == "--emit-pjass-examples") {
+            std::filesystem::path value;
+            if (!requireValue(arg, value)) {
+                return result;
+            }
+            try {
+                opt.emitPjassExamples = static_cast<size_t>(std::stoull(value.string()));
+            } catch (...) {
+                result.error = "invalid numeric value for " + arg + ": " + value.string();
+                return result;
+            }
         } else if (arg == "--pjass") {
             if (!requireValue(arg, opt.pjassPath)) {
                 return result;
@@ -127,12 +147,13 @@ CliParseResult parseCli(int argc, char** argv) {
         }
     }
 
-    if (!opt.showHelp && !opt.showVersion && opt.inputPath.empty()) {
+    const bool offlineMode = !opt.analyzePjassLogPath.empty() || !opt.validateExistingOutputPath.empty();
+    if (!opt.showHelp && !opt.showVersion && !offlineMode && opt.inputPath.empty()) {
         result.error = "missing input file";
         return result;
     }
 
-    if (!opt.scanOnly && !opt.showHelp && !opt.showVersion && opt.outputPath.empty()) {
+    if (!opt.scanOnly && !opt.showHelp && !opt.showVersion && !offlineMode && opt.outputPath.empty()) {
         const bool emitsOnly = !opt.emitPreprocessedPath.empty() || !opt.emitTokensPath.empty() ||
                                !opt.emitAstPath.empty() || !opt.emitExpandedAstPath.empty() ||
                                !opt.emitStatsPath.empty();
@@ -168,6 +189,9 @@ void printHelp(std::ostream& out) {
         << "  --allow-unsupported          Allow unsupported declarations during scan-only\n"
         << "  --check-output-syntax-lite   Fail if generated output still contains known high-level syntax\n"
         << "  --validate-pjass             Validate generated output with PJASS\n"
+        << "  --analyze-pjass-log <path>   Parse an existing PJASS log without codegen\n"
+        << "  --validate-existing-output <path> Validate an existing generated JASS file without codegen\n"
+        << "  --emit-pjass-examples <n>    Include up to n examples per PJASS group in validation reports\n"
         << "  --pjass <path>               Path to pjass executable\n"
         << "  --common <path>              Path to common.j for PJASS\n"
         << "  --blizzard <path>            Path to blizzard.j for PJASS\n"

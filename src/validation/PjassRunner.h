@@ -15,6 +15,7 @@ struct PjassOptions {
     std::filesystem::path stdoutPath;
     std::filesystem::path stderrPath;
     long long timeoutMs = 30000;
+    size_t exampleLimit = 20;
 };
 
 struct PjassErrorExample {
@@ -63,6 +64,8 @@ PjassResolvedPaths resolvePjassPaths(const std::filesystem::path& cwd,
                                      const std::filesystem::path& explicitBlizzard);
 PjassResult runPjass(const PjassOptions& options);
 std::unordered_map<std::string, size_t> classifyPjassErrors(const std::string& text);
-std::vector<PjassErrorGroup> groupPjassErrors(const std::string& text, const std::string& generatedOutput);
+std::vector<PjassErrorGroup> groupPjassErrors(const std::string& text,
+                                              const std::string& generatedOutput,
+                                              size_t exampleLimit = 20);
 
 } // namespace vjassc

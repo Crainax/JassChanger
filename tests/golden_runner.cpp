@@ -161,6 +161,14 @@ int main(int argc, char** argv) {
         {"phase9_zinc_public_block_globals", "", fixtures / "phase9_zinc_public_block_globals.expected.j"},
         {"phase9_static_this_field", "", fixtures / "phase9_static_this_field.expected.j"},
         {"phase10_zinc_chain_interface_continuation", "", fixtures / "phase10_zinc_chain_interface_continuation.expected.j"},
+        {"phase11_undefined_private_global_rewrite", "", fixtures / "phase11_undefined_private_global_rewrite.expected.j"},
+        {"phase11_boolean_integer_interface_id", "", fixtures / "phase11_boolean_integer_interface_id.expected.j"},
+        {"phase11_code_callback_no_arg_ok", "", fixtures / "phase11_code_callback_no_arg_ok.expected.j"},
+        {"phase11_code_callback_param_rejected_or_adapted", "", fixtures / "phase11_code_callback_param_rejected_or_adapted.expected.j"},
+        {"phase11_generated_wrapper_return_default", "", fixtures / "phase11_generated_wrapper_return_default.expected.j"},
+        {"phase11_source_missing_return_not_patched", "", fixtures / "phase11_source_missing_return_not_patched.expected.j"},
+        {"phase11_execute_func_bridge_noarg_cycle", "", fixtures / "phase11_execute_func_bridge_noarg_cycle.expected.j"},
+        {"phase11_environment_symbol_report", "", fixtures / "phase11_environment_symbol_report.expected.j"},
     };
 
     bool ok = true;

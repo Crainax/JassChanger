@@ -224,6 +224,9 @@ void SymbolTable::collectGlobalNames(const Decl& globalBlock, const std::vector<
         std::string access;
         std::string name = extractGlobalName(line, access);
         if (!name.empty()) {
+            if (access.empty() && globalBlock.access.empty() && globalBlock.mode != SyntaxMode::Zinc) {
+                continue;
+            }
             std::string effectiveAccess = access.empty() ? (globalBlock.access.empty() ? "private" : globalBlock.access) : access;
             std::string scopedName = makeScopedName(scopePath, effectiveAccess, name);
             map.replacements[name] = scopedName;

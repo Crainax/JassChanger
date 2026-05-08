@@ -82,6 +82,16 @@ std::string classifyPjassLine(const std::string& line, const std::string& genera
     if (std::regex_search(generatedLine, std::regex(R"(^\s*local\s+[A-Za-z_$][A-Za-z0-9_$]*(?:\s+array)?\s+[^,\r\n]+,)"))) {
         return "commaSeparatedLocal";
     }
+    if (containsAny(line, {"Cannot convert integer to boolean", "Cannot convert boolean to integer"})) {
+        return "booleanIntegerMismatch";
+    }
+    if (containsAny(line, {"Cannot convert integer to code", "Cannot convert code to integer",
+                           "Cannot convert integer to boolexpr", "Cannot convert boolexpr to integer"})) {
+        return "codeInterfaceConversion";
+    }
+    if (containsAny(line, {"Index missing for array variable"})) {
+        return "arrayIndexMissing";
+    }
     if (containsAny(line, {"Undefined function", "Undeclared function", "undeclared function", "not declared function"})) {
         if (line.find("vjlambda__") != std::string::npos) {
             return "forwardLambdaReference";
@@ -287,7 +297,9 @@ std::unordered_map<std::string, size_t> classifyPjassErrors(const std::string& t
     return counts;
 }
 
-std::vector<PjassErrorGroup> groupPjassErrors(const std::string& text, const std::string& generatedOutput) {
+std::vector<PjassErrorGroup> groupPjassErrors(const std::string& text,
+                                              const std::string& generatedOutput,
+                                              size_t exampleLimit) {
     std::vector<std::string> generatedLines = splitLines(generatedOutput);
     std::vector<std::string> currentFunctions = functionAtLines(generatedLines);
     std::unordered_map<std::string, size_t> defLines = functionDefinitionLines(generatedLines);
@@ -320,7 +332,7 @@ std::vector<PjassErrorGroup> groupPjassErrors(const std::string& text, const std
             group.firstLine = generatedLine;
             group.firstMessage = line;
         }
-        if (group.examples.size() < 20) {
+        if (group.examples.size() < exampleLimit) {
             std::string functionName;
             if (generatedLine > 0 && generatedLine < currentFunctions.size()) {
                 functionName = currentFunctions[generatedLine];
@@ -374,7 +386,9 @@ PjassResult runPjass(const PjassOptions& options) {
     result.stdoutText = readTextFile(options.stdoutPath);
     result.stderrText = readTextFile(options.stderrPath);
     result.ok = rc == 0;
-    result.errorGroups = groupPjassErrors(result.stdoutText + "\n" + result.stderrText, readTextFile(options.scriptPath));
+    result.errorGroups = groupPjassErrors(result.stdoutText + "\n" + result.stderrText,
+                                          readTextFile(options.scriptPath),
+                                          options.exampleLimit);
     for (const auto& group : result.errorGroups) {
         result.errorSummary[group.kind] = group.count;
     }

@@ -1505,6 +1505,24 @@ Decl Parser::parseZincFunction(const std::vector<LogicalLine>& lines, size_t& in
     decl.lines.push_back(header);
     ++stats_.functions;
 
+    size_t openBrace = header.find('{');
+    if (openBrace != std::string::npos) {
+        std::string after = header.substr(openBrace + 1);
+        int afterDelta = braceDelta(after);
+        if (1 + afterDelta <= 0) {
+            size_t closeBrace = after.rfind('}');
+            std::string before = closeBrace == std::string::npos ? after : after.substr(0, closeBrace);
+            if (!trim(before).empty()) {
+                decl.lines.push_back(before);
+            }
+            ++index;
+            return decl;
+        }
+        if (!trim(after).empty()) {
+            decl.lines.push_back(after);
+        }
+    }
+
     int depth = braceDelta(header);
     ++index;
     while (index < lines.size()) {

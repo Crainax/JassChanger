@@ -18,6 +18,8 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
+#include <regex>
 #include <unordered_map>
 #include <vector>
 
@@ -59,6 +61,13 @@ bool writeTextFile(const std::filesystem::path& path, const std::string& text) {
     }
     out << text;
     return true;
+}
+
+std::string readTextFile(const std::filesystem::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    return buffer.str();
 }
 
 bool isWordPart(char c) {
@@ -534,6 +543,198 @@ void writePjassGroupsJson(std::ostream& out, const std::vector<PjassErrorGroup>&
     out << "]";
 }
 
+size_t pjassGroupedCount(const std::vector<PjassErrorGroup>& groups) {
+    size_t total = 0;
+    for (const auto& group : groups) {
+        total += group.count;
+    }
+    return total;
+}
+
+std::string extractPjassSymbolForReport(const std::string& message) {
+    static const std::vector<std::regex> patterns = {
+        std::regex(R"((?:Undefined|Undeclared|undeclared) variable ([A-Za-z_$][A-Za-z0-9_$]*))"),
+        std::regex(R"((?:Undefined|Undeclared|undeclared) function ([A-Za-z_$][A-Za-z0-9_$]*))"),
+    };
+    for (const auto& pattern : patterns) {
+        std::smatch match;
+        if (std::regex_search(message, match, pattern)) {
+            return match[1].str();
+        }
+    }
+    return {};
+}
+
+std::string provenanceBucketForSymbol(const std::string& symbol, const std::string& kind) {
+    if (symbol.rfind("yd_", 0) == 0 || symbol == "YDHT") {
+        return "EnvironmentProvidedByYDWE";
+    }
+    if (symbol.rfind("bj_", 0) == 0) {
+        return "CommonBlizzardProvided";
+    }
+    if (symbol.rfind("vjassc__", 0) == 0 || symbol.rfind("vjlambda__", 0) == 0 ||
+        symbol.rfind("s__", 0) == 0 || symbol.rfind("sc__", 0) == 0 || symbol.rfind("si__", 0) == 0) {
+        return "GeneratedHelperMiss";
+    }
+    if (symbol.rfind("HASH_", 0) == 0 || symbol.rfind("KEY_", 0) == 0 || kind == "unresolvedPublicGlobal") {
+        return "PrivatePublicRewriteMiss";
+    }
+    return "TypoOrUnsupported";
+}
+
+struct SymbolProvenanceEntry {
+    size_t count = 0;
+    std::string bucket;
+    std::string action;
+    std::vector<PjassErrorExample> examples;
+};
+
+std::map<std::string, SymbolProvenanceEntry> collectPjassSymbolProvenance(const PjassResult& pjass, bool environmentOnly) {
+    std::map<std::string, SymbolProvenanceEntry> result;
+    for (const auto& group : pjass.errorGroups) {
+        if (group.kind != "undefinedVariable" && group.kind != "unresolvedEnvironmentSymbol" &&
+            group.kind != "undefinedFunction" && group.kind != "unresolvedPublicGlobal") {
+            continue;
+        }
+        for (const auto& example : group.examples) {
+            std::string symbol = extractPjassSymbolForReport(example.message);
+            if (symbol.empty()) {
+                continue;
+            }
+            std::string bucket = provenanceBucketForSymbol(symbol, group.kind);
+            bool isEnvironment = bucket == "EnvironmentProvidedByYDWE" || bucket == "CommonBlizzardProvided";
+            if (environmentOnly != isEnvironment) {
+                continue;
+            }
+            auto& entry = result[symbol];
+            entry.bucket = bucket;
+            entry.action = isEnvironment ? "requires environment policy" : "compiler/source investigation required";
+            if (entry.examples.size() < 10) {
+                entry.examples.push_back(example);
+            }
+        }
+    }
+
+    std::string merged = pjass.stdoutText + "\n" + pjass.stderrText;
+    std::istringstream in(merged);
+    std::string line;
+    while (std::getline(in, line)) {
+        std::string symbol = extractPjassSymbolForReport(line);
+        if (symbol.empty()) {
+            continue;
+        }
+        std::string bucket = provenanceBucketForSymbol(symbol, {});
+        bool isEnvironment = bucket == "EnvironmentProvidedByYDWE" || bucket == "CommonBlizzardProvided";
+        if (environmentOnly != isEnvironment) {
+            continue;
+        }
+        auto& entry = result[symbol];
+        ++entry.count;
+        if (entry.bucket.empty()) {
+            entry.bucket = bucket;
+        }
+        if (entry.action.empty()) {
+            entry.action = isEnvironment ? "requires environment policy" : "compiler/source investigation required";
+        }
+    }
+    return result;
+}
+
+void writePjassProvenanceEntriesJson(std::ostream& out,
+                                     const std::map<std::string, SymbolProvenanceEntry>& entries,
+                                     int indent) {
+    std::string pad(static_cast<size_t>(indent), ' ');
+    out << "{";
+    if (!entries.empty()) {
+        out << "\n";
+        size_t i = 0;
+        for (const auto& [symbol, entry] : entries) {
+            out << pad << "  ";
+            writeJsonString(out, symbol);
+            out << ": {\n"
+                << pad << "    \"count\": " << entry.count << ",\n"
+                << pad << "    \"bucket\": ";
+            writeJsonString(out, entry.bucket);
+            out << ",\n" << pad << "    \"action\": ";
+            writeJsonString(out, entry.action);
+            out << ",\n" << pad << "    \"examples\": [";
+            if (!entry.examples.empty()) {
+                out << "\n";
+                for (size_t j = 0; j < entry.examples.size(); ++j) {
+                    const auto& example = entry.examples[j];
+                    out << pad << "      {\n"
+                        << pad << "        \"generatedLine\": " << example.generatedLine << ",\n"
+                        << pad << "        \"function\": ";
+                    writeJsonString(out, example.functionName);
+                    out << ",\n" << pad << "        \"message\": ";
+                    writeJsonString(out, example.message);
+                    out << "\n" << pad << "      }" << (j + 1 == entry.examples.size() ? "\n" : ",\n");
+                }
+                out << pad << "    ";
+            }
+            out << "]\n" << pad << "  }" << (++i == entries.size() ? "\n" : ",\n");
+        }
+        out << pad;
+    }
+    out << "}";
+}
+
+void writePjassProvenanceJson(std::ostream& out, const PjassResult& pjass, int indent) {
+    std::string pad(static_cast<size_t>(indent), ' ');
+    out << "{\n"
+        << pad << "  \"undefinedVariables\": ";
+    writePjassProvenanceEntriesJson(out, collectPjassSymbolProvenance(pjass, false), indent + 2);
+    out << ",\n" << pad << "  \"environmentSymbols\": ";
+    writePjassProvenanceEntriesJson(out, collectPjassSymbolProvenance(pjass, true), indent + 2);
+    out << "\n" << pad << "}";
+}
+
+size_t countPjassGroup(const PjassResult& pjass, const std::string& kind) {
+    for (const auto& group : pjass.errorGroups) {
+        if (group.kind == kind) {
+            return group.count;
+        }
+    }
+    return 0;
+}
+
+void writeCallbackAdaptersJson(std::ostream& out, const PjassResult& pjass, int indent) {
+    std::string pad(static_cast<size_t>(indent), ' ');
+    size_t rejected = countPjassGroup(pjass, "callbackCodeSignatureMismatch");
+    out << "{\n"
+        << pad << "  \"generated\": 0,\n"
+        << pad << "  \"rejected\": " << rejected << ",\n"
+        << pad << "  \"unknownContext\": " << rejected << "\n"
+        << pad << "}";
+}
+
+void writeForwardCyclesJson(std::ostream& out, const OutputSyntaxReport& syntax, int indent) {
+    writeIssueArrayJson(out, syntax.trueFunctionCycles, indent, 100);
+}
+
+void writePerformanceJson(std::ostream& out, const Timings& timings, int indent) {
+    std::string pad(static_cast<size_t>(indent), ' ');
+    std::vector<std::pair<std::string, long long>> hotspots(timings.codegenPasses.begin(), timings.codegenPasses.end());
+    std::sort(hotspots.begin(), hotspots.end(), [](const auto& a, const auto& b) {
+        return a.second > b.second;
+    });
+    out << "{\n"
+        << pad << "  \"passes\": ";
+    writeCodegenPassesJson(out, timings.codegenPasses, indent + 2);
+    out << ",\n" << pad << "  \"hotspots\": [";
+    if (!hotspots.empty()) {
+        out << "\n";
+        size_t count = std::min<size_t>(10, hotspots.size());
+        for (size_t i = 0; i < count; ++i) {
+            out << pad << "    {\"name\": ";
+            writeJsonString(out, hotspots[i].first);
+            out << ", \"ms\": " << hotspots[i].second << "}" << (i + 1 == count ? "\n" : ",\n");
+        }
+        out << pad << "  ";
+    }
+    out << "]\n" << pad << "}";
+}
+
 std::string emitValidationReportJson(const CliOptions& options,
                                      const OutputSyntaxReport& syntax,
                                      const InitValidationReport& init,
@@ -542,6 +743,7 @@ std::string emitValidationReportJson(const CliOptions& options,
                                      const Timings& timings) {
     std::ostringstream out;
     out << "{\n"
+        << "  \"phase\": 11,\n"
         << "  \"input\": ";
     writeJsonString(out, pathToGenericString(options.inputPath));
     out << ",\n  \"output\": ";
@@ -595,6 +797,7 @@ std::string emitValidationReportJson(const CliOptions& options,
         << "    \"requested\": " << (pjass.requested ? "true" : "false") << ",\n"
         << "    \"ran\": " << (pjass.ran ? "true" : "false") << ",\n"
         << "    \"ok\": " << (pjass.ok ? "true" : "false") << ",\n"
+        << "    \"groupedCount\": " << pjassGroupedCount(pjass.errorGroups) << ",\n"
         << "    \"exitCode\": " << pjass.exitCode << ",\n"
         << "    \"elapsedMs\": " << pjass.elapsedMs << ",\n"
         << "    \"commandLine\": ";
@@ -613,7 +816,15 @@ std::string emitValidationReportJson(const CliOptions& options,
     writePjassSummaryJson(out, pjass.errorSummary, 4);
     out << ",\n    \"groups\": ";
     writePjassGroupsJson(out, pjass.errorGroups, 4);
-    out << "\n  },\n  \"comparison\": {\n"
+    out << "\n  },\n  \"provenance\": ";
+    writePjassProvenanceJson(out, pjass, 2);
+    out << ",\n  \"callbackAdapters\": ";
+    writeCallbackAdaptersJson(out, pjass, 2);
+    out << ",\n  \"forwardCycles\": ";
+    writeForwardCyclesJson(out, syntax, 2);
+    out << ",\n  \"performance\": ";
+    writePerformanceJson(out, timings, 2);
+    out << ",\n  \"comparison\": {\n"
         << "    \"jasshelperReference\": ";
     writeJsonString(out, pathToGenericString(comparison.referencePath));
     out << ",\n    \"referenceFound\": " << (comparison.referenceFound ? "true" : "false") << ",\n"
@@ -668,6 +879,116 @@ int main(int argc, char** argv) {
     if (options.showVersion) {
         printVersion(std::cout);
         return 0;
+    }
+
+    if (!options.analyzePjassLogPath.empty()) {
+        auto totalStart = std::chrono::steady_clock::now();
+        PjassResult pjassResult;
+        pjassResult.requested = true;
+        pjassResult.ran = true;
+        pjassResult.stdoutPath = options.analyzePjassLogPath;
+        pjassResult.stdoutText = readTextFile(options.analyzePjassLogPath);
+        pjassResult.errorGroups = groupPjassErrors(pjassResult.stdoutText, {}, options.emitPjassExamples);
+        for (const auto& group : pjassResult.errorGroups) {
+            pjassResult.errorSummary[group.kind] = group.count;
+        }
+        pjassResult.ok = pjassResult.errorGroups.empty();
+        pjassResult.exitCode = pjassResult.ok ? 0 : 1;
+        Timings timings;
+        timings.total = elapsedMs(totalStart, std::chrono::steady_clock::now());
+        CliOptions reportOptions = options;
+        reportOptions.inputPath = options.analyzePjassLogPath;
+        OutputSyntaxReport syntaxReport;
+        InitValidationReport initReport;
+        ComparisonReport comparisonReport;
+        if (!options.emitValidationReportPath.empty()) {
+            if (!writeTextFile(options.emitValidationReportPath,
+                               emitValidationReportJson(reportOptions, syntaxReport, initReport, pjassResult, comparisonReport, timings))) {
+                return 1;
+            }
+        }
+        std::cout << "PJASS grouped errors: " << pjassGroupedCount(pjassResult.errorGroups) << "\n";
+        for (const auto& group : pjassResult.errorGroups) {
+            std::cout << group.kind << ": " << group.count << "\n";
+        }
+        return 0;
+    }
+
+    if (!options.validateExistingOutputPath.empty()) {
+        auto totalStart = std::chrono::steady_clock::now();
+        bool ok = true;
+        std::string existingOutput = readTextFile(options.validateExistingOutputPath);
+        CliOptions reportOptions = options;
+        reportOptions.inputPath = options.validateExistingOutputPath;
+        reportOptions.outputPath = options.validateExistingOutputPath;
+
+        Timings timings;
+        OutputSyntaxReport syntaxReport;
+        InitValidationReport initReport;
+        ComparisonReport comparisonReport;
+        PjassResult pjassResult;
+
+        auto syntaxStart = std::chrono::steady_clock::now();
+        syntaxReport = analyzeOutputSyntaxLite(existingOutput);
+        initReport = analyzeInitIntegrity(existingOutput);
+        auto syntaxEnd = std::chrono::steady_clock::now();
+        timings.syntaxLite = elapsedMs(syntaxStart, syntaxEnd);
+        if (options.checkOutputSyntaxLite && !syntaxReport.ok) {
+            ok = false;
+        }
+
+        if (!options.compareJasshelperPath.empty() || !options.emitValidationReportPath.empty()) {
+            auto comparisonStart = std::chrono::steady_clock::now();
+            comparisonReport = compareWithReference(existingOutput, options.compareJasshelperPath.empty()
+                                                                        ? std::filesystem::path("samples/output_jasshelper.j")
+                                                                        : options.compareJasshelperPath);
+            auto comparisonEnd = std::chrono::steady_clock::now();
+            timings.comparison = elapsedMs(comparisonStart, comparisonEnd);
+        }
+
+        if (options.validatePjass) {
+            pjassResult.requested = true;
+            PjassResolvedPaths paths = resolvePjassPaths(std::filesystem::current_path(),
+                                                         options.pjassPath,
+                                                         options.commonPath,
+                                                         options.blizzardPath);
+            if (!paths.ok) {
+                pjassResult.error = paths.error;
+                std::cerr << paths.error << '\n';
+                ok = false;
+            } else {
+                std::filesystem::path reportBase = options.emitValidationReportPath.empty()
+                    ? options.validateExistingOutputPath
+                    : options.emitValidationReportPath;
+                std::filesystem::path stdoutPath = reportBase;
+                stdoutPath.replace_extension(".pjass.stdout.txt");
+                std::filesystem::path stderrPath = reportBase;
+                stderrPath.replace_extension(".pjass.stderr.txt");
+                PjassOptions pjassOptions;
+                pjassOptions.pjassPath = paths.pjassPath;
+                pjassOptions.commonPath = paths.commonPath;
+                pjassOptions.blizzardPath = paths.blizzardPath;
+                pjassOptions.scriptPath = options.validateExistingOutputPath;
+                pjassOptions.stdoutPath = stdoutPath;
+                pjassOptions.stderrPath = stderrPath;
+                pjassOptions.timeoutMs = options.pjassTimeoutMs;
+                pjassOptions.exampleLimit = options.emitPjassExamples;
+                auto pjassStart = std::chrono::steady_clock::now();
+                pjassResult = runPjass(pjassOptions);
+                auto pjassEnd = std::chrono::steady_clock::now();
+                timings.pjass = elapsedMs(pjassStart, pjassEnd);
+                if (!pjassResult.ok) {
+                    ok = false;
+                }
+            }
+        }
+
+        timings.total = elapsedMs(totalStart, std::chrono::steady_clock::now());
+        if (!options.emitValidationReportPath.empty()) {
+            ok = writeTextFile(options.emitValidationReportPath,
+                               emitValidationReportJson(reportOptions, syntaxReport, initReport, pjassResult, comparisonReport, timings)) && ok;
+        }
+        return ok ? 0 : 5;
     }
 
     auto totalStart = std::chrono::steady_clock::now();
@@ -821,6 +1142,7 @@ int main(int argc, char** argv) {
                     pjassOptions.stdoutPath = stdoutPath;
                     pjassOptions.stderrPath = stderrPath;
                     pjassOptions.timeoutMs = options.pjassTimeoutMs;
+                    pjassOptions.exampleLimit = options.emitPjassExamples;
                     auto pjassStart = std::chrono::steady_clock::now();
                     pjassResult = runPjass(pjassOptions);
                     auto pjassEnd = std::chrono::steady_clock::now();
