@@ -126,7 +126,18 @@ struct ParserStats {
     size_t functionObjectCalls = 0;
     size_t lambdas = 0;
     size_t lambdasLowered = 0;
+    size_t lambdasCodeContext = 0;
+    size_t lambdasBoolexprContext = 0;
+    size_t lambdasFunctionInterfaceContext = 0;
+    size_t lambdasNativeCallbackContext = 0;
+    size_t lambdasMethodCallbackContext = 0;
+    size_t lambdasUnknownContext = 0;
+    size_t lambdasCapturing = 0;
+    size_t lambdasRejected = 0;
+    size_t lambdasGeneratedFunctions = 0;
     size_t lambdasCapturingUnsupported = 0;
+    size_t functionInterfaceMaxEvaluateDepth = 0;
+    size_t functionInterfaceEvaluateTempLimit = 8;
     size_t prototypeWrappers = 0;
 };
 

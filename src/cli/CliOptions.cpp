@@ -44,6 +44,8 @@ CliParseResult parseCli(int argc, char** argv) {
             opt.scanOnly = true;
         } else if (arg == "--allow-unsupported") {
             opt.allowUnsupported = true;
+        } else if (arg == "--check-output-syntax-lite") {
+            opt.checkOutputSyntaxLite = true;
         } else if (arg == "--emit-preprocessed") {
             if (!requireValue(arg, opt.emitPreprocessedPath)) {
                 return result;
@@ -106,7 +108,7 @@ CliParseResult parseCli(int argc, char** argv) {
 }
 
 void printHelp(std::ostream& out) {
-    out << "vjassc phase4 - vJass/Zinc to JASS compiler prototype\n"
+    out << "vjassc phase5 - vJass/Zinc to JASS compiler prototype\n"
         << "\n"
         << "Usage:\n"
         << "  vjassc <input.j> -o <output.j> [--debug|--release]\n"
@@ -124,12 +126,13 @@ void printHelp(std::ostream& out) {
         << "  --emit-stats <path>          Write JSON statistics\n"
         << "  --import-path <dir>          Add import search directory; may be repeated\n"
         << "  --allow-unsupported          Allow unsupported declarations during scan-only\n"
+        << "  --check-output-syntax-lite   Fail if generated output still contains known high-level syntax\n"
         << "  --version                    Print version\n"
         << "  --help                       Print this help\n";
 }
 
 void printVersion(std::ostream& out) {
-    out << "vjassc phase4 0.4.0\n";
+    out << "vjassc phase5 0.5.0\n";
 }
 
 } // namespace vjassc

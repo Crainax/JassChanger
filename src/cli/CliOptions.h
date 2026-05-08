@@ -19,6 +19,7 @@ struct CliOptions {
     bool debugMode = false;
     bool scanOnly = false;
     bool allowUnsupported = false;
+    bool checkOutputSyntaxLite = false;
     bool showHelp = false;
     bool showVersion = false;
 };

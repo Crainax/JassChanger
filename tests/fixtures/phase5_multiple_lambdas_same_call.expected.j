@@ -5,14 +5,20 @@ globals
 endglobals
 
 
+function Accept takes code first, code second returns nothing
+endfunction
+
 function Test takes nothing returns nothing
-    local code c
-    set c = function vjlambda__1
+    call Accept(function vjlambda__1, function vjlambda__2)
 endfunction
 
 
 function vjlambda__1 takes nothing returns nothing
-    call BJDebugMsg("x")
+    call BJDebugMsg("first")
+endfunction
+
+function vjlambda__2 takes nothing returns nothing
+    call BJDebugMsg("second")
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing

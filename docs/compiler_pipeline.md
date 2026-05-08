@@ -50,16 +50,16 @@ The output can be written with `--emit-ast`.
 
 ## 6. Codegen
 
-`Phase1Codegen` is still the legacy class name, but it now emits the phase-4 supported subset:
+`Phase1Codegen` is still the legacy class name, but it now emits the phase-5 supported subset:
 
 1. one merged `globals` block with `LIBRARY_` constants
 2. struct support globals plus function-interface trigger/argument/result globals
 3. type declarations and deduplicated natives
 4. struct support functions and methods
 5. functions in sorted library order
-6. generated Zinc lambda functions
+6. generated anonymous lambda functions from Zinc and vJASS bodies
 7. function-interface wrapper functions and `vjassc__init_function_interfaces`
 8. `vjassc__init_structs` and `vjassc__init_libraries`
 9. `main` with init helper injection when present
 
-If unsupported language constructs or unsafe large lambda-heavy full codegen inputs are present, normal codegen fails instead of producing invalid success.
+If unsupported language constructs, capturing lambdas, unknown lambda contexts, function-interface signature errors, or output syntax-lite failures are present, normal codegen fails instead of producing invalid success.

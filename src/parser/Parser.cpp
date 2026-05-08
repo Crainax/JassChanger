@@ -32,6 +32,81 @@ bool isIdentPart(char c) {
     return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '$';
 }
 
+std::string stripStringRawcodeAndComment(const std::string& text) {
+    std::string out;
+    bool inString = false;
+    bool inRaw = false;
+    bool escaped = false;
+    for (size_t i = 0; i < text.size(); ++i) {
+        if (!inString && !inRaw && i + 1 < text.size() && text[i] == '/' && text[i + 1] == '/') {
+            break;
+        }
+        char c = text[i];
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                inString = false;
+            }
+            out.push_back(' ');
+            continue;
+        }
+        if (inRaw) {
+            if (c == '\'') {
+                inRaw = false;
+            }
+            out.push_back(' ');
+            continue;
+        }
+        if (c == '"') {
+            inString = true;
+            out.push_back(' ');
+            continue;
+        }
+        if (c == '\'') {
+            inRaw = true;
+            out.push_back(' ');
+            continue;
+        }
+        out.push_back(c);
+    }
+    return out;
+}
+
+std::string previousWordBefore(const std::string& text, size_t pos) {
+    while (pos > 0 && std::isspace(static_cast<unsigned char>(text[pos - 1]))) {
+        --pos;
+    }
+    size_t end = pos;
+    while (pos > 0 && isIdentPart(text[pos - 1])) {
+        --pos;
+    }
+    return text.substr(pos, end - pos);
+}
+
+size_t countAnonymousFunctions(const std::string& text) {
+    std::string code = stripStringRawcodeAndComment(text);
+    size_t count = 0;
+    size_t pos = 0;
+    while ((pos = code.find("function", pos)) != std::string::npos) {
+        char before = pos > 0 ? code[pos - 1] : '\0';
+        char afterWord = pos + 8 < code.size() ? code[pos + 8] : '\0';
+        if (!isIdentPart(before) && !isIdentPart(afterWord)) {
+            size_t after = pos + 8;
+            while (after < code.size() && std::isspace(static_cast<unsigned char>(code[after]))) {
+                ++after;
+            }
+            if (after < code.size() && code[after] == '(' && previousWordBefore(code, pos) != "extends") {
+                ++count;
+            }
+        }
+        pos += 8;
+    }
+    return count;
+}
+
 std::string readIdent(const std::string& text, size_t& index) {
     if (index >= text.size() || !isIdentStart(text[index])) {
         return {};
@@ -586,20 +661,7 @@ void Parser::preScanUnsupported(const std::vector<LogicalLine>& lines) {
         if (startsWithWord(accessText, "optional")) {
             accessText = trim(std::string_view(accessText).substr(8));
         }
-        if (!startsWithWord(accessText, "function") &&
-            accessText.find("extends function") == std::string::npos) {
-            size_t pos = 0;
-            while ((pos = accessText.find("function", pos)) != std::string::npos) {
-                size_t after = pos + 8;
-                while (after < accessText.size() && std::isspace(static_cast<unsigned char>(accessText[after]))) {
-                    ++after;
-                }
-                if (after < accessText.size() && accessText[after] == '(') {
-                    ++stats_.lambdas;
-                }
-                pos += 8;
-            }
-        }
+        stats_.lambdas += countAnonymousFunctions(accessText);
     }
 }
 

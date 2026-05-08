@@ -134,6 +134,9 @@ int main(int argc, char** argv) {
         {"phase4_zinc_lambda_code", "", fixtures / "phase4_zinc_lambda_code.expected.j"},
         {"phase4_zinc_lambda_trigger_action", "", fixtures / "phase4_zinc_lambda_trigger_action.expected.j"},
         {"phase4_zinc_lambda_interface", "", fixtures / "phase4_zinc_lambda_interface.expected.j"},
+        {"phase5_multiple_lambdas_same_call", "", fixtures / "phase5_multiple_lambdas_same_call.expected.j"},
+        {"phase5_nested_lambda", "", fixtures / "phase5_nested_lambda.expected.j"},
+        {"phase5_comment_lambda_ignored", "", fixtures / "phase5_comment_lambda_ignored.expected.j"},
     };
 
     bool ok = true;

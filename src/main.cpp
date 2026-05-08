@@ -8,11 +8,14 @@
 #include "preprocess/Preprocessor.h"
 #include "sema/ModuleExpander.h"
 #include "util/JsonWriter.h"
+#include "util/PathUtil.h"
 
 #include <chrono>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <vector>
 
 using namespace vjassc;
 
@@ -47,6 +50,168 @@ bool writeTextFile(const std::filesystem::path& path, const std::string& text) {
     }
     out << text;
     return true;
+}
+
+bool isWordPart(char c) {
+    return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '$';
+}
+
+std::string stripStringRawcodeAndComment(const std::string& line) {
+    std::string out;
+    bool inString = false;
+    bool inRaw = false;
+    bool escaped = false;
+    for (size_t i = 0; i < line.size(); ++i) {
+        if (!inString && !inRaw && i + 1 < line.size() && line[i] == '/' && line[i + 1] == '/') {
+            break;
+        }
+        char c = line[i];
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                inString = false;
+            }
+            out.push_back(' ');
+            continue;
+        }
+        if (inRaw) {
+            if (c == '\'') {
+                inRaw = false;
+            }
+            out.push_back(' ');
+            continue;
+        }
+        if (c == '"') {
+            inString = true;
+            out.push_back(' ');
+            continue;
+        }
+        if (c == '\'') {
+            inRaw = true;
+            out.push_back(' ');
+            continue;
+        }
+        out.push_back(c);
+    }
+    return out;
+}
+
+bool containsWord(const std::string& text, const std::string& word) {
+    size_t pos = 0;
+    while ((pos = text.find(word, pos)) != std::string::npos) {
+        char before = pos > 0 ? text[pos - 1] : '\0';
+        char after = pos + word.size() < text.size() ? text[pos + word.size()] : '\0';
+        if (!isWordPart(before) && !isWordPart(after)) {
+            return true;
+        }
+        pos += word.size();
+    }
+    return false;
+}
+
+bool containsAnonymousFunctionSyntax(const std::string& text) {
+    size_t pos = 0;
+    while ((pos = text.find("function", pos)) != std::string::npos) {
+        char before = pos > 0 ? text[pos - 1] : '\0';
+        char after = pos + 8 < text.size() ? text[pos + 8] : '\0';
+        if (!isWordPart(before) && !isWordPart(after)) {
+            size_t p = pos + 8;
+            while (p < text.size() && std::isspace(static_cast<unsigned char>(text[p]))) {
+                ++p;
+            }
+            if (p < text.size() && text[p] == '(') {
+                return true;
+            }
+        }
+        pos += 8;
+    }
+    return false;
+}
+
+std::vector<std::string> checkOutputSyntaxLite(const std::string& output) {
+    std::vector<std::string> errors;
+    std::istringstream in(output);
+    std::string line;
+    bool sawGlobals = false;
+    bool sawEndglobals = false;
+    bool sawMain = false;
+    bool inFunction = false;
+    bool sawExecutableInFunction = false;
+    size_t lineNo = 0;
+    const std::vector<std::string> forbiddenWords = {
+        "library", "endlibrary", "scope", "endscope", "struct", "endstruct",
+        "method", "endmethod", "module", "endmodule", "implement"
+    };
+    while (std::getline(in, line)) {
+        ++lineNo;
+        std::string rawTrim = trim(line);
+        if (rawTrim.find("//! zinc") != std::string::npos || rawTrim.find("//! endzinc") != std::string::npos) {
+            errors.push_back("line " + std::to_string(lineNo) + ": residual zinc marker");
+        }
+        std::string code = stripStringRawcodeAndComment(line);
+        std::string t = trim(code);
+        if (t.empty()) {
+            continue;
+        }
+        if (t == "globals") {
+            sawGlobals = true;
+        } else if (t == "endglobals") {
+            sawEndglobals = true;
+        }
+        if (startsWithWord(t, "function main")) {
+            sawMain = true;
+        }
+        for (const auto& word : forbiddenWords) {
+            if (containsWord(t, word)) {
+                errors.push_back("line " + std::to_string(lineNo) + ": residual '" + word + "'");
+                break;
+            }
+        }
+        if (t.find("static if") != std::string::npos) {
+            errors.push_back("line " + std::to_string(lineNo) + ": residual static if");
+        }
+        if (t.find("function interface") != std::string::npos) {
+            errors.push_back("line " + std::to_string(lineNo) + ": residual function interface");
+        }
+        if (containsAnonymousFunctionSyntax(t)) {
+            errors.push_back("line " + std::to_string(lineNo) + ": residual anonymous function syntax");
+        }
+        if (t.find("->") != std::string::npos) {
+            errors.push_back("line " + std::to_string(lineNo) + ": residual Zinc return arrow");
+        }
+        if (startsWithWord(t, "function")) {
+            inFunction = true;
+            sawExecutableInFunction = false;
+            if (startsWithWord(t, "function takes") || t.find(" takes ") == std::string::npos) {
+                errors.push_back("line " + std::to_string(lineNo) + ": invalid function header");
+            }
+            continue;
+        }
+        if (startsWithWord(t, "endfunction")) {
+            inFunction = false;
+            sawExecutableInFunction = false;
+            continue;
+        }
+        if (inFunction) {
+            if (startsWithWord(t, "local")) {
+                if (sawExecutableInFunction) {
+                    errors.push_back("line " + std::to_string(lineNo) + ": local declaration after executable statement");
+                }
+            } else {
+                sawExecutableInFunction = true;
+            }
+        }
+    }
+    if (!sawGlobals || !sawEndglobals) {
+        errors.push_back("missing globals/endglobals block");
+    }
+    if (!sawMain) {
+        errors.push_back("missing function main");
+    }
+    return errors;
 }
 
 std::string emitPreprocessed(const std::vector<LogicalLine>& lines) {
@@ -178,7 +343,18 @@ std::string emitStatsJson(const SourceManager& sources,
         << "  \"functionObjectCalls\": " << parser.functionObjectCalls << ",\n"
         << "  \"lambdas\": " << parser.lambdas << ",\n"
         << "  \"lambdasLowered\": " << parser.lambdasLowered << ",\n"
+        << "  \"lambdasCodeContext\": " << parser.lambdasCodeContext << ",\n"
+        << "  \"lambdasBoolexprContext\": " << parser.lambdasBoolexprContext << ",\n"
+        << "  \"lambdasFunctionInterfaceContext\": " << parser.lambdasFunctionInterfaceContext << ",\n"
+        << "  \"lambdasNativeCallbackContext\": " << parser.lambdasNativeCallbackContext << ",\n"
+        << "  \"lambdasMethodCallbackContext\": " << parser.lambdasMethodCallbackContext << ",\n"
+        << "  \"lambdasUnknownContext\": " << parser.lambdasUnknownContext << ",\n"
+        << "  \"lambdasCapturing\": " << parser.lambdasCapturing << ",\n"
+        << "  \"lambdasRejected\": " << parser.lambdasRejected << ",\n"
+        << "  \"lambdasGeneratedFunctions\": " << parser.lambdasGeneratedFunctions << ",\n"
         << "  \"lambdasCapturingUnsupported\": " << parser.lambdasCapturingUnsupported << ",\n"
+        << "  \"functionInterfaceMaxEvaluateDepth\": " << parser.functionInterfaceMaxEvaluateDepth << ",\n"
+        << "  \"functionInterfaceEvaluateTempLimit\": " << parser.functionInterfaceEvaluateTempLimit << ",\n"
         << "  \"prototypeWrappers\": " << parser.prototypeWrappers << ",\n"
         << "  \"textmacros\": " << pp.textmacros << ",\n"
         << "  \"runtextmacros\": " << pp.runtextmacros << ",\n"
@@ -286,9 +462,34 @@ int main(int argc, char** argv) {
     if (!options.scanOnly && !options.outputPath.empty()) {
         Phase1Codegen generator(diagnostics, CodegenOptions{options.scanOnly, options.allowUnsupported});
         codegen = generator.generate(expandedProgram);
+        expandedProgram.stats.lambdasLowered = codegen.lambdasLowered;
+        if (codegen.lambdasGeneratedFunctions > expandedProgram.stats.lambdas) {
+            expandedProgram.stats.lambdas = codegen.lambdasGeneratedFunctions;
+        }
+        expandedProgram.stats.lambdasCodeContext = codegen.lambdasCodeContext;
+        expandedProgram.stats.lambdasBoolexprContext = codegen.lambdasBoolexprContext;
+        expandedProgram.stats.lambdasFunctionInterfaceContext = codegen.lambdasFunctionInterfaceContext;
+        expandedProgram.stats.lambdasNativeCallbackContext = codegen.lambdasNativeCallbackContext;
+        expandedProgram.stats.lambdasMethodCallbackContext = codegen.lambdasMethodCallbackContext;
+        expandedProgram.stats.lambdasUnknownContext = codegen.lambdasUnknownContext;
+        expandedProgram.stats.lambdasCapturing = codegen.lambdasCapturing;
+        expandedProgram.stats.lambdasRejected = codegen.lambdasRejected;
+        expandedProgram.stats.lambdasGeneratedFunctions = codegen.lambdasGeneratedFunctions;
+        expandedProgram.stats.lambdasCapturingUnsupported = codegen.lambdasRejected;
+        expandedProgram.stats.functionInterfaceTargets = codegen.functionInterfaceTargets;
+        expandedProgram.stats.functionInterfaceCalls = codegen.functionInterfaceCalls;
+        expandedProgram.stats.functionObjectCalls = codegen.functionObjectCalls;
+        expandedProgram.stats.functionInterfaceMaxEvaluateDepth = codegen.functionInterfaceMaxEvaluateDepth;
+        expandedProgram.stats.functionInterfaceEvaluateTempLimit = codegen.functionInterfaceEvaluateTempLimit;
         ok = codegen.ok && ok;
         if (codegen.ok) {
             ok = writeTextFile(options.outputPath, codegen.output) && ok;
+            if (options.checkOutputSyntaxLite) {
+                for (const auto& error : checkOutputSyntaxLite(codegen.output)) {
+                    diagnostics.error(SourceLocation{}, "output syntax lite check failed: " + error);
+                    ok = false;
+                }
+            }
         }
     }
 

@@ -22,6 +22,21 @@ struct CodegenOptions {
 struct CodegenResult {
     bool ok = false;
     std::string output;
+    size_t lambdasLowered = 0;
+    size_t lambdasCodeContext = 0;
+    size_t lambdasBoolexprContext = 0;
+    size_t lambdasFunctionInterfaceContext = 0;
+    size_t lambdasNativeCallbackContext = 0;
+    size_t lambdasMethodCallbackContext = 0;
+    size_t lambdasUnknownContext = 0;
+    size_t lambdasCapturing = 0;
+    size_t lambdasRejected = 0;
+    size_t lambdasGeneratedFunctions = 0;
+    size_t functionInterfaceTargets = 0;
+    size_t functionInterfaceCalls = 0;
+    size_t functionObjectCalls = 0;
+    size_t functionInterfaceMaxEvaluateDepth = 0;
+    size_t functionInterfaceEvaluateTempLimit = 8;
 };
 
 class Phase1Codegen {
@@ -174,6 +189,8 @@ private:
 
     std::vector<std::string> lowerZincBody(const std::vector<std::string>& lines);
     std::vector<std::string> extractZincLambdas(const std::vector<std::string>& lines, SourceLocation loc);
+    void recordLambdaContext(const std::string& beforeText);
+    CodegenResult makeResult(bool ok);
     void lowerZincBlock(const std::vector<std::string>& lines, size_t& index, std::vector<std::string>& locals, std::vector<std::string>& body);
     void lowerZincSimpleStatement(const std::string& statement, std::vector<std::string>& locals, std::vector<std::string>& body);
 
@@ -195,6 +212,18 @@ private:
     std::unordered_map<const Decl*, std::vector<std::string>> processedZincFunctionBodies_;
     std::unordered_map<const MethodDecl*, std::vector<std::string>> processedZincMethodBodies_;
     size_t nextLambdaId_ = 1;
+    size_t lambdasCodeContext_ = 0;
+    size_t lambdasBoolexprContext_ = 0;
+    mutable size_t lambdasFunctionInterfaceContext_ = 0;
+    size_t lambdasNativeCallbackContext_ = 0;
+    size_t lambdasMethodCallbackContext_ = 0;
+    size_t lambdasUnknownContext_ = 0;
+    size_t lambdasCapturing_ = 0;
+    size_t lambdasRejected_ = 0;
+    mutable size_t functionInterfaceCalls_ = 0;
+    mutable size_t functionObjectCalls_ = 0;
+    mutable size_t functionInterfaceMaxEvaluateDepth_ = 0;
+    static constexpr size_t functionInterfaceEvaluateTempLimit_ = 8;
     const Decl* mainFunction_ = nullptr;
     const Decl* mainContainer_ = nullptr;
 };

@@ -6,13 +6,18 @@ endglobals
 
 
 function Test takes nothing returns nothing
-    local code c
-    set c = function vjlambda__1
+    local group g
+    set g = CreateGroup()
+    call ForGroup(g, function vjlambda__1)
 endfunction
 
 
+function vjlambda__2 takes nothing returns nothing
+    call BJDebugMsg("nested")
+endfunction
+
 function vjlambda__1 takes nothing returns nothing
-    call BJDebugMsg("x")
+    call TimerStart(CreateTimer(), 1.0, false, function vjlambda__2)
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing
