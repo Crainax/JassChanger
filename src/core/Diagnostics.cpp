@@ -33,7 +33,7 @@ void Diagnostics::error(SourceLocation loc, std::string message) {
 }
 
 void Diagnostics::unsupported(SourceLocation loc, std::string feature) {
-    report(Severity::Warning, loc, "phase2 does not lower '" + feature + "'; counted as unsupported declaration", true);
+    report(Severity::Warning, loc, "current phase does not lower '" + feature + "'; counted as unsupported declaration", true);
 }
 
 bool Diagnostics::hasErrors() const {

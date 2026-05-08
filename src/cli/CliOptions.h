@@ -13,6 +13,7 @@ struct CliOptions {
     std::filesystem::path emitPreprocessedPath;
     std::filesystem::path emitTokensPath;
     std::filesystem::path emitAstPath;
+    std::filesystem::path emitExpandedAstPath;
     std::filesystem::path emitStatsPath;
     std::vector<std::filesystem::path> importPaths;
     bool debugMode = false;

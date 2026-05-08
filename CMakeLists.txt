@@ -13,10 +13,14 @@ add_executable(vjassc
     src/core/StringInterner.cpp
     src/preprocess/Preprocessor.cpp
     src/preprocess/TextMacro.cpp
+    src/condition/BoolExpr.cpp
+    src/condition/StaticIfPruner.cpp
     src/lexer/Lexer.cpp
     src/parser/Parser.cpp
     src/sema/SymbolTable.cpp
     src/sema/LibraryGraph.cpp
+    src/sema/ModuleTable.cpp
+    src/sema/ModuleExpander.cpp
     src/codegen/CodeWriter.cpp
     src/codegen/Phase1Codegen.cpp
     src/util/PathUtil.cpp

@@ -115,6 +115,14 @@ int main(int argc, char** argv) {
         {"phase2_fixed_array_zinc", "", fixtures / "phase2_fixed_array_zinc.expected.j"},
         {"phase2_static_code_ref", "", fixtures / "phase2_static_code_ref.expected.j"},
         {"phase2_real_fragment_zinc", "", fixtures / "phase2_real_fragment_zinc.expected.j"},
+        {"phase3_static_if_vjass", "", fixtures / "phase3_static_if_vjass.expected.j"},
+        {"phase3_static_if_debug", "--debug", fixtures / "phase3_static_if_debug.expected.j"},
+        {"phase3_static_if_zinc", "", fixtures / "phase3_static_if_zinc.expected.j"},
+        {"phase3_module_vjass_simple", "", fixtures / "phase3_module_vjass_simple.expected.j"},
+        {"phase3_module_vjass_nested", "", fixtures / "phase3_module_vjass_nested.expected.j"},
+        {"phase3_module_zinc_cross_library", "", fixtures / "phase3_module_zinc_cross_library.expected.j"},
+        {"phase3_module_zinc_optional_missing", "", fixtures / "phase3_module_zinc_optional_missing.expected.j"},
+        {"phase3_module_oninit_ondestroy", "", fixtures / "phase3_module_oninit_ondestroy.expected.j"},
     };
 
     bool ok = true;
@@ -123,6 +131,12 @@ int main(int argc, char** argv) {
     }
     ok = runExpectFail(exe, fixtures, outDir, "phase2_negative_duplicate_field", "") && ok;
     ok = runExpectFail(exe, fixtures, outDir, "phase2_negative_method_outside_struct", "") && ok;
+    ok = runExpectFail(exe, fixtures, outDir, "phase3_negative_static_if_bad_expr", "") && ok;
+    ok = runExpectFail(exe, fixtures, outDir, "phase3_negative_static_if_missing_endif", "") && ok;
+    ok = runExpectFail(exe, fixtures, outDir, "phase3_negative_module_missing", "") && ok;
+    ok = runExpectFail(exe, fixtures, outDir, "phase3_negative_module_cycle", "") && ok;
+    ok = runExpectFail(exe, fixtures, outDir, "phase3_negative_module_duplicate_field", "") && ok;
+    ok = runExpectFail(exe, fixtures, outDir, "phase3_negative_module_private_cross_library", "") && ok;
 
     fs::path stats = outDir / "09.stats.json";
     std::string scan = exe.string() + " " + quote(fixtures / "09_unsupported_struct.in.j") +
@@ -132,6 +146,18 @@ int main(int argc, char** argv) {
     if (statsText.find("\"structsUnsupported\": 0") == std::string::npos ||
         statsText.find("\"methodsUnsupported\": 0") == std::string::npos) {
         std::cerr << "09_unsupported_struct did not report struct/method unsupported counters at 0\n";
+        ok = false;
+    }
+
+    stats = outDir / "phase3.stats.json";
+    scan = exe.string() + " " + quote(fixtures / "phase3_static_if_zinc.in.j") +
+           " --scan-only --allow-unsupported --emit-stats " + quote(stats);
+    ok = runCommand(scan) && ok;
+    statsText = readFile(stats);
+    if (statsText.find("\"staticIfUnsupported\": 0") == std::string::npos ||
+        statsText.find("\"modulesUnsupported\": 0") == std::string::npos ||
+        statsText.find("\"staticIfs\": 2") == std::string::npos) {
+        std::cerr << "phase3 static-if scan did not report expected counters\n";
         ok = false;
     }
 

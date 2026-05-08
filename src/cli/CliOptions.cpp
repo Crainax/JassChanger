@@ -7,7 +7,8 @@ namespace {
 
 bool needsValue(const std::string& arg) {
     return arg == "-o" || arg == "--emit-preprocessed" || arg == "--emit-tokens" ||
-           arg == "--emit-ast" || arg == "--emit-stats" || arg == "--import-path";
+           arg == "--emit-ast" || arg == "--emit-expanded-ast" || arg == "--emit-stats" ||
+           arg == "--import-path";
 }
 
 } // namespace
@@ -55,6 +56,10 @@ CliParseResult parseCli(int argc, char** argv) {
             if (!requireValue(arg, opt.emitAstPath)) {
                 return result;
             }
+        } else if (arg == "--emit-expanded-ast") {
+            if (!requireValue(arg, opt.emitExpandedAstPath)) {
+                return result;
+            }
         } else if (arg == "--emit-stats") {
             if (!requireValue(arg, opt.emitStatsPath)) {
                 return result;
@@ -88,7 +93,8 @@ CliParseResult parseCli(int argc, char** argv) {
 
     if (!opt.scanOnly && !opt.showHelp && !opt.showVersion && opt.outputPath.empty()) {
         const bool emitsOnly = !opt.emitPreprocessedPath.empty() || !opt.emitTokensPath.empty() ||
-                               !opt.emitAstPath.empty() || !opt.emitStatsPath.empty();
+                               !opt.emitAstPath.empty() || !opt.emitExpandedAstPath.empty() ||
+                               !opt.emitStatsPath.empty();
         if (!emitsOnly) {
             result.error = "missing output path; use -o <output.j> or --scan-only";
             return result;
@@ -100,7 +106,7 @@ CliParseResult parseCli(int argc, char** argv) {
 }
 
 void printHelp(std::ostream& out) {
-    out << "vjassc phase2 - vJass/Zinc to JASS compiler prototype\n"
+    out << "vjassc phase3 - vJass/Zinc to JASS compiler prototype\n"
         << "\n"
         << "Usage:\n"
         << "  vjassc <input.j> -o <output.j> [--debug|--release]\n"
@@ -114,6 +120,7 @@ void printHelp(std::ostream& out) {
         << "  --emit-preprocessed <path>   Write preprocessed logical source\n"
         << "  --emit-tokens <path>         Write token stream\n"
         << "  --emit-ast <path>            Write AST dump\n"
+        << "  --emit-expanded-ast <path>   Write AST after module expansion\n"
         << "  --emit-stats <path>          Write JSON statistics\n"
         << "  --import-path <dir>          Add import search directory; may be repeated\n"
         << "  --allow-unsupported          Allow unsupported declarations during scan-only\n"
@@ -122,7 +129,7 @@ void printHelp(std::ostream& out) {
 }
 
 void printVersion(std::ostream& out) {
-    out << "vjassc phase2 0.2.0\n";
+    out << "vjassc phase3 0.3.0\n";
 }
 
 } // namespace vjassc

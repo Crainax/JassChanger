@@ -1,10 +1,12 @@
 #include "cli/CliOptions.h"
 #include "codegen/Phase1Codegen.h"
+#include "condition/StaticIfPruner.h"
 #include "core/Diagnostics.h"
 #include "core/SourceManager.h"
 #include "lexer/Lexer.h"
 #include "parser/Parser.h"
 #include "preprocess/Preprocessor.h"
+#include "sema/ModuleExpander.h"
 #include "util/JsonWriter.h"
 
 #include <chrono>
@@ -19,8 +21,10 @@ namespace {
 struct Timings {
     long long read = 0;
     long long preprocess = 0;
+    long long staticIf = 0;
     long long lex = 0;
     long long parse = 0;
+    long long moduleExpand = 0;
     long long total = 0;
 };
 
@@ -112,6 +116,13 @@ void emitAstDecl(std::ostream& out, const Decl& decl, int indent) {
         }
         out << ", returns: " << method.returnType.name << ", params: " << method.params.size() << '\n';
     }
+    for (const auto& use : decl.moduleUses) {
+        out << pad << "  - moduleUse: " << use.name;
+        if (use.optional) {
+            out << ", optional";
+        }
+        out << '\n';
+    }
     for (const auto& child : decl.children) {
         emitAstDecl(out, child, indent + 2);
     }
@@ -144,6 +155,13 @@ std::string emitStatsJson(const SourceManager& sources,
         << "  \"natives\": " << parser.natives << ",\n"
         << "  \"types\": " << parser.types << ",\n"
         << "  \"functions\": " << parser.functions << ",\n"
+        << "  \"modules\": " << parser.modules << ",\n"
+        << "  \"moduleUses\": " << parser.moduleUses << ",\n"
+        << "  \"staticIfs\": " << parser.staticIfs << ",\n"
+        << "  \"staticIfResolvedTrue\": " << parser.staticIfResolvedTrue << ",\n"
+        << "  \"staticIfResolvedFalse\": " << parser.staticIfResolvedFalse << ",\n"
+        << "  \"staticIfPrunedLines\": " << parser.staticIfPrunedLines << ",\n"
+        << "  \"moduleExpansions\": " << parser.moduleExpansions << ",\n"
         << "  \"structsUnsupported\": " << parser.structsUnsupported << ",\n"
         << "  \"methodsUnsupported\": " << parser.methodsUnsupported << ",\n"
         << "  \"modulesUnsupported\": " << parser.modulesUnsupported << ",\n"
@@ -159,8 +177,10 @@ std::string emitStatsJson(const SourceManager& sources,
         << "  \"timingMs\": {\n"
         << "    \"read\": " << timings.read << ",\n"
         << "    \"preprocess\": " << timings.preprocess << ",\n"
+        << "    \"staticIf\": " << timings.staticIf << ",\n"
         << "    \"lex\": " << timings.lex << ",\n"
         << "    \"parse\": " << timings.parse << ",\n"
+        << "    \"moduleExpand\": " << timings.moduleExpand << ",\n"
         << "    \"total\": " << timings.total << "\n"
         << "  }\n"
         << "}\n";
@@ -195,25 +215,49 @@ int main(int argc, char** argv) {
     PreprocessResult preprocessed = preprocessor.run(options.inputPath);
     auto ppEnd = std::chrono::steady_clock::now();
 
+    StaticIfSymbolCollector staticIfCollector;
+    StaticIfPruner staticIfPruner;
+    auto staticIfStart = std::chrono::steady_clock::now();
+    StaticIfSymbols staticIfSymbols = staticIfCollector.collect(preprocessed.lines, options.debugMode, diagnostics);
+    StaticIfPruneResult pruned = staticIfPruner.prune(preprocessed.lines, staticIfSymbols, diagnostics);
+    auto staticIfEnd = std::chrono::steady_clock::now();
+
     Lexer lexer(diagnostics);
     auto lexStart = std::chrono::steady_clock::now();
-    LexerResult lexed = lexer.lex(preprocessed.lines);
+    LexerResult lexed = lexer.lex(pruned.lines);
     auto lexEnd = std::chrono::steady_clock::now();
 
     Parser parser(diagnostics);
     auto parseStart = std::chrono::steady_clock::now();
-    Program program = parser.parse(preprocessed.lines);
+    Program program = parser.parse(pruned.lines);
     auto parseEnd = std::chrono::steady_clock::now();
+
+    program.stats.staticIfs = pruned.stats.staticIfs;
+    program.stats.staticIfResolvedTrue = pruned.stats.resolvedTrue;
+    program.stats.staticIfResolvedFalse = pruned.stats.resolvedFalse;
+    program.stats.staticIfPrunedLines = pruned.stats.prunedLines;
+
+    ModuleExpansionStats moduleStats;
+    ModuleExpander moduleExpander;
+    auto moduleStart = std::chrono::steady_clock::now();
+    Program expandedProgram = moduleExpander.expand(program, diagnostics, moduleStats);
+    auto moduleEnd = std::chrono::steady_clock::now();
+    expandedProgram.stats.staticIfs = program.stats.staticIfs;
+    expandedProgram.stats.staticIfResolvedTrue = program.stats.staticIfResolvedTrue;
+    expandedProgram.stats.staticIfResolvedFalse = program.stats.staticIfResolvedFalse;
+    expandedProgram.stats.staticIfPrunedLines = program.stats.staticIfPrunedLines;
 
     Timings timings;
     timings.read = sources.readElapsedMs();
     timings.preprocess = elapsedMs(ppStart, ppEnd);
+    timings.staticIf = elapsedMs(staticIfStart, staticIfEnd);
     timings.lex = elapsedMs(lexStart, lexEnd);
     timings.parse = elapsedMs(parseStart, parseEnd);
+    timings.moduleExpand = elapsedMs(moduleStart, moduleEnd);
 
     bool ok = true;
     if (!options.emitPreprocessedPath.empty()) {
-        ok = writeTextFile(options.emitPreprocessedPath, emitPreprocessed(preprocessed.lines)) && ok;
+        ok = writeTextFile(options.emitPreprocessedPath, emitPreprocessed(pruned.lines)) && ok;
     }
     if (!options.emitTokensPath.empty()) {
         ok = writeTextFile(options.emitTokensPath, emitTokens(sources, lexed.tokens)) && ok;
@@ -221,11 +265,14 @@ int main(int argc, char** argv) {
     if (!options.emitAstPath.empty()) {
         ok = writeTextFile(options.emitAstPath, emitAst(program)) && ok;
     }
+    if (!options.emitExpandedAstPath.empty()) {
+        ok = writeTextFile(options.emitExpandedAstPath, emitAst(expandedProgram)) && ok;
+    }
 
     CodegenResult codegen;
     if (!options.scanOnly && !options.outputPath.empty()) {
         Phase1Codegen generator(diagnostics, CodegenOptions{options.scanOnly, options.allowUnsupported});
-        codegen = generator.generate(program);
+        codegen = generator.generate(expandedProgram);
         ok = codegen.ok && ok;
         if (codegen.ok) {
             ok = writeTextFile(options.outputPath, codegen.output) && ok;
@@ -234,7 +281,7 @@ int main(int argc, char** argv) {
 
     timings.total = elapsedMs(totalStart, std::chrono::steady_clock::now());
     if (!options.emitStatsPath.empty()) {
-        ok = writeTextFile(options.emitStatsPath, emitStatsJson(sources, preprocessed.stats, program.stats, diagnostics, timings)) && ok;
+        ok = writeTextFile(options.emitStatsPath, emitStatsJson(sources, preprocessed.stats, expandedProgram.stats, diagnostics, timings)) && ok;
     }
 
     if (!diagnostics.all().empty()) {
@@ -242,12 +289,12 @@ int main(int argc, char** argv) {
     }
 
     if (!ok) {
-        return program.hasUnsupported() ? 6 : 5;
+        return expandedProgram.hasUnsupported() ? 6 : 5;
     }
     if (diagnostics.hasErrors()) {
         return 4;
     }
-    if (program.hasUnsupported() && !options.allowUnsupported && !options.scanOnly) {
+    if (expandedProgram.hasUnsupported() && !options.allowUnsupported && !options.scanOnly) {
         return 6;
     }
     return 0;

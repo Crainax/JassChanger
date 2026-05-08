@@ -16,6 +16,7 @@ enum class DeclKind {
     Library,
     Scope,
     Struct,
+    Module,
     Unsupported,
 };
 
@@ -64,6 +65,14 @@ struct MethodDecl {
     TypeRef returnType;
     std::vector<LogicalLine> bodyLines;
     std::string generatedName;
+    std::string moduleOriginName;
+};
+
+struct ModuleUseDecl {
+    std::string name;
+    SourceLocation loc;
+    bool optional = false;
+    SyntaxMode mode = SyntaxMode::JassLike;
 };
 
 struct Decl {
@@ -82,8 +91,10 @@ struct Decl {
     std::vector<Decl> children;
     std::vector<FieldDecl> fields;
     std::vector<MethodDecl> methods;
+    std::vector<ModuleUseDecl> moduleUses;
     std::string generatedName;
     std::string prefix;
+    std::string moduleOriginName;
 };
 
 struct ParserStats {
@@ -94,6 +105,13 @@ struct ParserStats {
     size_t natives = 0;
     size_t types = 0;
     size_t functions = 0;
+    size_t modules = 0;
+    size_t moduleUses = 0;
+    size_t staticIfs = 0;
+    size_t staticIfResolvedTrue = 0;
+    size_t staticIfResolvedFalse = 0;
+    size_t staticIfPrunedLines = 0;
+    size_t moduleExpansions = 0;
     size_t structsUnsupported = 0;
     size_t methodsUnsupported = 0;
     size_t modulesUnsupported = 0;

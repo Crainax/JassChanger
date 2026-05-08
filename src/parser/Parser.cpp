@@ -511,6 +511,8 @@ const char* declKindName(DeclKind kind) {
         return "Scope";
     case DeclKind::Struct:
         return "Struct";
+    case DeclKind::Module:
+        return "Module";
     case DeclKind::Unsupported:
         return "Unsupported";
     }
@@ -555,13 +557,7 @@ void Parser::preScanUnsupported(const std::vector<LogicalLine>& lines) {
         if (startsWithWord(accessText, "optional")) {
             accessText = trim(std::string_view(accessText).substr(8));
         }
-        if (startsWithWord(accessText, "module")) {
-            ++stats_.modulesUnsupported;
-            diagnostics_.unsupported(logical.loc, "module");
-        } else if (startsWithWord(accessText, "static if")) {
-            ++stats_.staticIfUnsupported;
-            diagnostics_.unsupported(logical.loc, "static if");
-        } else if (startsWithWord(accessText, "function interface")) {
+        if (startsWithWord(accessText, "function interface")) {
             ++stats_.functionInterfacesUnsupported;
             diagnostics_.unsupported(logical.loc, "function interface");
         }
@@ -589,12 +585,26 @@ std::vector<Decl> Parser::parseJassRange(const std::vector<LogicalLine>& lines, 
                 decls.push_back(parseZincLibrary(lines, index));
                 continue;
             }
+            if (startsWithWord(accessText, "function interface")) {
+                Decl decl;
+                decl.kind = DeclKind::Unsupported;
+                decl.loc = logical.loc;
+                decl.unsupportedFeature = "function interface";
+                decl.lines.push_back(logical.text);
+                decls.push_back(std::move(decl));
+                ++index;
+                continue;
+            }
             if (startsWithWord(accessText, "function")) {
                 decls.push_back(parseZincFunction(lines, index));
                 continue;
             }
             if (startsWithWord(accessText, "struct")) {
                 decls.push_back(parseZincStruct(lines, index));
+                continue;
+            }
+            if (startsWithWord(accessText, "module")) {
+                decls.push_back(parseZincModule(lines, index));
                 continue;
             }
             if (startsWithWord(accessText, "method") || startsWithWord(accessText, "static method")) {
@@ -616,7 +626,15 @@ std::vector<Decl> Parser::parseJassRange(const std::vector<LogicalLine>& lines, 
             std::string accessText = t;
             std::string access = parseAccessPrefix(accessText);
             (void)access;
-            if (startsWithWord(accessText, "function")) {
+            if (startsWithWord(accessText, "function interface")) {
+                Decl decl;
+                decl.kind = DeclKind::Unsupported;
+                decl.loc = logical.loc;
+                decl.unsupportedFeature = "function interface";
+                decl.lines.push_back(logical.text);
+                decls.push_back(std::move(decl));
+                ++index;
+            } else if (startsWithWord(accessText, "function")) {
                 decls.push_back(parseJassFunction(lines, index));
             } else if (startsWithWord(t, "native")) {
                 Decl decl;
@@ -643,21 +661,13 @@ std::vector<Decl> Parser::parseJassRange(const std::vector<LogicalLine>& lines, 
             } else if (startsWithWord(accessText, "method") || startsWithWord(accessText, "static method")) {
                 diagnostics_.error(logical.loc, "method declaration outside struct");
                 ++index;
-            } else if (startsWithWord(accessText, "module") || startsWithWord(accessText, "optional module")) {
-                decls.push_back(parseUnsupportedBlock(lines, index, "module", "endmodule"));
+            } else if (startsWithWord(accessText, "module")) {
+                decls.push_back(parseJassModule(lines, index));
             } else if (startsWithWord(accessText, "static if")) {
                 Decl decl;
                 decl.kind = DeclKind::Unsupported;
                 decl.loc = logical.loc;
                 decl.unsupportedFeature = "static if";
-                decl.lines.push_back(logical.text);
-                decls.push_back(std::move(decl));
-                ++index;
-            } else if (startsWithWord(t, "function interface")) {
-                Decl decl;
-                decl.kind = DeclKind::Unsupported;
-                decl.loc = logical.loc;
-                decl.unsupportedFeature = "function interface";
                 decl.lines.push_back(logical.text);
                 decls.push_back(std::move(decl));
                 ++index;
@@ -805,13 +815,7 @@ Decl Parser::parseJassStruct(const std::vector<LogicalLine>& lines, size_t& inde
             continue;
         }
         if (startsWithWord(memberText, "module") || startsWithWord(memberText, "implement")) {
-            Decl child;
-            child.kind = DeclKind::Unsupported;
-            child.mode = SyntaxMode::JassLike;
-            child.loc = lines[index].loc;
-            child.unsupportedFeature = "module";
-            child.lines.push_back(lines[index].text);
-            decl.children.push_back(std::move(child));
+            decl.moduleUses.push_back(parseJassModuleUse(lines[index]));
             ++index;
             continue;
         }
@@ -838,6 +842,114 @@ Decl Parser::parseJassStruct(const std::vector<LogicalLine>& lines, size_t& inde
     }
     if (!closed) {
         diagnostics_.error(start.loc, "missing endstruct for struct '" + decl.name + "'");
+    }
+    return decl;
+}
+
+ModuleUseDecl Parser::parseJassModuleUse(const LogicalLine& line) {
+    std::string text = stripTrailingSemicolon(stripLineComment(line.text));
+    std::string accessText = text;
+    (void)parseAccessPrefix(accessText);
+    ModuleUseDecl use;
+    use.loc = line.loc;
+    use.mode = SyntaxMode::JassLike;
+    if (startsWithWord(accessText, "implement")) {
+        accessText = trim(std::string_view(accessText).substr(9));
+        if (startsWithWord(accessText, "optional")) {
+            use.optional = true;
+            accessText = trim(std::string_view(accessText).substr(8));
+        }
+    } else {
+        if (startsWithWord(accessText, "optional")) {
+            use.optional = true;
+            accessText = trim(std::string_view(accessText).substr(8));
+        }
+        if (startsWithWord(accessText, "module")) {
+            accessText = trim(std::string_view(accessText).substr(6));
+        }
+    }
+    size_t nameIdx = 0;
+    use.name = readIdent(accessText, nameIdx);
+    if (use.name.empty()) {
+        diagnostics_.error(line.loc, "expected module name");
+    }
+    ++stats_.moduleUses;
+    return use;
+}
+
+Decl Parser::parseJassModule(const std::vector<LogicalLine>& lines, size_t& index) {
+    const auto& start = lines[index];
+    std::string header = trim(start.text);
+    std::string accessText = header;
+    std::string access = parseAccessPrefix(accessText);
+    if (!startsWithWord(accessText, "module")) {
+        diagnostics_.error(start.loc, "expected module declaration");
+        ++index;
+        return Decl{};
+    }
+    accessText = trim(std::string_view(accessText).substr(6));
+    size_t nameIdx = 0;
+    std::string name = readIdent(accessText, nameIdx);
+
+    Decl decl;
+    decl.kind = DeclKind::Module;
+    decl.mode = SyntaxMode::JassLike;
+    decl.loc = start.loc;
+    decl.access = access;
+    decl.name = name;
+    decl.lines.push_back(start.text);
+    ++stats_.modules;
+    ++index;
+
+    bool closed = false;
+    while (index < lines.size()) {
+        std::string t = trim(lines[index].text);
+        if (isCommentOrEmpty(t)) {
+            ++index;
+            continue;
+        }
+        if (startsWithWord(t, "endmodule")) {
+            decl.lines.push_back(lines[index].text);
+            ++index;
+            closed = true;
+            break;
+        }
+
+        std::string memberText = t;
+        (void)parseAccessPrefix(memberText);
+        if (startsWithWord(memberText, "static method") || startsWithWord(memberText, "method")) {
+            decl.methods.push_back(parseJassMethod(lines, index));
+            continue;
+        }
+        if (startsWithWord(memberText, "function")) {
+            diagnostics_.error(lines[index].loc, "function declaration inside module is not supported");
+            decl.children.push_back(parseUnsupportedBlock(lines, index, "function in module", "endfunction"));
+            continue;
+        }
+        if (startsWithWord(memberText, "module") || startsWithWord(memberText, "implement")) {
+            decl.moduleUses.push_back(parseJassModuleUse(lines[index]));
+            ++index;
+            continue;
+        }
+        if (startsWithWord(memberText, "stub") || startsWithWord(memberText, "operator") ||
+            startsWithWord(memberText, "super") || startsWithWord(memberText, "interface") ||
+            startsWithWord(memberText, "delegate")) {
+            Decl child;
+            child.kind = DeclKind::Unsupported;
+            child.mode = SyntaxMode::JassLike;
+            child.loc = lines[index].loc;
+            child.unsupportedFeature = firstWord(memberText);
+            child.lines.push_back(lines[index].text);
+            decl.children.push_back(std::move(child));
+            ++index;
+            continue;
+        }
+        auto fields = parseFieldDecls(lines[index]);
+        decl.fields.insert(decl.fields.end(), fields.begin(), fields.end());
+        ++index;
+    }
+    if (!closed) {
+        diagnostics_.error(start.loc, "missing endmodule for module '" + decl.name + "'");
     }
     return decl;
 }
@@ -982,17 +1094,29 @@ std::vector<Decl> Parser::parseZincMembers(const std::vector<LogicalLine>& lines
         }
         std::string accessText = t;
         std::string access = parseAccessPrefix(accessText);
-        if (startsWithWord(accessText, "function")) {
+        if (startsWithWord(accessText, "function interface")) {
+            Decl decl;
+            decl.kind = DeclKind::Unsupported;
+            decl.mode = SyntaxMode::Zinc;
+            decl.loc = lines[index].loc;
+            decl.unsupportedFeature = "function interface";
+            decl.lines.push_back(lines[index].text);
+            decls.push_back(std::move(decl));
+            ++index;
+        } else if (startsWithWord(accessText, "function")) {
             Decl fn = parseZincFunction(lines, index);
             fn.access = access;
             decls.push_back(std::move(fn));
         } else if (startsWithWord(accessText, "struct")) {
             decls.push_back(parseZincStruct(lines, index));
+        } else if (startsWithWord(accessText, "module")) {
+            decls.push_back(parseZincModule(lines, index));
         } else if (startsWithWord(accessText, "method") || startsWithWord(accessText, "static method")) {
             diagnostics_.error(lines[index].loc, "method declaration outside struct");
             ++index;
-        } else if (startsWithWord(accessText, "module") || startsWithWord(accessText, "optional module")) {
-            decls.push_back(parseZincUnsupportedBlock(lines, index, "module"));
+        } else if (startsWithWord(accessText, "optional module")) {
+            diagnostics_.error(lines[index].loc, "module use outside struct/module");
+            ++index;
         } else if (startsWithWord(accessText, "static if")) {
             decls.push_back(parseZincUnsupportedBlock(lines, index, "static if"));
         } else if (startsAnyTypeDecl(accessText) || startsWithWord(accessText, "constant")) {
@@ -1161,11 +1285,151 @@ Decl Parser::parseZincStruct(const std::vector<LogicalLine>& lines, size_t& inde
         }
         if (startsWithWord(memberText, "module") || startsWithWord(memberText, "optional module") ||
             startsWithWord(memberText, "implement")) {
-            decl.children.push_back(parseZincUnsupportedBlock(body, bodyIndex, "module"));
+            decl.moduleUses.push_back(parseZincModuleUse(body[bodyIndex]));
+            ++bodyIndex;
             continue;
         }
         if (startsWithWord(memberText, "static if")) {
             decl.children.push_back(parseZincUnsupportedBlock(body, bodyIndex, "static if"));
+            continue;
+        }
+        if (startsWithWord(memberText, "stub") || startsWithWord(memberText, "operator") ||
+            startsWithWord(memberText, "super") || startsWithWord(memberText, "interface") ||
+            startsWithWord(memberText, "delegate")) {
+            Decl child;
+            child.kind = DeclKind::Unsupported;
+            child.mode = SyntaxMode::Zinc;
+            child.loc = body[bodyIndex].loc;
+            child.unsupportedFeature = firstWord(memberText);
+            child.lines.push_back(body[bodyIndex].text);
+            decl.children.push_back(std::move(child));
+            ++bodyIndex;
+            continue;
+        }
+        auto fields = parseFieldDecls(body[bodyIndex]);
+        decl.fields.insert(decl.fields.end(), fields.begin(), fields.end());
+        ++bodyIndex;
+    }
+
+    return decl;
+}
+
+ModuleUseDecl Parser::parseZincModuleUse(const LogicalLine& line) {
+    std::string text = stripTrailingSemicolon(stripLineComment(line.text));
+    std::string accessText = text;
+    (void)parseAccessPrefix(accessText);
+    ModuleUseDecl use;
+    use.loc = line.loc;
+    use.mode = SyntaxMode::Zinc;
+    if (startsWithWord(accessText, "optional")) {
+        use.optional = true;
+        accessText = trim(std::string_view(accessText).substr(8));
+    }
+    if (startsWithWord(accessText, "module")) {
+        accessText = trim(std::string_view(accessText).substr(6));
+    } else if (startsWithWord(accessText, "implement")) {
+        accessText = trim(std::string_view(accessText).substr(9));
+        if (startsWithWord(accessText, "optional")) {
+            use.optional = true;
+            accessText = trim(std::string_view(accessText).substr(8));
+        }
+    }
+    size_t nameIdx = 0;
+    use.name = readIdent(accessText, nameIdx);
+    if (use.name.empty()) {
+        diagnostics_.error(line.loc, "expected module name");
+    }
+    ++stats_.moduleUses;
+    return use;
+}
+
+Decl Parser::parseZincModule(const std::vector<LogicalLine>& lines, size_t& index) {
+    const auto& start = lines[index];
+    std::string header = trim(start.text);
+    std::string accessText = header;
+    std::string access = parseAccessPrefix(accessText);
+    if (!startsWithWord(accessText, "module")) {
+        diagnostics_.error(start.loc, "expected module declaration");
+        ++index;
+        return Decl{};
+    }
+    accessText = trim(std::string_view(accessText).substr(6));
+    size_t nameIdx = 0;
+    std::string name = readIdent(accessText, nameIdx);
+
+    Decl decl;
+    decl.kind = DeclKind::Module;
+    decl.mode = SyntaxMode::Zinc;
+    decl.loc = start.loc;
+    decl.access = access;
+    decl.name = name;
+    decl.lines.push_back(start.text);
+    ++stats_.modules;
+
+    std::vector<LogicalLine> body;
+    bool seenOpen = false;
+    int depth = 0;
+    while (index < lines.size()) {
+        const auto& logical = lines[index];
+        std::string text = logical.text;
+        int delta = braceDelta(text);
+        if (!seenOpen) {
+            size_t brace = text.find('{');
+            if (brace != std::string::npos) {
+                seenOpen = true;
+                std::string after = text.substr(brace + 1);
+                int afterDelta = braceDelta(after);
+                depth = 1 + afterDelta;
+                if (depth <= 0) {
+                    size_t close = after.rfind('}');
+                    std::string before = close == std::string::npos ? after : after.substr(0, close);
+                    if (!trim(before).empty()) {
+                        body.push_back(LogicalLine{SyntaxMode::Zinc, logical.loc, before});
+                    }
+                    ++index;
+                    break;
+                }
+                if (!trim(after).empty()) {
+                    body.push_back(LogicalLine{SyntaxMode::Zinc, logical.loc, after});
+                }
+            }
+            ++index;
+            continue;
+        }
+        if (depth + delta <= 0) {
+            size_t close = text.rfind('}');
+            std::string before = close == std::string::npos ? text : text.substr(0, close);
+            if (!trim(before).empty()) {
+                body.push_back(LogicalLine{SyntaxMode::Zinc, logical.loc, before});
+            }
+            ++index;
+            break;
+        }
+        body.push_back(logical);
+        depth += delta;
+        ++index;
+    }
+    if (!seenOpen) {
+        diagnostics_.error(start.loc, "missing '{' for module '" + decl.name + "'");
+    }
+
+    size_t bodyIndex = 0;
+    while (bodyIndex < body.size()) {
+        std::string t = trim(body[bodyIndex].text);
+        if (isCommentOrEmpty(t) || t == "}") {
+            ++bodyIndex;
+            continue;
+        }
+        std::string memberText = t;
+        (void)parseAccessPrefix(memberText);
+        if (startsWithWord(memberText, "static method") || startsWithWord(memberText, "method")) {
+            decl.methods.push_back(parseZincMethod(body, bodyIndex));
+            continue;
+        }
+        if (startsWithWord(memberText, "module") || startsWithWord(memberText, "optional module") ||
+            startsWithWord(memberText, "implement")) {
+            decl.moduleUses.push_back(parseZincModuleUse(body[bodyIndex]));
+            ++bodyIndex;
             continue;
         }
         if (startsWithWord(memberText, "stub") || startsWithWord(memberText, "operator") ||

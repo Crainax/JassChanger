@@ -20,14 +20,18 @@ private:
     Decl parseJassGlobalBlock(const std::vector<LogicalLine>& lines, size_t& index);
     Decl parseJassLibraryOrScope(const std::vector<LogicalLine>& lines, size_t& index, bool isScope);
     Decl parseJassStruct(const std::vector<LogicalLine>& lines, size_t& index);
+    Decl parseJassModule(const std::vector<LogicalLine>& lines, size_t& index);
     MethodDecl parseJassMethod(const std::vector<LogicalLine>& lines, size_t& index);
+    ModuleUseDecl parseJassModuleUse(const LogicalLine& line);
     Decl parseUnsupportedBlock(const std::vector<LogicalLine>& lines, size_t& index, const std::string& feature, const std::string& endWord);
 
     Decl parseZincLibrary(const std::vector<LogicalLine>& lines, size_t& index);
     std::vector<Decl> parseZincMembers(const std::vector<LogicalLine>& lines);
     Decl parseZincFunction(const std::vector<LogicalLine>& lines, size_t& index);
     Decl parseZincStruct(const std::vector<LogicalLine>& lines, size_t& index);
+    Decl parseZincModule(const std::vector<LogicalLine>& lines, size_t& index);
     MethodDecl parseZincMethod(const std::vector<LogicalLine>& lines, size_t& index);
+    ModuleUseDecl parseZincModuleUse(const LogicalLine& line);
     Decl parseZincUnsupportedBlock(const std::vector<LogicalLine>& lines, size_t& index, const std::string& feature);
 
     Diagnostics& diagnostics_;
