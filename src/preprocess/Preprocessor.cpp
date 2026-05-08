@@ -72,6 +72,77 @@ bool lineStartsDebug(const std::string& line, size_t& prefixStart, size_t& prefi
     return true;
 }
 
+std::string stripBlockCommentsPreservingLiterals(const std::string& line, bool& inBlockComment) {
+    std::string out;
+    out.reserve(line.size());
+    bool inString = false;
+    bool inRaw = false;
+    bool escaped = false;
+    for (size_t i = 0; i < line.size();) {
+        if (inBlockComment) {
+            if (i + 1 < line.size() && line[i] == '*' && line[i + 1] == '/') {
+                out.push_back(' ');
+                out.push_back(' ');
+                i += 2;
+                inBlockComment = false;
+            } else {
+                out.push_back(' ');
+                ++i;
+            }
+            continue;
+        }
+
+        if (!inString && !inRaw && i + 1 < line.size() && line[i] == '/' && line[i + 1] == '/') {
+            out.append(line.substr(i));
+            break;
+        }
+
+        char c = line[i];
+        if (inString) {
+            out.push_back(c);
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                inString = false;
+            }
+            ++i;
+            continue;
+        }
+        if (inRaw) {
+            out.push_back(c);
+            if (c == '\'') {
+                inRaw = false;
+            }
+            ++i;
+            continue;
+        }
+        if (c == '"') {
+            inString = true;
+            out.push_back(c);
+            ++i;
+            continue;
+        }
+        if (c == '\'') {
+            inRaw = true;
+            out.push_back(c);
+            ++i;
+            continue;
+        }
+        if (i + 1 < line.size() && c == '/' && line[i + 1] == '*') {
+            out.push_back(' ');
+            out.push_back(' ');
+            i += 2;
+            inBlockComment = true;
+            continue;
+        }
+        out.push_back(c);
+        ++i;
+    }
+    return out;
+}
+
 std::vector<std::string> parseTakesParams(std::string_view text) {
     std::string body = trim(text);
     size_t takes = body.find("takes");
@@ -113,11 +184,12 @@ bool Preprocessor::processFile(const std::filesystem::path& path, SyntaxMode ini
     bool zincOpenedByDirective = false;
     bool inNovjass = false;
     bool inMacro = false;
+    bool inBlockComment = false;
     TextMacro currentMacro;
 
     const auto fileLines = sources_.lines(*fileId);
     for (size_t lineIndex = 0; lineIndex < fileLines.size(); ++lineIndex) {
-        std::string line(fileLines[lineIndex]);
+        std::string line = stripBlockCommentsPreservingLiterals(std::string(fileLines[lineIndex]), inBlockComment);
         SourceLocation loc{*fileId, static_cast<uint32_t>(lineIndex + 1), 1, 0};
         std::string left = ltrim(line);
         std::string directive = directiveBody(left);

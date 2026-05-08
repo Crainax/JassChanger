@@ -25,15 +25,15 @@ function s__Box_create takes nothing returns integer
     return s__Box__allocate()
 endfunction
 
+function sc__Box_onDestroy takes integer this returns nothing
+    set s__Box_u[this] = null
+endfunction
+
 function s__Box_destroy takes integer this returns nothing
     call sc__Box_onDestroy(this)
     set si__Box_V[this]=0
     set si__Box_F[this]=si__Box_F[0]
     set si__Box_F[0]=this
-endfunction
-
-function sc__Box_onDestroy takes integer this returns nothing
-    set s__Box_u[this] = null
 endfunction
 
 function Test takes nothing returns nothing

@@ -122,6 +122,25 @@ bool containsAnonymousFunctionSyntax(const std::string& text) {
     return false;
 }
 
+bool hasChainedIndexing(const std::string& text) {
+    bool sawClose = false;
+    for (char c : text) {
+        if (std::isspace(static_cast<unsigned char>(c))) {
+            continue;
+        }
+        if (sawClose) {
+            if (c == '[') {
+                return true;
+            }
+            sawClose = false;
+        }
+        if (c == ']') {
+            sawClose = true;
+        }
+    }
+    return false;
+}
+
 std::string functionNameFromHeader(const std::string& line) {
     std::istringstream in(line);
     std::string word;
@@ -372,6 +391,12 @@ OutputSyntaxReport analyzeOutputSyntaxLite(std::string_view output) {
         if (t.find("||") != std::string::npos || t.find("&&") != std::string::npos) {
             addIssue(report, "noZincBooleanOperators", lineNo, "residual Zinc boolean operator", line);
         }
+        if (t.find("/*") != std::string::npos || t.find("*/") != std::string::npos) {
+            addIssue(report, "noBlockCommentLeak", lineNo, "residual block comment marker", line);
+        }
+        if (hasChainedIndexing(t)) {
+            addIssue(report, "noMultidimensionalArray", lineNo, "residual chained array indexing", line);
+        }
         if (startsWithWord(t, "function")) {
             if (inFunction) {
                 addIssue(report, "noNestedFunction", lineNo, "function declaration nested in function", line);
@@ -429,6 +454,12 @@ OutputSyntaxReport analyzeOutputSyntaxLite(std::string_view output) {
     }
     if (functionDepth != 0) {
         addIssue(report, "balancedFunctions", 0, "missing endfunction", "");
+    }
+    if (report.metrics.duplicateFunctionNames != 0) {
+        addIssue(report, "duplicateFunctionNames", 0, "duplicate function declarations remain", "");
+    }
+    if (report.metrics.duplicateGlobalNames != 0) {
+        addIssue(report, "duplicateGlobalNames", 0, "duplicate global declarations remain", "");
     }
     return report;
 }

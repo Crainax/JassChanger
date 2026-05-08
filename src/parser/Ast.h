@@ -30,6 +30,7 @@ struct TypeRef {
     std::string name;
     SourceLocation loc;
     bool isArray = false;
+    std::vector<int> arrayDimensions;
 };
 
 struct ParamDecl {
@@ -49,6 +50,7 @@ struct FieldDecl {
     bool isArray = false;
     bool isFixedArray = false;
     int fixedArraySize = 0;
+    std::vector<int> arrayDimensions;
     std::string initializer;
     std::string generatedName;
 };

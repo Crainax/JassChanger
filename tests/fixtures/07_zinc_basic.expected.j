@@ -2,7 +2,7 @@
 
 globals
     constant boolean LIBRARY_Demo=true
-    integer X = 0
+    integer Demo___X = 0
 endglobals
 
 

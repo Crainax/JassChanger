@@ -783,6 +783,220 @@ std::string sanitizeName(std::string text) {
     return text;
 }
 
+std::vector<int> parseArrayDimensions(std::string_view suffix) {
+    std::vector<int> dims;
+    size_t pos = 0;
+    while (pos < suffix.size()) {
+        while (pos < suffix.size() && std::isspace(static_cast<unsigned char>(suffix[pos]))) {
+            ++pos;
+        }
+        if (pos >= suffix.size() || suffix[pos] != '[') {
+            break;
+        }
+        size_t close = suffix.find(']', pos + 1);
+        if (close == std::string_view::npos) {
+            break;
+        }
+        std::string dimText = trim(suffix.substr(pos + 1, close - pos - 1));
+        int dim = 0;
+        if (!dimText.empty()) {
+            try {
+                dim = std::stoi(dimText);
+            } catch (...) {
+                dim = 0;
+            }
+        }
+        dims.push_back(dim);
+        pos = close + 1;
+    }
+    return dims;
+}
+
+int arrayFlatSize(const std::vector<int>& dims) {
+    int total = 1;
+    bool any = false;
+    for (int dim : dims) {
+        if (dim <= 0) {
+            return 0;
+        }
+        total *= dim;
+        any = true;
+    }
+    return any ? total : 0;
+}
+
+std::string stripLineCommentPreservingLiterals(const std::string& line) {
+    bool inString = false;
+    bool inRaw = false;
+    bool escaped = false;
+    for (size_t i = 0; i + 1 < line.size(); ++i) {
+        char c = line[i];
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                inString = false;
+            }
+            continue;
+        }
+        if (inRaw) {
+            if (c == '\'') {
+                inRaw = false;
+            }
+            continue;
+        }
+        if (c == '"') {
+            inString = true;
+            continue;
+        }
+        if (c == '\'') {
+            inRaw = true;
+            continue;
+        }
+        if (c == '/' && line[i + 1] == '/') {
+            return line.substr(0, i);
+        }
+    }
+    return line;
+}
+
+std::string composeFlatIndex(const std::vector<std::string>& indexes,
+                             const std::vector<int>& dimensions,
+                             size_t startIndex) {
+    if (startIndex >= indexes.size()) {
+        return {};
+    }
+    std::string expr = "(" + trim(indexes[startIndex]) + ")";
+    for (size_t i = startIndex + 1; i < indexes.size() && i - startIndex < dimensions.size(); ++i) {
+        int dim = dimensions[i - startIndex];
+        expr = "(" + expr + " * " + std::to_string(dim) + " + (" + trim(indexes[i]) + "))";
+    }
+    return expr;
+}
+
+size_t findMatchingBracketOutsideProtected(const std::string& text, size_t open) {
+    bool inString = false;
+    bool inRaw = false;
+    bool escaped = false;
+    int depth = 0;
+    for (size_t i = open; i < text.size(); ++i) {
+        char c = text[i];
+        if (!inString && !inRaw && i + 1 < text.size() && c == '/' && text[i + 1] == '/') {
+            return std::string::npos;
+        }
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                inString = false;
+            }
+            continue;
+        }
+        if (inRaw) {
+            if (c == '\'') {
+                inRaw = false;
+            }
+            continue;
+        }
+        if (c == '"') {
+            inString = true;
+        } else if (c == '\'') {
+            inRaw = true;
+        } else if (c == '[') {
+            ++depth;
+        } else if (c == ']') {
+            --depth;
+            if (depth == 0) {
+                return i;
+            }
+        }
+    }
+    return std::string::npos;
+}
+
+struct ArrayDeclRewrite {
+    bool matched = false;
+    std::string name;
+    std::vector<int> dimensions;
+    std::string line;
+};
+
+ArrayDeclRewrite rewriteMultiDimDeclarationLine(const std::string& line) {
+    std::string code = stripLineCommentPreservingLiterals(line);
+    std::string comment;
+    if (code.size() < line.size()) {
+        comment = line.substr(code.size());
+    }
+    std::string leading = line.substr(0, line.find_first_not_of(" \t") == std::string::npos ? 0 : line.find_first_not_of(" \t"));
+    std::string t = trim(code);
+    if (t.empty()) {
+        return {};
+    }
+    bool hasLocal = false;
+    if (startsWithWord(t, "local")) {
+        hasLocal = true;
+        t = trim(std::string_view(t).substr(5));
+    }
+    bool hasConstant = false;
+    if (startsWithWord(t, "constant")) {
+        hasConstant = true;
+        t = trim(std::string_view(t).substr(8));
+    }
+    size_t assign = t.find('=');
+    std::string declPart = assign == std::string::npos ? t : trim(std::string_view(t).substr(0, assign));
+    std::string init = assign == std::string::npos ? "" : trim(std::string_view(t).substr(assign + 1));
+    std::istringstream in(declPart);
+    std::string type;
+    std::string name;
+    in >> type >> name;
+    bool arrayWord = false;
+    if (name == "array") {
+        in >> name;
+        arrayWord = true;
+    }
+    if (type.empty() || name.empty()) {
+        return {};
+    }
+    size_t bracket = name.find('[');
+    std::string suffix;
+    if (bracket != std::string::npos) {
+        suffix = name.substr(bracket);
+        name = name.substr(0, bracket);
+    } else {
+        std::string rest;
+        std::getline(in, rest);
+        suffix = trim(rest);
+    }
+    std::vector<int> dims = parseArrayDimensions(suffix);
+    if (dims.empty()) {
+        return {};
+    }
+    ArrayDeclRewrite result;
+    result.matched = true;
+    result.name = name;
+    result.dimensions = std::move(dims);
+    result.line = leading;
+    if (hasLocal) {
+        result.line += "local ";
+    }
+    if (hasConstant) {
+        result.line += "constant ";
+    }
+    result.line += type + " array " + name;
+    if (!init.empty()) {
+        result.line += "=" + init;
+    }
+    if (!comment.empty()) {
+        result.line += comment;
+    }
+    (void)arrayWord;
+    return result;
+}
+
 } // namespace
 
 Phase1Codegen::Phase1Codegen(Diagnostics& diagnostics, CodegenOptions options)
@@ -797,6 +1011,7 @@ CodegenResult Phase1Codegen::generate(const Program& program) {
     structs_.clear();
     structIndexByDecl_.clear();
     structIndexByName_.clear();
+    globalArrayShapes_.clear();
     functionInterfaces_.clear();
     functionInterfaceIndexByName_.clear();
     functions_.clear();
@@ -880,8 +1095,13 @@ void Phase1Codegen::emitGlobals(const Program& program, const LibraryGraphResult
     }
     emitStructGlobals();
     emitFunctionInterfaceGlobals();
+    for (const Decl* library : graph.sortedLibraries) {
+        emitDeclGlobals(*library, nullptr);
+    }
     for (const auto& decl : program.decls) {
-        emitDeclGlobals(decl, nullptr);
+        if (decl.kind != DeclKind::Library) {
+            emitDeclGlobals(decl, nullptr);
+        }
     }
     writer_.dedent();
     writer_.writeln("endglobals");
@@ -1038,12 +1258,19 @@ void Phase1Codegen::emitJassFunction(const Decl& decl, const Decl* container, bo
     std::unordered_map<std::string, std::string> localTypes;
     seedFunctionLocalTypes(stripAccessPrefixFromLine(decl.lines.front()), localTypes);
     std::vector<std::string> tempLocals;
-    LoweringContext ctx{nullptr, container, &localTypes, &tempLocals, 0};
+    std::unordered_map<std::string, ArrayShape> localArrayShapes;
+    LoweringContext ctx{nullptr, container, &localTypes, &localArrayShapes, &tempLocals, 0};
     bool injected = false;
     std::vector<std::string> locals;
     std::vector<std::string> body;
     std::vector<std::string> rawLines(decl.lines.begin() + 1, decl.lines.end());
+    const StructInfo* prevLambdaStruct = lambdaContextStruct_;
+    const Decl* prevLambdaContainer = lambdaContextContainer_;
+    lambdaContextStruct_ = nullptr;
+    lambdaContextContainer_ = container;
     rawLines = extractZincLambdas(rawLines, decl.loc);
+    lambdaContextStruct_ = prevLambdaStruct;
+    lambdaContextContainer_ = prevLambdaContainer;
     for (const auto& rawLine : rawLines) {
         std::string t = trim(rawLine);
         if (startsWithWord(t, "endfunction")) {
@@ -1052,7 +1279,7 @@ void Phase1Codegen::emitJassFunction(const Decl& decl, const Decl* container, bo
         std::string line = trim(rewriteForContainer(rawLine, container));
         std::vector<std::string> extraLines;
         if (startsWithWord(line, "local")) {
-            locals.push_back(rewriteLocalDeclLine(line, nullptr, localTypes, extraLines));
+            locals.push_back(rewriteLocalDeclLine(line, nullptr, localTypes, ctx.localArrayShapes, extraLines));
             for (const auto& extra : extraLines) {
                 for (const auto& lowered : lowerStatementLine(extra, ctx)) {
                     body.push_back(trim(lowered));
@@ -1150,14 +1377,21 @@ void Phase1Codegen::emitZincFunction(const Decl& decl, const Decl* container) {
         ++paramIndex;
     }
     std::vector<std::string> rawBodyLines(decl.lines.begin() + 1, decl.lines.end());
+    const StructInfo* prevLambdaStruct = lambdaContextStruct_;
+    const Decl* prevLambdaContainer = lambdaContextContainer_;
+    lambdaContextStruct_ = nullptr;
+    lambdaContextContainer_ = container;
     std::vector<std::string> bodyLines = extractZincLambdas(rawBodyLines, decl.loc);
+    lambdaContextStruct_ = prevLambdaStruct;
+    lambdaContextContainer_ = prevLambdaContainer;
     std::vector<std::string> tempLocals;
-    LoweringContext ctx{nullptr, container, &localTypes, &tempLocals, 0};
+    std::unordered_map<std::string, ArrayShape> localArrayShapes;
+    LoweringContext ctx{nullptr, container, &localTypes, &localArrayShapes, &tempLocals, 0};
     for (const auto& line : lowerZincBody(bodyLines)) {
         std::string out = rewriteForContainer(line, container);
         std::vector<std::string> extraLines;
         if (startsWithWord(trim(out), "local")) {
-            writer_.writeln(rewriteLocalDeclLine(out, nullptr, localTypes, extraLines));
+            writer_.writeln(rewriteLocalDeclLine(out, nullptr, localTypes, ctx.localArrayShapes, extraLines));
             for (const auto& extra : extraLines) {
                 for (const auto& lowered : lowerStatementLine(extra, ctx)) {
                     writer_.writeln(lowered);
@@ -1187,15 +1421,16 @@ void Phase1Codegen::emitGeneratedLambdas() {
         }
         std::vector<std::string> lines = lowerZincBody(lambda.bodyLines);
         std::vector<std::string> tempLocals;
-        LoweringContext ctx{lambda.currentStruct, lambda.container, &localTypes, &tempLocals, 0};
+        std::unordered_map<std::string, ArrayShape> localArrayShapes;
+        LoweringContext ctx{lambda.currentStruct, lambda.container, &localTypes, &localArrayShapes, &tempLocals, 0};
         for (const auto& raw : lines) {
-            std::string line = trim(raw);
+            std::string line = trim(rewriteForContainer(raw, lambda.container));
             if (line.empty()) {
                 continue;
             }
             std::vector<std::string> extraLines;
             if (startsWithWord(line, "local")) {
-                writer_.writeln(rewriteLocalDeclLine(line, nullptr, localTypes, extraLines));
+                writer_.writeln(rewriteLocalDeclLine(line, nullptr, localTypes, ctx.localArrayShapes, extraLines));
                 for (const auto& extra : extraLines) {
                     for (const auto& lowered : lowerStatementLine(extra, ctx)) {
                         writer_.writeln(lowered);
@@ -1265,6 +1500,7 @@ void Phase1Codegen::emitStructFunctions() {
 
 void Phase1Codegen::emitStructSupportFunctions(const StructInfo& info) {
     const MethodInfo* customCreate = findMethod(info, "create");
+    std::unordered_set<const MethodDecl*> emittedBeforeDestroy;
     if (!info.isArrayStruct) {
         writer_.writeln("function " + info.prefix + "__allocate takes nothing returns integer");
         writer_.indent();
@@ -1295,6 +1531,14 @@ void Phase1Codegen::emitStructSupportFunctions(const StructInfo& info) {
             writer_.writeln();
         }
 
+        for (const auto& method : info.methods) {
+            if (method.isOnDestroy) {
+                emitStructMethod(info, method);
+                writer_.writeln();
+                emittedBeforeDestroy.insert(method.decl);
+            }
+        }
+
         writer_.writeln("function " + info.prefix + "_destroy takes integer this returns nothing");
         writer_.indent();
         for (const auto& method : info.methods) {
@@ -1311,6 +1555,9 @@ void Phase1Codegen::emitStructSupportFunctions(const StructInfo& info) {
     }
 
     for (const auto& method : info.methods) {
+        if (emittedBeforeDestroy.contains(method.decl)) {
+            continue;
+        }
         emitStructMethod(info, method);
         writer_.writeln();
         if (method.isOnInit) {
@@ -1339,7 +1586,8 @@ void Phase1Codegen::emitStructMethod(const StructInfo& info, const MethodInfo& m
     lambdaContextContainer_ = prevLambdaContainer;
     std::vector<std::string> lines = method.decl->mode == SyntaxMode::Zinc ? lowerZincBody(rawLines) : rawLines;
     std::vector<std::string> tempLocals;
-    LoweringContext ctx{&info, info.container, &localTypes, &tempLocals, 0};
+    std::unordered_map<std::string, ArrayShape> localArrayShapes;
+    LoweringContext ctx{&info, info.container, &localTypes, &localArrayShapes, &tempLocals, 0};
     std::vector<std::string> locals;
     std::vector<std::string> body;
     for (const auto& raw : lines) {
@@ -1349,7 +1597,7 @@ void Phase1Codegen::emitStructMethod(const StructInfo& info, const MethodInfo& m
         }
         std::vector<std::string> extraLines;
         if (startsWithWord(line, "local")) {
-            locals.push_back(rewriteLocalDeclLine(line, &info, localTypes, extraLines));
+            locals.push_back(rewriteLocalDeclLine(line, &info, localTypes, ctx.localArrayShapes, extraLines));
             for (const auto& extra : extraLines) {
                 for (const auto& lowered : lowerStatementLine(extra, ctx)) {
                     body.push_back(lowered);
@@ -1455,6 +1703,11 @@ void Phase1Codegen::collectStruct(const Decl& decl, const Decl* container) {
         fieldInfo.isArray = field.isArray;
         fieldInfo.isFixedArray = field.isFixedArray;
         fieldInfo.fixedArraySize = field.fixedArraySize;
+        fieldInfo.arrayDimensions = field.arrayDimensions;
+        if (fieldInfo.arrayDimensions.size() > 1 ||
+            (!fieldInfo.isStatic && fieldInfo.isFixedArray && !fieldInfo.arrayDimensions.empty())) {
+            globalArrayShapes_[fieldInfo.generatedName] = ArrayShape{fieldInfo.arrayDimensions, !fieldInfo.isStatic};
+        }
         info.fieldIndex[fieldInfo.name] = info.fields.size();
         info.fields.push_back(std::move(fieldInfo));
     }
@@ -1645,10 +1898,15 @@ std::string Phase1Codegen::rewriteForContainer(const std::string& line, const De
     return symbols_.rewriteLine(line, container);
 }
 
-std::string Phase1Codegen::rewriteGlobalLine(const std::string& line, const Decl* container) const {
+std::string Phase1Codegen::rewriteGlobalLine(const std::string& line, const Decl* container) {
     std::string out = rewriteForContainer(line, container);
     out = stripAccessPrefixFromLine(out);
     out = removeSemicolonsOutsideProtected(out);
+    ArrayDeclRewrite multi = rewriteMultiDimDeclarationLine(out);
+    if (multi.matched) {
+        globalArrayShapes_[multi.name] = ArrayShape{multi.dimensions, false};
+        out = multi.line;
+    }
     out = replaceRegex(out,
                        R"(^(\s*(?:constant\s+)?[A-Za-z_][A-Za-z0-9_$]*)\s+([A-Za-z_][A-Za-z0-9_$]*)\s*\[\])",
                        "$1 array $2");
@@ -1664,14 +1922,14 @@ std::string Phase1Codegen::rewriteGlobalLine(const std::string& line, const Decl
     std::istringstream in(t);
     std::string type;
     in >> type;
-    if (!type.empty() && findFunctionInterface(type)) {
+    if (!type.empty() && (findStruct(type) || findFunctionInterface(type))) {
         size_t typePos = out.find(type);
         if (typePos != std::string::npos) {
             out.replace(typePos, type.size(), "integer");
         }
     }
     (void)constant;
-    return trim(out);
+    return trim(rewriteArrayAccesses(out, nullptr));
 }
 
 std::string Phase1Codegen::rewriteFunctionHeader(const Decl& decl, const Decl* container) const {
@@ -1721,6 +1979,127 @@ std::string Phase1Codegen::makeScopedStructName(const Decl& decl, const Decl* co
         return container->name + "___" + decl.name;
     }
     return container->name + "_" + decl.name;
+}
+
+std::string Phase1Codegen::rewriteArrayAccesses(
+    const std::string& line,
+    const std::unordered_map<std::string, ArrayShape>* localArrayShapes) const {
+    std::string out;
+    out.reserve(line.size());
+    bool inString = false;
+    bool inRaw = false;
+    bool escaped = false;
+    for (size_t i = 0; i < line.size();) {
+        if (!inString && !inRaw && i + 1 < line.size() && line[i] == '/' && line[i + 1] == '/') {
+            out.append(line.substr(i));
+            break;
+        }
+        char c = line[i];
+        if (inString) {
+            out.push_back(c);
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                inString = false;
+            }
+            ++i;
+            continue;
+        }
+        if (inRaw) {
+            out.push_back(c);
+            if (c == '\'') {
+                inRaw = false;
+            }
+            ++i;
+            continue;
+        }
+        if (c == '"') {
+            inString = true;
+            out.push_back(c);
+            ++i;
+            continue;
+        }
+        if (c == '\'') {
+            inRaw = true;
+            out.push_back(c);
+            ++i;
+            continue;
+        }
+        if (!isIdentStart(c)) {
+            out.push_back(c);
+            ++i;
+            continue;
+        }
+
+        size_t nameStart = i++;
+        while (i < line.size() && isIdentPart(line[i])) {
+            ++i;
+        }
+        std::string name = line.substr(nameStart, i - nameStart);
+        const ArrayShape* shape = nullptr;
+        auto globalIt = globalArrayShapes_.find(name);
+        if (globalIt != globalArrayShapes_.end()) {
+            shape = &globalIt->second;
+        }
+        if (localArrayShapes) {
+            auto localIt = localArrayShapes->find(name);
+            if (localIt != localArrayShapes->end()) {
+                shape = &localIt->second;
+            }
+        }
+        if (!shape || shape->dimensions.empty()) {
+            out += name;
+            continue;
+        }
+
+        size_t afterName = i;
+        std::vector<std::string> indexes;
+        size_t cursor = afterName;
+        while (cursor < line.size()) {
+            size_t ws = cursor;
+            while (ws < line.size() && std::isspace(static_cast<unsigned char>(line[ws]))) {
+                ++ws;
+            }
+            if (ws >= line.size() || line[ws] != '[') {
+                break;
+            }
+            size_t close = findMatchingBracketOutsideProtected(line, ws);
+            if (close == std::string::npos) {
+                break;
+            }
+            indexes.push_back(line.substr(ws + 1, close - ws - 1));
+            cursor = close + 1;
+        }
+        size_t needed = shape->dimensions.size() + (shape->structInstanceField ? 1 : 0);
+        if (indexes.size() < needed || needed == 0) {
+            out += name;
+            continue;
+        }
+
+        std::string flat;
+        if (shape->structInstanceField) {
+            int stride = arrayFlatSize(shape->dimensions);
+            if (stride <= 0) {
+                out += name;
+                continue;
+            }
+            flat = "(" + trim(indexes[0]) + ") * " + std::to_string(stride);
+            std::string rest = composeFlatIndex(indexes, shape->dimensions, 1);
+            if (!rest.empty()) {
+                flat = "(" + flat + " + " + rest + ")";
+            }
+        } else {
+            flat = composeFlatIndex(indexes, shape->dimensions, 0);
+        }
+        out += name + "[" + flat + "]";
+        for (size_t extra = needed; extra < indexes.size(); ++extra) {
+            out += "[" + indexes[extra] + "]";
+        }
+        i = cursor;
+    }
+    return out;
 }
 
 const Phase1Codegen::StructInfo* Phase1Codegen::findStruct(std::string_view name) const {
@@ -1776,6 +2155,8 @@ void Phase1Codegen::seedMethodLocalTypes(const StructInfo& info, const MethodInf
             localTypes[param.name] = param.type.name;
         } else if (findFunctionInterface(param.type.name)) {
             localTypes[param.name] = param.type.name;
+        } else {
+            localTypes[param.name] = param.type.name;
         }
     }
 }
@@ -1799,6 +2180,8 @@ void Phase1Codegen::seedFunctionLocalTypes(const std::string& header, std::unord
         if (!type.empty() && !name.empty()) {
             if (findStruct(type) || findFunctionInterface(type)) {
                 localTypes[name] = type;
+            } else {
+                localTypes[name] = type;
             }
         }
     }
@@ -1807,6 +2190,7 @@ void Phase1Codegen::seedFunctionLocalTypes(const std::string& header, std::unord
 std::string Phase1Codegen::rewriteLocalDeclLine(const std::string& line,
                                                 const StructInfo* currentStruct,
                                                 std::unordered_map<std::string, std::string>& localTypes,
+                                                std::unordered_map<std::string, ArrayShape>* localArrayShapes,
                                                 std::vector<std::string>& extraLines) const {
     std::string t = trim(line);
     bool hasLocal = startsWithWord(t, "local");
@@ -1834,9 +2218,21 @@ std::string Phase1Codegen::rewriteLocalDeclLine(const std::string& line,
         array = true;
     }
     size_t bracket = name.find('[');
+    std::vector<int> dims;
     if (bracket != std::string::npos) {
+        dims = parseArrayDimensions(std::string_view(name).substr(bracket));
         name = name.substr(0, bracket);
         array = true;
+    } else {
+        std::string suffix;
+        std::getline(in, suffix);
+        dims = parseArrayDimensions(trim(suffix));
+        if (!dims.empty()) {
+            array = true;
+        }
+    }
+    if (dims.size() > 1 && localArrayShapes) {
+        (*localArrayShapes)[name] = ArrayShape{dims, false};
     }
     if (type == "thistype") {
         localTypes[name] = currentStruct ? currentStruct->originalName : type;
@@ -1844,11 +2240,13 @@ std::string Phase1Codegen::rewriteLocalDeclLine(const std::string& line,
         localTypes[name] = type;
     } else if (findFunctionInterface(type)) {
         localTypes[name] = type;
+    } else {
+        localTypes[name] = type;
     }
     std::string rewrittenType = rewriteTypeName(type, currentStruct);
     std::string out = "local " + std::string(constant ? "constant " : "") + rewrittenType + (array ? " array " : " ") + name;
     if (!init.empty()) {
-        extraLines.push_back("set " + name + "=" + rewriteStructExpression(init, currentStruct, localTypes));
+        extraLines.push_back("set " + name + "=" + rewriteArrayAccesses(rewriteStructExpression(init, currentStruct, localTypes), localArrayShapes));
     }
     return out;
 }
@@ -1865,6 +2263,15 @@ std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
             }
         }
         for (const auto& info : structs_) {
+            if (text.find("si__" + info.originalName + "_") != std::string::npos) {
+                text = replaceRegex(text, "\\bsi__" + regexEscape(info.originalName) + "_", "si__" + info.generatedName + "_");
+            }
+            if (text.find("sc__" + info.originalName + "_") != std::string::npos) {
+                text = replaceRegex(text, "\\bsc__" + regexEscape(info.originalName) + "_", "sc__" + info.generatedName + "_");
+            }
+            if (text.find("s__" + info.originalName + "_") != std::string::npos) {
+                text = replaceRegex(text, "\\bs__" + regexEscape(info.originalName) + "_", "s__" + info.generatedName + "_");
+            }
             if (text.find(info.originalName) == std::string::npos) {
                 continue;
             }
@@ -1891,6 +2298,7 @@ std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
                     text = replaceRegex(text,
                                         "\\b" + structName + "\\s*\\.\\s*" + regexEscape(field.name) + "\\b",
                                         field.generatedName);
+                    text = rewriteArrayAccesses(text, nullptr);
                 }
             }
         }
@@ -1912,6 +2320,7 @@ std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
                     text = replaceRegex(text,
                                         R"(\bthistype\s*\.\s*)" + regexEscape(field.generatedName) + R"(\b)",
                                         field.generatedName);
+                    text = rewriteArrayAccesses(text, nullptr);
                     if (const StructInfo* fieldStruct = findStruct(field.typeName)) {
                         std::string receiverPattern = "\\b" + regexEscape(field.generatedName) + R"((\s*\[[^\]]+\])?)";
                         std::string receiverExpr = field.generatedName + "$1";
@@ -1933,7 +2342,7 @@ std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
                     }
                     continue;
                 }
-                if (field.isFixedArray && field.fixedArraySize > 0) {
+                if (field.isFixedArray && field.fixedArraySize > 0 && field.arrayDimensions.size() <= 1) {
                     std::string indexed = field.generatedName + "[this*" + std::to_string(field.fixedArraySize) + "+$1]";
                     text = replaceRegex(text,
                                         R"(\bthistype\s*\[\s*([^\]]+)\s*\]\s*\.\s*)" + regexEscape(field.name) + R"(\s*\[\s*([^\]]+)\s*\])",
@@ -1946,6 +2355,11 @@ std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
                                         "$1" + indexed);
                 }
                 std::string access = field.generatedName + "[this]";
+                if (!localTypes.contains(field.name)) {
+                    text = replaceRegex(text,
+                                        R"((^|[^A-Za-z0-9_$.]))" + regexEscape(field.name) + R"(\b(?!\s*\())",
+                                        "$1" + access);
+                }
                 text = replaceRegex(text,
                                     R"(\bthistype\s*\[\s*([^\]]+)\s*\]\s*\.\s*)" + regexEscape(field.name) + R"(\b)",
                                     field.generatedName + "[$1]");
@@ -1977,6 +2391,11 @@ std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
                 text = replaceRegex(text,
                                     R"((^|[^A-Za-z0-9_$)\]])\.\s*)" + regexEscape(method.name) + R"(\s*\()",
                                     "$1" + method.generatedName + "(this" + (method.decl->params.empty() ? "" : ", "));
+                if (!localTypes.contains(method.name)) {
+                    text = replaceRegex(text,
+                                        R"((^|[^A-Za-z0-9_$.]))" + regexEscape(method.name) + R"(\s*\()",
+                                        "$1" + method.generatedName + "(this" + (method.decl->params.empty() ? "" : ", "));
+                }
             }
             if (!currentStruct->isArrayStruct && text.find("allocate") != std::string::npos) {
                 text = replaceRegex(text, R"(\ballocate\s*\()", currentStruct->prefix + "__allocate(");
@@ -1998,7 +2417,7 @@ std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
                 if (field.isStatic) {
                     continue;
                 }
-                if (field.isFixedArray && field.fixedArraySize > 0) {
+                if (field.isFixedArray && field.fixedArraySize > 0 && field.arrayDimensions.size() <= 1) {
                     text = replaceRegex(text,
                                         "\\b" + var + R"(\s*\.\s*)" + regexEscape(field.name) + R"(\s*\[\s*([^\]]+)\s*\])",
                                         field.generatedName + "[" + varName + "*" + std::to_string(field.fixedArraySize) + "+$1]");
@@ -2353,6 +2772,7 @@ std::string Phase1Codegen::lowerExpression(std::string expression,
     }
     expression = rewriteFunctionNames(expression, ctx.currentStruct);
     expression = rewriteStructExpression(expression, ctx.currentStruct, ctx.localTypes ? *ctx.localTypes : std::unordered_map<std::string, std::string>{});
+    expression = rewriteArrayAccesses(expression, ctx.localArrayShapes);
     expression = rewriteCallArguments(expression, ctx, prelude);
     return trim(expression);
 }
@@ -2451,7 +2871,9 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
                            !std::isspace(static_cast<unsigned char>(rest[*eq - 1])) &&
                            !std::isspace(static_cast<unsigned char>(rest[*eq + 1]));
             std::string op = compact ? "=" : " = ";
-            out.push_back("set " + rewriteStructExpression(lhs, ctx.currentStruct, ctx.localTypes ? *ctx.localTypes : std::unordered_map<std::string, std::string>{}) + op + rhs);
+            std::string lhsOut = rewriteStructExpression(lhs, ctx.currentStruct, ctx.localTypes ? *ctx.localTypes : std::unordered_map<std::string, std::string>{});
+            lhsOut = rewriteArrayAccesses(lhsOut, ctx.localArrayShapes);
+            out.push_back("set " + lhsOut + op + rhs);
             return out;
         }
     }
@@ -2793,11 +3215,18 @@ void Phase1Codegen::lowerZincSimpleStatement(const std::string& rawStatement, st
                 array = true;
             }
             size_t bracket = name.find('[');
+            std::string suffix;
             if (bracket != std::string::npos) {
+                suffix = name.substr(bracket);
                 name = name.substr(0, bracket);
                 array = true;
             }
-            locals.push_back(std::string("local ") + (constant ? "constant " : "") + type + (array ? " array " : " ") + name);
+            std::vector<int> dims = parseArrayDimensions(suffix);
+            if (dims.size() > 1) {
+                locals.push_back(std::string("local ") + (constant ? "constant " : "") + type + " " + name + suffix);
+            } else {
+                locals.push_back(std::string("local ") + (constant ? "constant " : "") + type + (array ? " array " : " ") + name);
+            }
             if (!init.empty()) {
                 body.push_back("set " + name + " = " + init);
             }

@@ -24,6 +24,14 @@ function s__A_create takes nothing returns integer
     return s__A__allocate()
 endfunction
 
+function s__A_Lifecycle__onDestroy takes integer this returns nothing
+    call BJDebugMsg("module destroy")
+endfunction
+
+function sc__A_onDestroy takes integer this returns nothing
+    call BJDebugMsg("struct destroy")
+endfunction
+
 function s__A_destroy takes integer this returns nothing
     call s__A_Lifecycle__onDestroy(this)
     call sc__A_onDestroy(this)
@@ -36,18 +44,9 @@ function s__A_Lifecycle__onInit takes nothing returns nothing
     call BJDebugMsg("module init")
 endfunction
 
-function s__A_Lifecycle__onDestroy takes integer this returns nothing
-    call BJDebugMsg("module destroy")
-endfunction
-
-function sc__A_onDestroy takes integer this returns nothing
-    call BJDebugMsg("struct destroy")
-endfunction
-
 function vjassc__init_structs takes nothing returns nothing
     call s__A_Lifecycle__onInit()
 endfunction
 
 function vjassc__init_libraries takes nothing returns nothing
 endfunction
-

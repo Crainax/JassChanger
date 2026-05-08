@@ -1,9 +1,11 @@
 #include "validation/PjassRunner.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -56,6 +58,88 @@ bool containsAny(const std::string& text, const std::vector<std::string>& needle
     return false;
 }
 
+std::string classifyPjassLine(const std::string& line, const std::string& generatedLine = {}) {
+    if (containsAny(line, {"Undefined function", "undeclared function", "not declared function"})) {
+        return "undefinedFunction";
+    }
+    if (containsAny(line, {"Undefined variable", "Undeclared variable", "not declared"})) {
+        return "undefinedVariable";
+    }
+    if (containsAny(line, {"Expected endfunction", "endfunction"})) {
+        return "expectedEndfunction";
+    }
+    if (containsAny(line, {"Expected globals", "globals"})) {
+        return "expectedGlobals";
+    }
+    if (containsAny(line, {"Undefined type", "Invalid type", "type mismatch"})) {
+        return "unknownType";
+    }
+    if (containsAny(line, {"multiply defined", "Duplicate", "already defined"})) {
+        return "duplicateDeclaration";
+    }
+    if (containsAny(line, {"Missing return", "Missing linebreak before return"}) ||
+        containsAny(line, {"return", "Return"})) {
+        return "returnMismatch";
+    }
+    if (containsAny(line, {"local", "Local"})) {
+        return "localOrder";
+    }
+    if (containsAny(generatedLine, {"[9][16]", "[8][4]", "[14][6]"}) ||
+        generatedLine.find("][") != std::string::npos) {
+        return "invalidArraySyntax";
+    }
+    if (containsAny(line, {"native", "Native", "global ordering", "declaration order"})) {
+        return "nativeTypeGlobalOrdering";
+    }
+    if (containsAny(line, {"Comparing two variables of different primitive types"})) {
+        return "invalidComparison";
+    }
+    if (containsAny(line, {"syntax error", "Unrecognized character", "Expected"})) {
+        return "syntaxError";
+    }
+    return "other";
+}
+
+size_t parseGeneratedLineNumber(const std::string& line) {
+    size_t firstColon = line.find(':');
+    if (firstColon == std::string::npos) {
+        return 0;
+    }
+    size_t secondColon = line.find(':', firstColon + 1);
+    if (secondColon == std::string::npos || secondColon <= firstColon + 1) {
+        return 0;
+    }
+    std::string number = line.substr(firstColon + 1, secondColon - firstColon - 1);
+    try {
+        return static_cast<size_t>(std::stoull(number));
+    } catch (...) {
+        return 0;
+    }
+}
+
+std::vector<std::string> splitLines(const std::string& text) {
+    std::vector<std::string> lines;
+    std::istringstream in(text);
+    std::string line;
+    while (std::getline(in, line)) {
+        lines.push_back(line);
+    }
+    return lines;
+}
+
+std::vector<std::string> excerptForLine(const std::vector<std::string>& lines, size_t oneBasedLine) {
+    std::vector<std::string> out;
+    if (oneBasedLine == 0 || lines.empty()) {
+        return out;
+    }
+    size_t start = oneBasedLine > 3 ? oneBasedLine - 3 : 1;
+    size_t end = std::min(lines.size(), oneBasedLine + 3);
+    for (size_t lineNo = start; lineNo <= end; ++lineNo) {
+        out.push_back(std::to_string(lineNo) + ": " + lines[lineNo - 1]);
+    }
+    return out;
+}
+
 } // namespace
 
 PjassResolvedPaths resolvePjassPaths(const std::filesystem::path& cwd,
@@ -99,31 +183,52 @@ std::unordered_map<std::string, size_t> classifyPjassErrors(const std::string& t
         if (line.empty() || line.find("Parse successful") != std::string::npos) {
             continue;
         }
-        std::string key = "other";
-        if (containsAny(line, {"Undefined function", "undeclared function", "not declared function"})) {
-            key = "undefinedFunction";
-        } else if (containsAny(line, {"Undefined variable", "Undeclared variable", "not declared"})) {
-            key = "undefinedVariable";
-        } else if (containsAny(line, {"Expected endfunction", "endfunction"})) {
-            key = "expectedEndfunction";
-        } else if (containsAny(line, {"Expected globals", "globals"})) {
-            key = "expectedGlobals";
-        } else if (containsAny(line, {"Undefined type", "Invalid type", "type mismatch"})) {
-            key = "invalidType";
-        } else if (containsAny(line, {"multiply defined", "Duplicate", "already defined"})) {
-            key = "duplicateDeclaration";
-        } else if (containsAny(line, {"return", "Return"})) {
-            key = "returnMismatch";
-        } else if (containsAny(line, {"local", "Local"})) {
-            key = "localOrder";
-        } else if (containsAny(line, {"native", "Native", "global ordering", "declaration order"})) {
-            key = "nativeTypeGlobalOrdering";
-        } else if (containsAny(line, {"syntax error", "Unrecognized character", "Expected"})) {
-            key = "syntaxError";
-        }
-        ++counts[key];
+        ++counts[classifyPjassLine(line)];
     }
     return counts;
+}
+
+std::vector<PjassErrorGroup> groupPjassErrors(const std::string& text, const std::string& generatedOutput) {
+    std::vector<std::string> generatedLines = splitLines(generatedOutput);
+    std::map<std::string, PjassErrorGroup> groups;
+    std::istringstream in(text);
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.empty() || line.find("Parse successful") != std::string::npos) {
+            continue;
+        }
+        size_t generatedLine = parseGeneratedLineNumber(line);
+        std::string generatedText;
+        if (generatedLine > 0 && generatedLine <= generatedLines.size()) {
+            generatedText = generatedLines[generatedLine - 1];
+        }
+        std::string kind = classifyPjassLine(line, generatedText);
+        auto& group = groups[kind];
+        if (group.kind.empty()) {
+            group.kind = kind;
+        }
+        ++group.count;
+        if (group.firstLine == 0) {
+            group.firstLine = generatedLine;
+            group.firstMessage = line;
+        }
+        if (group.examples.size() < 20) {
+            group.examples.push_back(PjassErrorExample{generatedLine, line, excerptForLine(generatedLines, generatedLine)});
+        }
+    }
+
+    std::vector<PjassErrorGroup> out;
+    out.reserve(groups.size());
+    for (auto& [_, group] : groups) {
+        out.push_back(std::move(group));
+    }
+    std::sort(out.begin(), out.end(), [](const PjassErrorGroup& a, const PjassErrorGroup& b) {
+        if (a.count != b.count) {
+            return a.count > b.count;
+        }
+        return a.kind < b.kind;
+    });
+    return out;
 }
 
 PjassResult runPjass(const PjassOptions& options) {
@@ -152,6 +257,7 @@ PjassResult runPjass(const PjassOptions& options) {
     result.stderrText = readTextFile(options.stderrPath);
     result.ok = rc == 0;
     result.errorSummary = classifyPjassErrors(result.stdoutText + "\n" + result.stderrText);
+    result.errorGroups = groupPjassErrors(result.stdoutText + "\n" + result.stderrText, readTextFile(options.scriptPath));
     (void)options.timeoutMs;
     return result;
 }

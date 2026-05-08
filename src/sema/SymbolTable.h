@@ -25,6 +25,7 @@ private:
     void collectGlobalNames(const Decl& globalBlock, const std::vector<std::string>& scopePath, ScopedSymbolMap& map);
 
     std::unordered_map<const Decl*, ScopedSymbolMap> scoped_;
+    std::unordered_map<std::string, std::string> publicReplacements_;
 };
 
 std::string extractGlobalName(std::string line, std::string& access);

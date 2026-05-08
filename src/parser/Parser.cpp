@@ -118,6 +118,9 @@ std::string readIdent(const std::string& text, size_t& index) {
     return text.substr(start, index - start);
 }
 
+std::vector<FieldDecl> parseFieldDecls(const LogicalLine& logical);
+std::string parseAccessPrefix(std::string& text);
+
 bool startsAnyTypeDecl(const std::string& t) {
     static const std::unordered_set<std::string> types = {
         "integer", "real", "boolean", "string", "code", "handle", "unit", "player", "timer",
@@ -126,6 +129,23 @@ bool startsAnyTypeDecl(const std::string& t) {
     };
     std::string word = firstWord(t);
     return types.contains(word);
+}
+
+bool isZincGlobalDeclLine(const LogicalLine& line) {
+    std::string accessText = trim(line.text);
+    (void)parseAccessPrefix(accessText);
+    if (startsWithWord(accessText, "struct") || startsWithWord(accessText, "function") ||
+        startsWithWord(accessText, "method") || startsWithWord(accessText, "static method") ||
+        startsWithWord(accessText, "module") || startsWithWord(accessText, "optional module") ||
+        startsWithWord(accessText, "implement") || startsWithWord(accessText, "static if") ||
+        startsWithWord(accessText, "if") || startsWithWord(accessText, "else") ||
+        startsWithWord(accessText, "for") || startsWithWord(accessText, "while") ||
+        startsWithWord(accessText, "return") || startsWithWord(accessText, "call") ||
+        startsWithWord(accessText, "set")) {
+        return false;
+    }
+    return startsAnyTypeDecl(accessText) || startsWithWord(accessText, "constant") ||
+           !parseFieldDecls(line).empty();
 }
 
 std::string parseAccessPrefix(std::string& text) {
@@ -519,6 +539,48 @@ TypeRef parseTypeRef(std::string text, SourceLocation loc) {
     return type;
 }
 
+std::vector<int> parseArrayDimensions(std::string_view suffix) {
+    std::vector<int> dims;
+    size_t pos = 0;
+    while (pos < suffix.size()) {
+        while (pos < suffix.size() && std::isspace(static_cast<unsigned char>(suffix[pos]))) {
+            ++pos;
+        }
+        if (pos >= suffix.size() || suffix[pos] != '[') {
+            break;
+        }
+        size_t close = suffix.find(']', pos + 1);
+        if (close == std::string_view::npos) {
+            break;
+        }
+        std::string dimText = trim(suffix.substr(pos + 1, close - pos - 1));
+        int value = 0;
+        if (!dimText.empty()) {
+            try {
+                value = std::stoi(dimText);
+            } catch (...) {
+                value = 0;
+            }
+        }
+        dims.push_back(value);
+        pos = close + 1;
+    }
+    return dims;
+}
+
+int arrayFlatSize(const std::vector<int>& dims) {
+    int total = 1;
+    bool any = false;
+    for (int dim : dims) {
+        if (dim <= 0) {
+            return 0;
+        }
+        total *= dim;
+        any = true;
+    }
+    return any ? total : 0;
+}
+
 std::vector<ParamDecl> parseParamList(std::string text, SourceLocation loc) {
     std::vector<ParamDecl> params;
     text = trim(text);
@@ -593,8 +655,9 @@ std::vector<FieldDecl> parseFieldDecls(const LogicalLine& logical) {
     }
     std::string access = parseAccessPrefix(line);
     if (startsWithWord(line, "method") || startsWithWord(line, "static method") ||
-        startsWithWord(line, "function") || startsWithWord(line, "module") ||
-        startsWithWord(line, "implement") || startsWithWord(line, "static if") ||
+        startsWithWord(line, "function") || startsWithWord(line, "struct") ||
+        startsWithWord(line, "module") || startsWithWord(line, "implement") ||
+        startsWithWord(line, "static if") ||
         startsWithWord(line, "stub") || startsWithWord(line, "operator") ||
         startsWithWord(line, "super")) {
         return {};
@@ -659,18 +722,17 @@ std::vector<FieldDecl> parseFieldDecls(const LogicalLine& logical) {
         field.type = TypeRef{typeName, logical.loc, typeArray};
         field.isArray = typeArray;
         field.initializer = initializer;
+        std::vector<int> dims = parseArrayDimensions(suffix);
         if (suffix == "[]") {
             field.isArray = true;
             field.type.isArray = true;
-        } else if (suffix.size() >= 3 && suffix.front() == '[' && suffix.back() == ']') {
+        } else if (!dims.empty()) {
             field.isArray = true;
             field.isFixedArray = true;
-            std::string sizeText = trim(std::string_view(suffix).substr(1, suffix.size() - 2));
-            try {
-                field.fixedArraySize = std::stoi(sizeText);
-            } catch (...) {
-                field.fixedArraySize = 0;
-            }
+            field.arrayDimensions = std::move(dims);
+            field.fixedArraySize = arrayFlatSize(field.arrayDimensions);
+            field.type.isArray = true;
+            field.type.arrayDimensions = field.arrayDimensions;
         }
         fields.push_back(std::move(field));
     }
@@ -1349,17 +1411,14 @@ std::vector<Decl> Parser::parseZincMembers(const std::vector<LogicalLine>& lines
             ++index;
         } else if (startsWithWord(accessText, "static if")) {
             decls.push_back(parseZincUnsupportedBlock(lines, index, "static if"));
-        } else if (startsAnyTypeDecl(accessText) || startsWithWord(accessText, "constant")) {
+        } else if (isZincGlobalDeclLine(lines[index])) {
             Decl globals;
             globals.kind = DeclKind::GlobalBlock;
             globals.mode = SyntaxMode::Zinc;
             globals.loc = lines[index].loc;
             globals.access = access;
             while (index < lines.size()) {
-                std::string line = trim(lines[index].text);
-                std::string globalAccessText = line;
-                (void)parseAccessPrefix(globalAccessText);
-                if (!(startsAnyTypeDecl(globalAccessText) || startsWithWord(globalAccessText, "constant"))) {
+                if (!isZincGlobalDeclLine(lines[index])) {
                     break;
                 }
                 globals.lines.push_back(stripTrailingSemicolon(lines[index].text));

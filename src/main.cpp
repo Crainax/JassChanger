@@ -464,6 +464,42 @@ void writePjassSummaryJson(std::ostream& out, const std::unordered_map<std::stri
     out << "}";
 }
 
+void writePjassGroupsJson(std::ostream& out, const std::vector<PjassErrorGroup>& groups, int indent) {
+    std::string pad(static_cast<size_t>(indent), ' ');
+    out << "[";
+    if (!groups.empty()) {
+        out << "\n";
+        for (size_t i = 0; i < groups.size(); ++i) {
+            const auto& group = groups[i];
+            out << pad << "  {\n"
+                << pad << "    \"kind\": ";
+            writeJsonString(out, group.kind);
+            out << ",\n" << pad << "    \"count\": " << group.count << ",\n"
+                << pad << "    \"firstLine\": " << group.firstLine << ",\n"
+                << pad << "    \"firstMessage\": ";
+            writeJsonString(out, group.firstMessage);
+            out << ",\n" << pad << "    \"examples\": [";
+            if (!group.examples.empty()) {
+                out << "\n";
+                for (size_t j = 0; j < group.examples.size(); ++j) {
+                    const auto& example = group.examples[j];
+                    out << pad << "      {\n"
+                        << pad << "        \"generatedLine\": " << example.generatedLine << ",\n"
+                        << pad << "        \"message\": ";
+                    writeJsonString(out, example.message);
+                    out << ",\n" << pad << "        \"excerpt\": ";
+                    writeStringArrayJson(out, example.excerpt, indent + 8);
+                    out << "\n" << pad << "      }" << (j + 1 == group.examples.size() ? "\n" : ",\n");
+                }
+                out << pad << "    ";
+            }
+            out << "]\n" << pad << "  }" << (i + 1 == groups.size() ? "\n" : ",\n");
+        }
+        out << pad;
+    }
+    out << "]";
+}
+
 std::string emitValidationReportJson(const CliOptions& options,
                                      const OutputSyntaxReport& syntax,
                                      const InitValidationReport& init,
@@ -521,6 +557,8 @@ std::string emitValidationReportJson(const CliOptions& options,
     writeJsonString(out, pjass.error);
     out << ",\n    \"errorSummary\": ";
     writePjassSummaryJson(out, pjass.errorSummary, 4);
+    out << ",\n    \"groups\": ";
+    writePjassGroupsJson(out, pjass.errorGroups, 4);
     out << "\n  },\n  \"comparison\": {\n"
         << "    \"jasshelperReference\": ";
     writeJsonString(out, pathToGenericString(comparison.referencePath));

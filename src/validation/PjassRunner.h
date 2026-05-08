@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace vjassc {
 
@@ -14,6 +15,20 @@ struct PjassOptions {
     std::filesystem::path stdoutPath;
     std::filesystem::path stderrPath;
     long long timeoutMs = 30000;
+};
+
+struct PjassErrorExample {
+    size_t generatedLine = 0;
+    std::string message;
+    std::vector<std::string> excerpt;
+};
+
+struct PjassErrorGroup {
+    std::string kind;
+    size_t count = 0;
+    size_t firstLine = 0;
+    std::string firstMessage;
+    std::vector<PjassErrorExample> examples;
 };
 
 struct PjassResult {
@@ -29,6 +44,7 @@ struct PjassResult {
     std::string error;
     long long elapsedMs = 0;
     std::unordered_map<std::string, size_t> errorSummary;
+    std::vector<PjassErrorGroup> errorGroups;
 };
 
 struct PjassResolvedPaths {
@@ -45,5 +61,6 @@ PjassResolvedPaths resolvePjassPaths(const std::filesystem::path& cwd,
                                      const std::filesystem::path& explicitBlizzard);
 PjassResult runPjass(const PjassOptions& options);
 std::unordered_map<std::string, size_t> classifyPjassErrors(const std::string& text);
+std::vector<PjassErrorGroup> groupPjassErrors(const std::string& text, const std::string& generatedOutput);
 
 } // namespace vjassc

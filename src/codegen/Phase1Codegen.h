@@ -45,6 +45,11 @@ public:
     CodegenResult generate(const Program& program);
 
 private:
+    struct ArrayShape {
+        std::vector<int> dimensions;
+        bool structInstanceField = false;
+    };
+
     struct FieldInfo {
         const FieldDecl* decl = nullptr;
         std::string name;
@@ -54,6 +59,7 @@ private:
         bool isArray = false;
         bool isFixedArray = false;
         int fixedArraySize = 0;
+        std::vector<int> arrayDimensions;
     };
 
     struct MethodInfo {
@@ -120,6 +126,7 @@ private:
         const StructInfo* currentStruct = nullptr;
         const Decl* container = nullptr;
         std::unordered_map<std::string, std::string>* localTypes = nullptr;
+        std::unordered_map<std::string, ArrayShape>* localArrayShapes = nullptr;
         std::vector<std::string>* tempLocals = nullptr;
         int tempCounter = 0;
     };
@@ -150,7 +157,7 @@ private:
     void collectFunction(const Decl& decl, const Decl* container);
 
     std::string rewriteForContainer(const std::string& line, const Decl* container) const;
-    std::string rewriteGlobalLine(const std::string& line, const Decl* container) const;
+    std::string rewriteGlobalLine(const std::string& line, const Decl* container);
     std::string rewriteFunctionHeader(const Decl& decl, const Decl* container) const;
     std::string renameInContainer(const std::string& name, const Decl* container) const;
     std::string makeScopedStructName(const Decl& decl, const Decl* container) const;
@@ -162,7 +169,10 @@ private:
     std::string rewriteLocalDeclLine(const std::string& line,
                                      const StructInfo* currentStruct,
                                      std::unordered_map<std::string, std::string>& localTypes,
+                                     std::unordered_map<std::string, ArrayShape>* localArrayShapes,
                                      std::vector<std::string>& extraLines) const;
+    std::string rewriteArrayAccesses(const std::string& line,
+                                     const std::unordered_map<std::string, ArrayShape>* localArrayShapes) const;
     std::vector<std::string> lowerStatementLine(const std::string& line, LoweringContext& ctx) const;
     std::string lowerExpression(std::string expression,
                                 const std::string& expectedInterfaceType,
@@ -207,6 +217,7 @@ private:
     std::vector<StructInfo> structs_;
     std::unordered_map<const Decl*, size_t> structIndexByDecl_;
     std::unordered_map<std::string, size_t> structIndexByName_;
+    std::unordered_map<std::string, ArrayShape> globalArrayShapes_;
     mutable std::vector<FunctionInterfaceInfo> functionInterfaces_;
     mutable std::unordered_map<std::string, size_t> functionInterfaceIndexByName_;
     std::vector<FunctionInfo> functions_;

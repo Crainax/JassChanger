@@ -140,6 +140,10 @@ int main(int argc, char** argv) {
         {"phase6_range_for_zinc", "", fixtures / "phase6_range_for_zinc.expected.j"},
         {"phase6_method_chain_zinc", "", fixtures / "phase6_method_chain_zinc.expected.j"},
         {"phase6_thistype_array_typeid", "", fixtures / "phase6_thistype_array_typeid.expected.j"},
+        {"phase7_block_comment_globals", "", fixtures / "phase7_block_comment_globals.expected.j"},
+        {"phase7_multidim_global_zinc", "", fixtures / "phase7_multidim_global_zinc.expected.j"},
+        {"phase7_lambda_private_multidim", "", fixtures / "phase7_lambda_private_multidim.expected.j"},
+        {"phase7_struct_bare_members", "", fixtures / "phase7_struct_bare_members.expected.j"},
     };
 
     bool ok = true;
