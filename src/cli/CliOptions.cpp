@@ -1,6 +1,7 @@
 #include "cli/CliOptions.h"
 
 #include <iostream>
+#include <utility>
 
 namespace vjassc {
 namespace {
@@ -11,7 +12,8 @@ bool needsValue(const std::string& arg) {
            arg == "--emit-validation-report" || arg == "--pjass" || arg == "--common" ||
            arg == "--blizzard" || arg == "--compare-jasshelper" || arg == "--pjass-timeout-ms" ||
            arg == "--import-path" || arg == "--analyze-pjass-log" ||
-           arg == "--validate-existing-output" || arg == "--emit-pjass-examples";
+           arg == "--validate-existing-output" || arg == "--emit-pjass-examples" ||
+           arg == "--pjass-allow-external" || arg == "--allow-external-init";
 }
 
 } // namespace
@@ -70,6 +72,17 @@ CliParseResult parseCli(int argc, char** argv) {
                 result.error = "invalid numeric value for " + arg + ": " + value.string();
                 return result;
             }
+        } else if (arg == "--pjass-allow-external" || arg == "--allow-external-init") {
+            std::filesystem::path value;
+            if (!requireValue(arg, value)) {
+                return result;
+            }
+            std::string name = value.string();
+            if (name.empty()) {
+                result.error = "empty value for " + arg;
+                return result;
+            }
+            opt.pjassAllowedExternalFunctions.push_back(std::move(name));
         } else if (arg == "--pjass") {
             if (!requireValue(arg, opt.pjassPath)) {
                 return result;
@@ -192,6 +205,8 @@ void printHelp(std::ostream& out) {
         << "  --analyze-pjass-log <path>   Parse an existing PJASS log without codegen\n"
         << "  --validate-existing-output <path> Validate an existing generated JASS file without codegen\n"
         << "  --emit-pjass-examples <n>    Include up to n examples per PJASS group in validation reports\n"
+        << "  --pjass-allow-external <name> Add a validation-only noarg/nothing PJASS stub before the generated script; may be repeated\n"
+        << "  --allow-external-init <name> Alias for --pjass-allow-external\n"
         << "  --pjass <path>               Path to pjass executable\n"
         << "  --common <path>              Path to common.j for PJASS\n"
         << "  --blizzard <path>            Path to blizzard.j for PJASS\n"

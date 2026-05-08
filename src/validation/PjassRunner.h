@@ -14,6 +14,7 @@ struct PjassOptions {
     std::filesystem::path scriptPath;
     std::filesystem::path stdoutPath;
     std::filesystem::path stderrPath;
+    std::vector<std::string> allowedExternalFunctions;
     long long timeoutMs = 30000;
     size_t exampleLimit = 20;
 };
@@ -42,10 +43,12 @@ struct PjassResult {
     std::string commandLine;
     std::filesystem::path stdoutPath;
     std::filesystem::path stderrPath;
+    std::filesystem::path validationEnvStubPath;
     std::string stdoutText;
     std::string stderrText;
     std::string error;
     long long elapsedMs = 0;
+    std::vector<std::string> allowedExternalFunctions;
     std::unordered_map<std::string, size_t> errorSummary;
     std::vector<PjassErrorGroup> errorGroups;
 };

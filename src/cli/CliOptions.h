@@ -23,6 +23,7 @@ struct CliOptions {
     std::filesystem::path blizzardPath;
     std::filesystem::path compareJasshelperPath;
     std::vector<std::filesystem::path> importPaths;
+    std::vector<std::string> pjassAllowedExternalFunctions;
     long long pjassTimeoutMs = 30000;
     size_t emitPjassExamples = 20;
     bool debugMode = false;

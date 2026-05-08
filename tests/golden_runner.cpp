@@ -176,6 +176,9 @@ int main(int argc, char** argv) {
         {"phase12_struct_deallocate", "", fixtures / "phase12_struct_deallocate.expected.j"},
         {"phase12_lambda_default_return", "", fixtures / "phase12_lambda_default_return.expected.j"},
         {"phase12_zinc_method_interface_param", "", fixtures / "phase12_zinc_method_interface_param.expected.j"},
+        {"phase13_forward_bridge_noarg", "", fixtures / "phase13_forward_bridge_noarg.expected.j"},
+        {"phase13_external_env_symbol", "", fixtures / "phase13_external_env_symbol.expected.j"},
+        {"phase13_raw_code_param_lambda_known_context", "", fixtures / "phase13_raw_code_param_lambda_known_context.expected.j"},
     };
 
     bool ok = true;

@@ -167,6 +167,10 @@ private:
     void collectFunctionInterfaces(const std::vector<Decl>& decls, const Decl* container);
     void collectFunctions(const std::vector<Decl>& decls, const Decl* container);
     void collectFunction(const Decl& decl, const Decl* container);
+    void rememberFunctionInterfaceParamTypes(const std::string& sourceName,
+                                             const std::string& finalName,
+                                             const std::vector<std::string>& paramTypes,
+                                             const Decl* declContainer);
 
     std::string rewriteForContainer(const std::string& line, const Decl* container) const;
     std::string rewriteGlobalLine(const std::string& line, const Decl* container);
@@ -191,6 +195,8 @@ private:
                                 const std::string& expectedInterfaceType,
                                 LoweringContext& ctx,
                                 std::vector<std::string>& prelude) const;
+    std::string inferUniqueFunctionInterfaceTypeForFunctionValue(const std::string& expression,
+                                                                 const LoweringContext& ctx) const;
     std::string lowerFunctionValue(std::string expression,
                                    const std::string& expectedInterfaceType,
                                    LoweringContext& ctx,
@@ -201,6 +207,7 @@ private:
     std::string rewriteReceiverExpression(const std::string& receiver, const LoweringContext& ctx) const;
     int registerInterfaceTarget(const FunctionInterfaceInfo& iface, const std::string& targetName, SourceLocation loc) const;
     const FunctionInterfaceInfo* findFunctionInterface(std::string_view name) const;
+    std::string resolveFunctionInterfaceTypeName(std::string_view name, const Decl* container) const;
     const FunctionInfo* findFunctionInfo(std::string_view name) const;
     std::string resolveFunctionTargetName(const std::string& expression, const StructInfo* currentStruct) const;
     bool sameSignature(const FunctionSignature& a, const FunctionSignature& b) const;

@@ -950,7 +950,7 @@ std::string emitValidationReportJson(const CliOptions& options,
                                      const Timings& timings) {
     std::ostringstream out;
     out << "{\n"
-        << "  \"phase\": 12,\n"
+        << "  \"phase\": 13,\n"
         << "  \"input\": ";
     writeJsonString(out, pathToGenericString(options.inputPath));
     out << ",\n  \"output\": ";
@@ -1013,6 +1013,10 @@ std::string emitValidationReportJson(const CliOptions& options,
     writeJsonString(out, pathToGenericString(pjass.stdoutPath));
     out << ",\n    \"stderrPath\": ";
     writeJsonString(out, pathToGenericString(pjass.stderrPath));
+    out << ",\n    \"validationEnvStubPath\": ";
+    writeJsonString(out, pathToGenericString(pjass.validationEnvStubPath));
+    out << ",\n    \"allowedExternalFunctions\": ";
+    writeStringArrayJson(out, pjass.allowedExternalFunctions, 4);
     out << ",\n    \"stdoutPreview\": ";
     writeJsonString(out, previewText(pjass.stdoutText));
     out << ",\n    \"stderrPreview\": ";
@@ -1182,6 +1186,7 @@ int main(int argc, char** argv) {
                 pjassOptions.scriptPath = options.validateExistingOutputPath;
                 pjassOptions.stdoutPath = stdoutPath;
                 pjassOptions.stderrPath = stderrPath;
+                pjassOptions.allowedExternalFunctions = options.pjassAllowedExternalFunctions;
                 pjassOptions.timeoutMs = options.pjassTimeoutMs;
                 pjassOptions.exampleLimit = options.emitPjassExamples;
                 auto pjassStart = std::chrono::steady_clock::now();
@@ -1353,6 +1358,7 @@ int main(int argc, char** argv) {
                     pjassOptions.scriptPath = options.outputPath;
                     pjassOptions.stdoutPath = stdoutPath;
                     pjassOptions.stderrPath = stderrPath;
+                    pjassOptions.allowedExternalFunctions = options.pjassAllowedExternalFunctions;
                     pjassOptions.timeoutMs = options.pjassTimeoutMs;
                     pjassOptions.exampleLimit = options.emitPjassExamples;
                     auto pjassStart = std::chrono::steady_clock::now();
