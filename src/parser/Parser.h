@@ -16,6 +16,7 @@ public:
 private:
     void preScanUnsupported(const std::vector<LogicalLine>& lines);
     std::vector<Decl> parseJassRange(const std::vector<LogicalLine>& lines, size_t& index, const std::string& terminator);
+    Decl parseFunctionInterface(const LogicalLine& line);
     Decl parseJassFunction(const std::vector<LogicalLine>& lines, size_t& index);
     Decl parseJassGlobalBlock(const std::vector<LogicalLine>& lines, size_t& index);
     Decl parseJassLibraryOrScope(const std::vector<LogicalLine>& lines, size_t& index, bool isScope);

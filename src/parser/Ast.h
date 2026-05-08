@@ -17,6 +17,7 @@ enum class DeclKind {
     Scope,
     Struct,
     Module,
+    FunctionInterface,
     Unsupported,
 };
 
@@ -92,6 +93,8 @@ struct Decl {
     std::vector<FieldDecl> fields;
     std::vector<MethodDecl> methods;
     std::vector<ModuleUseDecl> moduleUses;
+    std::vector<ParamDecl> interfaceParams;
+    TypeRef interfaceReturnType;
     std::string generatedName;
     std::string prefix;
     std::string moduleOriginName;
@@ -105,6 +108,7 @@ struct ParserStats {
     size_t natives = 0;
     size_t types = 0;
     size_t functions = 0;
+    size_t functionInterfaces = 0;
     size_t modules = 0;
     size_t moduleUses = 0;
     size_t staticIfs = 0;
@@ -117,6 +121,13 @@ struct ParserStats {
     size_t modulesUnsupported = 0;
     size_t staticIfUnsupported = 0;
     size_t functionInterfacesUnsupported = 0;
+    size_t functionInterfaceTargets = 0;
+    size_t functionInterfaceCalls = 0;
+    size_t functionObjectCalls = 0;
+    size_t lambdas = 0;
+    size_t lambdasLowered = 0;
+    size_t lambdasCapturingUnsupported = 0;
+    size_t prototypeWrappers = 0;
 };
 
 struct Program {

@@ -402,6 +402,33 @@ std::vector<ParamDecl> parseParamList(std::string text, SourceLocation loc) {
     return params;
 }
 
+std::vector<ParamDecl> parseFunctionTypeParamList(std::string text, SourceLocation loc) {
+    std::vector<ParamDecl> params;
+    text = trim(text);
+    if (text.empty() || text == "nothing") {
+        return params;
+    }
+    size_t index = 0;
+    for (auto part : splitCommaListRespectingQuotesAndBrackets(text)) {
+        part = trim(part);
+        if (part.empty()) {
+            continue;
+        }
+        size_t typeIdx = 0;
+        std::string typeName = readIdent(part, typeIdx);
+        if (!typeName.empty()) {
+            params.push_back(ParamDecl{TypeRef{typeName, loc, false}, "arg" + std::to_string(index), loc});
+            ++index;
+        }
+    }
+    return params;
+}
+
+bool isFunctionTypeDecl(std::string text) {
+    (void)parseAccessPrefix(text);
+    return startsWithWord(text, "type") && text.find("extends function") != std::string::npos;
+}
+
 std::vector<FieldDecl> parseFieldDecls(const LogicalLine& logical) {
     std::string line = stripTrailingSemicolon(stripLineComment(logical.text));
     if (line.empty()) {
@@ -513,6 +540,8 @@ const char* declKindName(DeclKind kind) {
         return "Struct";
     case DeclKind::Module:
         return "Module";
+    case DeclKind::FunctionInterface:
+        return "FunctionInterface";
     case DeclKind::Unsupported:
         return "Unsupported";
     }
@@ -557,9 +586,19 @@ void Parser::preScanUnsupported(const std::vector<LogicalLine>& lines) {
         if (startsWithWord(accessText, "optional")) {
             accessText = trim(std::string_view(accessText).substr(8));
         }
-        if (startsWithWord(accessText, "function interface")) {
-            ++stats_.functionInterfacesUnsupported;
-            diagnostics_.unsupported(logical.loc, "function interface");
+        if (!startsWithWord(accessText, "function") &&
+            accessText.find("extends function") == std::string::npos) {
+            size_t pos = 0;
+            while ((pos = accessText.find("function", pos)) != std::string::npos) {
+                size_t after = pos + 8;
+                while (after < accessText.size() && std::isspace(static_cast<unsigned char>(accessText[after]))) {
+                    ++after;
+                }
+                if (after < accessText.size() && accessText[after] == '(') {
+                    ++stats_.lambdas;
+                }
+                pos += 8;
+            }
         }
     }
 }
@@ -585,13 +624,8 @@ std::vector<Decl> Parser::parseJassRange(const std::vector<LogicalLine>& lines, 
                 decls.push_back(parseZincLibrary(lines, index));
                 continue;
             }
-            if (startsWithWord(accessText, "function interface")) {
-                Decl decl;
-                decl.kind = DeclKind::Unsupported;
-                decl.loc = logical.loc;
-                decl.unsupportedFeature = "function interface";
-                decl.lines.push_back(logical.text);
-                decls.push_back(std::move(decl));
+            if (startsWithWord(accessText, "function interface") || isFunctionTypeDecl(t)) {
+                decls.push_back(parseFunctionInterface(logical));
                 ++index;
                 continue;
             }
@@ -626,13 +660,8 @@ std::vector<Decl> Parser::parseJassRange(const std::vector<LogicalLine>& lines, 
             std::string accessText = t;
             std::string access = parseAccessPrefix(accessText);
             (void)access;
-            if (startsWithWord(accessText, "function interface")) {
-                Decl decl;
-                decl.kind = DeclKind::Unsupported;
-                decl.loc = logical.loc;
-                decl.unsupportedFeature = "function interface";
-                decl.lines.push_back(logical.text);
-                decls.push_back(std::move(decl));
+            if (startsWithWord(accessText, "function interface") || isFunctionTypeDecl(t)) {
+                decls.push_back(parseFunctionInterface(logical));
                 ++index;
             } else if (startsWithWord(accessText, "function")) {
                 decls.push_back(parseJassFunction(lines, index));
@@ -677,6 +706,66 @@ std::vector<Decl> Parser::parseJassRange(const std::vector<LogicalLine>& lines, 
         }
     }
     return decls;
+}
+
+Decl Parser::parseFunctionInterface(const LogicalLine& line) {
+    std::string text = stripTrailingSemicolon(stripLineComment(line.text));
+    std::string accessText = text;
+    std::string access = parseAccessPrefix(accessText);
+
+    Decl decl;
+    decl.kind = DeclKind::FunctionInterface;
+    decl.mode = line.mode;
+    decl.loc = line.loc;
+    decl.access = access;
+    decl.interfaceReturnType = TypeRef{"nothing", line.loc, false};
+    decl.lines.push_back(line.text);
+
+    if (startsWithWord(accessText, "function interface")) {
+        accessText = trim(std::string_view(accessText).substr(18));
+        size_t nameIdx = 0;
+        decl.name = readIdent(accessText, nameIdx);
+        std::string tail = trim(std::string_view(accessText).substr(nameIdx));
+        auto takes = findWordPos(tail, "takes");
+        auto returns = findWordPos(tail, "returns");
+        if (takes && returns && *returns > *takes) {
+            std::string params = trim(std::string_view(tail).substr(*takes + 5, *returns - (*takes + 5)));
+            decl.interfaceParams = parseParamList(params, line.loc);
+            decl.interfaceReturnType = parseTypeRef(std::string(std::string_view(tail).substr(*returns + 7)), line.loc);
+        } else {
+            diagnostics_.error(line.loc, "malformed function interface declaration");
+        }
+    } else if (startsWithWord(accessText, "type")) {
+        accessText = trim(std::string_view(accessText).substr(4));
+        size_t nameIdx = 0;
+        decl.name = readIdent(accessText, nameIdx);
+        std::string tail = trim(std::string_view(accessText).substr(nameIdx));
+        size_t extends = tail.find("extends function");
+        if (extends == std::string::npos) {
+            diagnostics_.error(line.loc, "malformed function type declaration");
+        } else {
+            std::string func = trim(std::string_view(tail).substr(extends + 16));
+            size_t open = func.find('(');
+            size_t close = open == std::string::npos ? std::string::npos : func.find(')', open);
+            if (open != std::string::npos && close != std::string::npos) {
+                decl.interfaceParams = parseFunctionTypeParamList(func.substr(open + 1, close - open - 1), line.loc);
+                size_t arrow = func.find("->", close);
+                if (arrow != std::string::npos) {
+                    std::string ret = trim(std::string_view(func).substr(arrow + 2));
+                    if (!ret.empty()) {
+                        decl.interfaceReturnType = parseTypeRef(ret, line.loc);
+                    }
+                }
+            } else {
+                diagnostics_.error(line.loc, "malformed function type declaration");
+            }
+        }
+    }
+    if (decl.interfaceReturnType.name.empty()) {
+        decl.interfaceReturnType = TypeRef{"nothing", line.loc, false};
+    }
+    ++stats_.functionInterfaces;
+    return decl;
 }
 
 Decl Parser::parseJassFunction(const std::vector<LogicalLine>& lines, size_t& index) {
@@ -1094,13 +1183,10 @@ std::vector<Decl> Parser::parseZincMembers(const std::vector<LogicalLine>& lines
         }
         std::string accessText = t;
         std::string access = parseAccessPrefix(accessText);
-        if (startsWithWord(accessText, "function interface")) {
-            Decl decl;
-            decl.kind = DeclKind::Unsupported;
+        if (startsWithWord(accessText, "function interface") || isFunctionTypeDecl(t)) {
+            Decl decl = parseFunctionInterface(lines[index]);
             decl.mode = SyntaxMode::Zinc;
-            decl.loc = lines[index].loc;
-            decl.unsupportedFeature = "function interface";
-            decl.lines.push_back(lines[index].text);
+            decl.access = access;
             decls.push_back(std::move(decl));
             ++index;
         } else if (startsWithWord(accessText, "function")) {

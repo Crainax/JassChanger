@@ -123,6 +123,11 @@ void emitAstDecl(std::ostream& out, const Decl& decl, int indent) {
         }
         out << '\n';
     }
+    if (decl.kind == DeclKind::FunctionInterface) {
+        out << pad << "  - interface: " << decl.name
+            << ", returns: " << decl.interfaceReturnType.name
+            << ", params: " << decl.interfaceParams.size() << '\n';
+    }
     for (const auto& child : decl.children) {
         emitAstDecl(out, child, indent + 2);
     }
@@ -155,6 +160,7 @@ std::string emitStatsJson(const SourceManager& sources,
         << "  \"natives\": " << parser.natives << ",\n"
         << "  \"types\": " << parser.types << ",\n"
         << "  \"functions\": " << parser.functions << ",\n"
+        << "  \"functionInterfaces\": " << parser.functionInterfaces << ",\n"
         << "  \"modules\": " << parser.modules << ",\n"
         << "  \"moduleUses\": " << parser.moduleUses << ",\n"
         << "  \"staticIfs\": " << parser.staticIfs << ",\n"
@@ -167,6 +173,13 @@ std::string emitStatsJson(const SourceManager& sources,
         << "  \"modulesUnsupported\": " << parser.modulesUnsupported << ",\n"
         << "  \"staticIfUnsupported\": " << parser.staticIfUnsupported << ",\n"
         << "  \"functionInterfacesUnsupported\": " << parser.functionInterfacesUnsupported << ",\n"
+        << "  \"functionInterfaceTargets\": " << parser.functionInterfaceTargets << ",\n"
+        << "  \"functionInterfaceCalls\": " << parser.functionInterfaceCalls << ",\n"
+        << "  \"functionObjectCalls\": " << parser.functionObjectCalls << ",\n"
+        << "  \"lambdas\": " << parser.lambdas << ",\n"
+        << "  \"lambdasLowered\": " << parser.lambdasLowered << ",\n"
+        << "  \"lambdasCapturingUnsupported\": " << parser.lambdasCapturingUnsupported << ",\n"
+        << "  \"prototypeWrappers\": " << parser.prototypeWrappers << ",\n"
         << "  \"textmacros\": " << pp.textmacros << ",\n"
         << "  \"runtextmacros\": " << pp.runtextmacros << ",\n"
         << "  \"diagnostics\": {\n"
@@ -289,7 +302,7 @@ int main(int argc, char** argv) {
     }
 
     if (!ok) {
-        return expandedProgram.hasUnsupported() ? 6 : 5;
+        return (expandedProgram.hasUnsupported() || diagnostics.unsupportedCount() > 0) ? 6 : 5;
     }
     if (diagnostics.hasErrors()) {
         return 4;

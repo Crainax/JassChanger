@@ -123,6 +123,17 @@ int main(int argc, char** argv) {
         {"phase3_module_zinc_cross_library", "", fixtures / "phase3_module_zinc_cross_library.expected.j"},
         {"phase3_module_zinc_optional_missing", "", fixtures / "phase3_module_zinc_optional_missing.expected.j"},
         {"phase3_module_oninit_ondestroy", "", fixtures / "phase3_module_oninit_ondestroy.expected.j"},
+        {"phase4_function_interface_execute", "", fixtures / "phase4_function_interface_execute.expected.j"},
+        {"phase4_function_interface_evaluate", "", fixtures / "phase4_function_interface_evaluate.expected.j"},
+        {"phase4_nested_evaluate", "", fixtures / "phase4_nested_evaluate.expected.j"},
+        {"phase4_interface_as_function_param", "", fixtures / "phase4_interface_as_function_param.expected.j"},
+        {"phase4_bare_function_value", "", fixtures / "phase4_bare_function_value.expected.j"},
+        {"phase4_static_method_interface", "", fixtures / "phase4_static_method_interface.expected.j"},
+        {"phase4_function_object_evaluate", "", fixtures / "phase4_function_object_evaluate.expected.j"},
+        {"phase4_function_name", "", fixtures / "phase4_function_name.expected.j"},
+        {"phase4_zinc_lambda_code", "", fixtures / "phase4_zinc_lambda_code.expected.j"},
+        {"phase4_zinc_lambda_trigger_action", "", fixtures / "phase4_zinc_lambda_trigger_action.expected.j"},
+        {"phase4_zinc_lambda_interface", "", fixtures / "phase4_zinc_lambda_interface.expected.j"},
     };
 
     bool ok = true;
@@ -137,6 +148,9 @@ int main(int argc, char** argv) {
     ok = runExpectFail(exe, fixtures, outDir, "phase3_negative_module_cycle", "") && ok;
     ok = runExpectFail(exe, fixtures, outDir, "phase3_negative_module_duplicate_field", "") && ok;
     ok = runExpectFail(exe, fixtures, outDir, "phase3_negative_module_private_cross_library", "") && ok;
+    ok = runExpectFail(exe, fixtures, outDir, "phase4_negative_signature_mismatch", "") && ok;
+    ok = runExpectFail(exe, fixtures, outDir, "phase4_negative_evaluate_on_nothing", "") && ok;
+    ok = runExpectFail(exe, fixtures, outDir, "phase4_negative_capturing_lambda", "") && ok;
 
     fs::path stats = outDir / "09.stats.json";
     std::string scan = exe.string() + " " + quote(fixtures / "09_unsupported_struct.in.j") +
@@ -158,6 +172,17 @@ int main(int argc, char** argv) {
         statsText.find("\"modulesUnsupported\": 0") == std::string::npos ||
         statsText.find("\"staticIfs\": 2") == std::string::npos) {
         std::cerr << "phase3 static-if scan did not report expected counters\n";
+        ok = false;
+    }
+
+    stats = outDir / "phase4.stats.json";
+    scan = exe.string() + " " + quote(fixtures / "phase4_function_interface_execute.in.j") +
+           " --scan-only --allow-unsupported --emit-stats " + quote(stats);
+    ok = runCommand(scan) && ok;
+    statsText = readFile(stats);
+    if (statsText.find("\"functionInterfaces\": 1") == std::string::npos ||
+        statsText.find("\"functionInterfacesUnsupported\": 0") == std::string::npos) {
+        std::cerr << "phase4 function-interface scan did not report expected counters\n";
         ok = false;
     }
 

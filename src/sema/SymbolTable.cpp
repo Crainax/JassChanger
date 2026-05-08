@@ -169,7 +169,7 @@ void SymbolTable::buildInContainer(const Decl& container, std::vector<std::strin
     scopePath.push_back(container.name);
     ScopedSymbolMap map;
     for (const auto& child : container.children) {
-        if (child.kind == DeclKind::Function && !child.access.empty()) {
+        if ((child.kind == DeclKind::Function || child.kind == DeclKind::FunctionInterface) && !child.access.empty()) {
             map.replacements[child.name] = makeScopedName(scopePath, child.access, child.name);
         } else if (child.kind == DeclKind::GlobalBlock) {
             collectGlobalNames(child, scopePath, map);

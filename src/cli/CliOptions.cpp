@@ -106,7 +106,7 @@ CliParseResult parseCli(int argc, char** argv) {
 }
 
 void printHelp(std::ostream& out) {
-    out << "vjassc phase3 - vJass/Zinc to JASS compiler prototype\n"
+    out << "vjassc phase4 - vJass/Zinc to JASS compiler prototype\n"
         << "\n"
         << "Usage:\n"
         << "  vjassc <input.j> -o <output.j> [--debug|--release]\n"
@@ -129,7 +129,7 @@ void printHelp(std::ostream& out) {
 }
 
 void printVersion(std::ostream& out) {
-    out << "vjassc phase3 0.3.0\n";
+    out << "vjassc phase4 0.4.0\n";
 }
 
 } // namespace vjassc

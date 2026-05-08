@@ -63,16 +63,62 @@ private:
         std::unordered_map<std::string, size_t> methodIndex;
     };
 
+    struct FunctionSignature {
+        std::vector<std::string> paramTypes;
+        std::string returnType = "nothing";
+    };
+
+    struct FunctionInfo {
+        std::string sourceName;
+        std::string finalName;
+        FunctionSignature signature;
+        bool isStaticMethod = false;
+    };
+
+    struct InterfaceTarget {
+        std::string finalName;
+        int id = 0;
+    };
+
+    struct FunctionInterfaceInfo {
+        const Decl* decl = nullptr;
+        const Decl* container = nullptr;
+        std::string sourceName;
+        std::string finalName;
+        FunctionSignature signature;
+        std::vector<InterfaceTarget> targets;
+        std::unordered_map<std::string, size_t> targetIndexByFinalName;
+    };
+
+    struct LambdaInfo {
+        std::string name;
+        SourceLocation loc;
+        std::vector<ParamDecl> params;
+        TypeRef returnType;
+        std::vector<std::string> bodyLines;
+    };
+
+    struct LoweringContext {
+        const StructInfo* currentStruct = nullptr;
+        const Decl* container = nullptr;
+        std::unordered_map<std::string, std::string>* localTypes = nullptr;
+        std::vector<std::string>* tempLocals = nullptr;
+        int tempCounter = 0;
+    };
+
     void emitGlobals(const Program& program, const LibraryGraphResult& graph);
     void emitDeclGlobals(const Decl& decl, const Decl* container);
     void emitStructGlobals();
     void emitStructGlobalBlock(const StructInfo& info);
+    void emitFunctionInterfaceGlobals();
     void emitTypesAndNatives(const Program& program, const LibraryGraphResult& graph);
     void emitTypeOrNative(const Decl& decl);
     void emitFunctions(const Program& program, const LibraryGraphResult& graph);
     void emitDeclFunctions(const Decl& decl, const Decl* container);
     void emitJassFunction(const Decl& decl, const Decl* container, bool injectInit);
     void emitZincFunction(const Decl& decl, const Decl* container);
+    void emitGeneratedLambdas();
+    void emitFunctionInterfaceRuntime();
     void emitStructFunctions();
     void emitStructSupportFunctions(const StructInfo& info);
     void emitStructMethod(const StructInfo& info, const MethodInfo& method);
@@ -81,8 +127,12 @@ private:
     void collectRootInitializers(const std::vector<Decl>& decls);
     void collectStructs(const std::vector<Decl>& decls, const Decl* container);
     void collectStruct(const Decl& decl, const Decl* container);
+    void collectFunctionInterfaces(const std::vector<Decl>& decls, const Decl* container);
+    void collectFunctions(const std::vector<Decl>& decls, const Decl* container);
+    void collectFunction(const Decl& decl, const Decl* container);
 
     std::string rewriteForContainer(const std::string& line, const Decl* container) const;
+    std::string rewriteGlobalLine(const std::string& line, const Decl* container) const;
     std::string rewriteFunctionHeader(const Decl& decl, const Decl* container) const;
     std::string renameInContainer(const std::string& name, const Decl* container) const;
     std::string makeScopedStructName(const Decl& decl, const Decl* container) const;
@@ -95,6 +145,27 @@ private:
                                      const StructInfo* currentStruct,
                                      std::unordered_map<std::string, std::string>& localTypes,
                                      std::vector<std::string>& extraLines) const;
+    std::vector<std::string> lowerStatementLine(const std::string& line, LoweringContext& ctx) const;
+    std::string lowerExpression(std::string expression,
+                                const std::string& expectedInterfaceType,
+                                LoweringContext& ctx,
+                                std::vector<std::string>& prelude) const;
+    std::string lowerFunctionValue(std::string expression,
+                                   const std::string& expectedInterfaceType,
+                                   LoweringContext& ctx,
+                                   std::vector<std::string>& prelude) const;
+    std::string rewriteCallArguments(std::string expression, LoweringContext& ctx, std::vector<std::string>& prelude) const;
+    std::string rewriteFunctionNames(std::string expression, const StructInfo* currentStruct) const;
+    const FunctionInterfaceInfo* resolveReceiverInterface(const std::string& receiver, const LoweringContext& ctx) const;
+    std::string rewriteReceiverExpression(const std::string& receiver, const LoweringContext& ctx) const;
+    int registerInterfaceTarget(const FunctionInterfaceInfo& iface, const std::string& targetName, SourceLocation loc) const;
+    const FunctionInterfaceInfo* findFunctionInterface(std::string_view name) const;
+    const FunctionInfo* findFunctionInfo(std::string_view name) const;
+    std::string resolveFunctionTargetName(const std::string& expression, const StructInfo* currentStruct) const;
+    bool sameSignature(const FunctionSignature& a, const FunctionSignature& b) const;
+    FunctionSignature signatureFromParams(const std::vector<ParamDecl>& params, const TypeRef& returnType, const StructInfo* currentStruct) const;
+    FunctionSignature parseFunctionSignatureFromHeader(const std::string& header, SyntaxMode mode) const;
+    std::string interfaceGlobalPrefix(const FunctionInterfaceInfo& iface) const;
     void seedFunctionLocalTypes(const std::string& header, std::unordered_map<std::string, std::string>& localTypes) const;
     void seedMethodLocalTypes(const StructInfo& info, const MethodInfo& method, std::unordered_map<std::string, std::string>& localTypes) const;
     const StructInfo* findStruct(std::string_view name) const;
@@ -102,6 +173,7 @@ private:
     const MethodInfo* findMethod(const StructInfo& info, std::string_view name) const;
 
     std::vector<std::string> lowerZincBody(const std::vector<std::string>& lines);
+    std::vector<std::string> extractZincLambdas(const std::vector<std::string>& lines, SourceLocation loc);
     void lowerZincBlock(const std::vector<std::string>& lines, size_t& index, std::vector<std::string>& locals, std::vector<std::string>& body);
     void lowerZincSimpleStatement(const std::string& statement, std::vector<std::string>& locals, std::vector<std::string>& body);
 
@@ -115,6 +187,14 @@ private:
     std::vector<StructInfo> structs_;
     std::unordered_map<const Decl*, size_t> structIndexByDecl_;
     std::unordered_map<std::string, size_t> structIndexByName_;
+    mutable std::vector<FunctionInterfaceInfo> functionInterfaces_;
+    mutable std::unordered_map<std::string, size_t> functionInterfaceIndexByName_;
+    std::vector<FunctionInfo> functions_;
+    std::unordered_map<std::string, size_t> functionIndexByName_;
+    std::vector<LambdaInfo> lambdas_;
+    std::unordered_map<const Decl*, std::vector<std::string>> processedZincFunctionBodies_;
+    std::unordered_map<const MethodDecl*, std::vector<std::string>> processedZincMethodBodies_;
+    size_t nextLambdaId_ = 1;
     const Decl* mainFunction_ = nullptr;
     const Decl* mainContainer_ = nullptr;
 };
