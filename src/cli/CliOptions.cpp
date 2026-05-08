@@ -8,6 +8,8 @@ namespace {
 bool needsValue(const std::string& arg) {
     return arg == "-o" || arg == "--emit-preprocessed" || arg == "--emit-tokens" ||
            arg == "--emit-ast" || arg == "--emit-expanded-ast" || arg == "--emit-stats" ||
+           arg == "--emit-validation-report" || arg == "--pjass" || arg == "--common" ||
+           arg == "--blizzard" || arg == "--compare-jasshelper" || arg == "--pjass-timeout-ms" ||
            arg == "--import-path";
 }
 
@@ -46,6 +48,43 @@ CliParseResult parseCli(int argc, char** argv) {
             opt.allowUnsupported = true;
         } else if (arg == "--check-output-syntax-lite") {
             opt.checkOutputSyntaxLite = true;
+        } else if (arg == "--validate-pjass") {
+            opt.validatePjass = true;
+        } else if (arg == "--pjass") {
+            if (!requireValue(arg, opt.pjassPath)) {
+                return result;
+            }
+        } else if (arg == "--common") {
+            if (!requireValue(arg, opt.commonPath)) {
+                return result;
+            }
+        } else if (arg == "--blizzard") {
+            if (!requireValue(arg, opt.blizzardPath)) {
+                return result;
+            }
+        } else if (arg == "--emit-validation-report") {
+            if (!requireValue(arg, opt.emitValidationReportPath)) {
+                return result;
+            }
+        } else if (arg == "--compare-jasshelper") {
+            if (!requireValue(arg, opt.compareJasshelperPath)) {
+                return result;
+            }
+        } else if (arg == "--pjass-timeout-ms") {
+            std::filesystem::path value;
+            if (!requireValue(arg, value)) {
+                return result;
+            }
+            try {
+                opt.pjassTimeoutMs = std::stoll(value.string());
+            } catch (...) {
+                result.error = "invalid numeric value for " + arg + ": " + value.string();
+                return result;
+            }
+            if (opt.pjassTimeoutMs <= 0) {
+                result.error = "invalid numeric value for " + arg + ": " + value.string();
+                return result;
+            }
         } else if (arg == "--emit-preprocessed") {
             if (!requireValue(arg, opt.emitPreprocessedPath)) {
                 return result;
@@ -108,7 +147,7 @@ CliParseResult parseCli(int argc, char** argv) {
 }
 
 void printHelp(std::ostream& out) {
-    out << "vjassc phase5 - vJass/Zinc to JASS compiler prototype\n"
+    out << "vjassc phase6 - vJass/Zinc to JASS compiler prototype\n"
         << "\n"
         << "Usage:\n"
         << "  vjassc <input.j> -o <output.j> [--debug|--release]\n"
@@ -124,15 +163,22 @@ void printHelp(std::ostream& out) {
         << "  --emit-ast <path>            Write AST dump\n"
         << "  --emit-expanded-ast <path>   Write AST after module expansion\n"
         << "  --emit-stats <path>          Write JSON statistics\n"
+        << "  --emit-validation-report <path> Write JSON validation report\n"
         << "  --import-path <dir>          Add import search directory; may be repeated\n"
         << "  --allow-unsupported          Allow unsupported declarations during scan-only\n"
         << "  --check-output-syntax-lite   Fail if generated output still contains known high-level syntax\n"
+        << "  --validate-pjass             Validate generated output with PJASS\n"
+        << "  --pjass <path>               Path to pjass executable\n"
+        << "  --common <path>              Path to common.j for PJASS\n"
+        << "  --blizzard <path>            Path to blizzard.j for PJASS\n"
+        << "  --pjass-timeout-ms <number>  PJASS timeout metadata value (default: 30000)\n"
+        << "  --compare-jasshelper <path>  Compare generated output structure to JassHelper output\n"
         << "  --version                    Print version\n"
         << "  --help                       Print this help\n";
 }
 
 void printVersion(std::ostream& out) {
-    out << "vjassc phase5 0.5.0\n";
+    out << "vjassc phase6 0.6.0\n";
 }
 
 } // namespace vjassc

@@ -367,6 +367,76 @@ std::vector<std::string> splitCommaListRespectingQuotesAndBrackets(std::string_v
     return parts;
 }
 
+std::vector<std::string> splitSemicolonListRespectingQuotesAndBrackets(std::string_view text) {
+    std::vector<std::string> parts;
+    std::string current;
+    bool inString = false;
+    bool inRaw = false;
+    bool escaped = false;
+    int parens = 0;
+    int brackets = 0;
+    int braces = 0;
+    for (size_t i = 0; i < text.size(); ++i) {
+        char c = text[i];
+        if (!inString && !inRaw && i + 1 < text.size() && c == '/' && text[i + 1] == '/') {
+            current.append(text.substr(i));
+            break;
+        }
+        if (inString) {
+            current.push_back(c);
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                inString = false;
+            }
+            continue;
+        }
+        if (inRaw) {
+            current.push_back(c);
+            if (c == '\'') {
+                inRaw = false;
+            }
+            continue;
+        }
+        if (c == '"') {
+            inString = true;
+            current.push_back(c);
+            continue;
+        }
+        if (c == '\'') {
+            inRaw = true;
+            current.push_back(c);
+            continue;
+        }
+        if (c == '(') {
+            ++parens;
+        } else if (c == ')' && parens > 0) {
+            --parens;
+        } else if (c == '[') {
+            ++brackets;
+        } else if (c == ']' && brackets > 0) {
+            --brackets;
+        } else if (c == '{') {
+            ++braces;
+        } else if (c == '}' && braces > 0) {
+            --braces;
+        } else if (c == ';' && parens == 0 && brackets == 0 && braces == 0) {
+            if (!trim(current).empty()) {
+                parts.push_back(trim(current));
+            }
+            current.clear();
+            continue;
+        }
+        current.push_back(c);
+    }
+    if (!trim(current).empty()) {
+        parts.push_back(trim(current));
+    }
+    return parts;
+}
+
 std::optional<size_t> findTopLevelChar(std::string_view text, char needle) {
     bool inString = false;
     bool inRaw = false;
@@ -505,7 +575,19 @@ bool isFunctionTypeDecl(std::string text) {
 }
 
 std::vector<FieldDecl> parseFieldDecls(const LogicalLine& logical) {
-    std::string line = stripTrailingSemicolon(stripLineComment(logical.text));
+    std::string rawLine = stripLineComment(logical.text);
+    std::vector<std::string> semicolonParts = splitSemicolonListRespectingQuotesAndBrackets(rawLine);
+    if (semicolonParts.size() > 1) {
+        std::vector<FieldDecl> all;
+        for (const auto& part : semicolonParts) {
+            LogicalLine partLine = logical;
+            partLine.text = part;
+            auto fields = parseFieldDecls(partLine);
+            all.insert(all.end(), fields.begin(), fields.end());
+        }
+        return all;
+    }
+    std::string line = stripTrailingSemicolon(rawLine);
     if (line.empty()) {
         return {};
     }

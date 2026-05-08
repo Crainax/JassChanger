@@ -1,6 +1,6 @@
 # vjassc
 
-`vjassc` is a C++20 phase-5 compiler prototype for lowering a supported subset of vJASS/Zinc to plain Warcraft III JASS.
+`vjassc` is a C++20 phase-6 compiler prototype for lowering a supported subset of vJASS/Zinc to plain Warcraft III JASS.
 
 Phase 1 built the compiler foundation: file loading, preprocessing, lexing, top-level parsing, library sorting, minimal public/private rewriting, basic Zinc function lowering, diagnostics, stats, and golden fixture tests.
 
@@ -12,10 +12,12 @@ Phase 4 added `function interface` parsing/lowering, function-object `.execute/.
 
 Phase 5 unlocks full code generation for the real lambda-heavy `samples/input.j`, lowers nested/same-call anonymous functions, emits lambda/function-interface metrics, and adds a lightweight generated-output syntax check. It is still not a complete JassHelper replacement: interface dispatch, delegate, operator overloads, stub/super, capturing closures, byte-for-byte output matching, pjass validation, and runtime validation remain future work.
 
+Phase 6 adds PJASS validation hooks, stronger output syntax-lite checks, initialization integrity validation, and structural comparison against the legacy JassHelper output. The current real-sample output passes syntax-lite and writes validation reports, but PJASS still fails on remaining lowering gaps; runtime validation and behavior matching remain future work.
+
 ## Repository Layout
 
 - `src/`: compiler implementation
-- `tests/fixtures/`: golden cases for the supported phase-1/2/3/4 subset
+- `tests/fixtures/`: golden cases for the supported phase-1/2/3/4/5/6 subset
 - `samples/input.j`: large real input used for scan-only validation
 - `samples/output_jasshelper.j`: legacy JassHelper output reference for later phases
 - `jasshelper/`: old compiler package, kept for behavior comparisons when needed
@@ -24,6 +26,7 @@ Phase 5 unlocks full code generation for the real lambda-heavy `samples/input.j`
 - `docs/phase3_status.md`: phase-3 implementation status and scan baseline
 - `docs/phase4_status.md`: phase-4 implementation status and scan baseline
 - `docs/phase5_status.md`: phase-5 full-codegen status and real input baseline
+- `docs/phase6_status.md`: phase-6 validation, PJASS, comparison, and performance baseline
 
 ## Build
 
@@ -55,6 +58,8 @@ vjassc <input.j> --emit-tokens build/tokens.txt
 vjassc <input.j> --emit-ast build/ast.txt
 vjassc <input.j> --emit-expanded-ast build/expanded.ast.txt
 vjassc <input.j> --emit-stats build/stats.json
+vjassc <input.j> -o <output.j> --emit-validation-report build/validation.json --check-output-syntax-lite
+vjassc <input.j> -o <output.j> --validate-pjass --pjass jasshelper/pjass.exe --common jasshelper/common.j --blizzard jasshelper/blizzard.j
 vjassc --help
 vjassc --version
 ```
@@ -65,9 +70,12 @@ Example:
 build/vjassc samples/minimal_phase1.j -o build/minimal_phase1.out.j
 build/vjassc samples/input.j --scan-only --allow-unsupported --emit-stats build/input.phase5.scan.stats.json
 build/vjassc samples/input.j -o build/input.phase5.out.j --emit-stats build/input.phase5.codegen.stats.json --check-output-syntax-lite
+build/vjassc samples/input.j -o build/input.phase6.out.j --emit-stats build/input.phase6.codegen.stats.json --emit-validation-report build/input.phase6.validation.json --compare-jasshelper samples/output_jasshelper.j --check-output-syntax-lite
 build/vjassc tests/fixtures/phase4_function_interface_execute.in.j -o build/phase4_function_interface_execute.out.j
 ```
 
 ## Phase Boundary
 
-Phase 5 can generate a complete plain-JASS candidate for the real `samples/input.j` and fails full codegen if unsupported declarations, capturing lambdas, unknown lambda contexts, function-interface signature errors, or output syntax-lite errors remain. `--allow-unsupported` is only for scan-only validation and statistics; it does not make partial code generation safe.
+Phase 6 can generate a complete plain-JASS candidate for the real `samples/input.j`, run syntax-lite validation, write a validation report, run PJASS when paths are provided, validate main/init helper wiring, and compare coarse output structure with `samples/output_jasshelper.j`.
+
+The current output is not yet a JassHelper replacement. PJASS execution is wired up but fails on remaining source-lowering gaps such as multi-dimensional array lowering, block-comment filtering, generated-name consistency, duplicate declarations, and unresolved references. `--allow-unsupported` is only for scan-only validation and statistics; it does not make partial code generation safe.

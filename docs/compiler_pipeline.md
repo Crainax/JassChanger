@@ -50,7 +50,7 @@ The output can be written with `--emit-ast`.
 
 ## 6. Codegen
 
-`Phase1Codegen` is still the legacy class name, but it now emits the phase-5 supported subset:
+`Phase1Codegen` is still the legacy class name, but it now emits the phase-6 supported subset:
 
 1. one merged `globals` block with `LIBRARY_` constants
 2. struct support globals plus function-interface trigger/argument/result globals
@@ -63,3 +63,14 @@ The output can be written with `--emit-ast`.
 9. `main` with init helper injection when present
 
 If unsupported language constructs, capturing lambdas, unknown lambda contexts, function-interface signature errors, or output syntax-lite failures are present, normal codegen fails instead of producing invalid success.
+
+## 7. Validate
+
+Phase 6 adds optional validation after output is written:
+
+- `--check-output-syntax-lite` rejects known residual vJASS/Zinc source forms, anonymous-function syntax, invalid local ordering, invalid return shape, and unbalanced function/globals structure
+- `--emit-validation-report` writes output metrics, syntax-lite findings, initialization integrity, PJASS results, JassHelper comparison, and timing data
+- `--validate-pjass` runs `pjass.exe common.j blizzard.j <output>` when the executable and support files are available, saving stdout/stderr and classifying common failure categories
+- `--compare-jasshelper <path>` compares coarse structure against the legacy JassHelper output without attempting byte-for-byte matching
+
+PJASS is currently a validation hook, not a passing guarantee. The real `samples/input.j` output passes syntax-lite but still fails PJASS on remaining lowering gaps.

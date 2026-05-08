@@ -14,12 +14,75 @@
 namespace vjassc {
 namespace {
 
+std::string rewriteOutsideProtected(const std::string& line, const std::function<std::string(std::string)>& rewrite);
+std::string replaceRegex(std::string text, const std::string& pattern, const std::string& replacement);
+
 std::string removeSemicolon(std::string text) {
     text = trim(text);
     if (!text.empty() && text.back() == ';') {
         text.pop_back();
     }
     return trim(text);
+}
+
+std::string removeSemicolonsOutsideProtected(const std::string& line) {
+    std::string out;
+    bool inString = false;
+    bool inRaw = false;
+    bool escaped = false;
+    for (size_t i = 0; i < line.size(); ++i) {
+        if (!inString && !inRaw && i + 1 < line.size() && line[i] == '/' && line[i + 1] == '/') {
+            out += line.substr(i);
+            break;
+        }
+        char c = line[i];
+        if (inString) {
+            out.push_back(c);
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                inString = false;
+            }
+            continue;
+        }
+        if (inRaw) {
+            out.push_back(c);
+            if (c == '\'') {
+                inRaw = false;
+            }
+            continue;
+        }
+        if (c == '"') {
+            inString = true;
+            out.push_back(c);
+            continue;
+        }
+        if (c == '\'') {
+            inRaw = true;
+            out.push_back(c);
+            continue;
+        }
+        if (c != ';') {
+            out.push_back(c);
+        }
+    }
+    return rtrim(out);
+}
+
+std::string normalizeOperatorsOutsideProtected(const std::string& line) {
+    return rewriteOutsideProtected(line, [](std::string text) {
+        text = replaceRegex(text, R"(\s*&&\s*)", " and ");
+        text = replaceRegex(text, R"(\s*\|\|\s*)", " or ");
+        text = replaceRegex(text, R"((^|[^=!<>])!\s*(?!=))", "$1not ");
+        text = replaceRegex(text, R"(\bnot\s+=)", "!=");
+        return text;
+    });
+}
+
+std::string sanitizeGeneratedLine(const std::string& line) {
+    return normalizeOperatorsOutsideProtected(removeSemicolonsOutsideProtected(line));
 }
 
 std::string parseNativeName(const std::string& line) {
@@ -492,6 +555,176 @@ std::optional<size_t> findTopLevelAssignment(const std::string& text) {
     return std::nullopt;
 }
 
+std::string receiverFromPossibleAssignment(const std::string& rawLine) {
+    std::string line = trim(rawLine);
+    if (auto eq = findTopLevelAssignment(line)) {
+        std::string lhs = trim(std::string_view(line).substr(0, *eq));
+        if (startsWithWord(lhs, "set")) {
+            lhs = trim(std::string_view(lhs).substr(3));
+        }
+        if (isLocalDecl(lhs)) {
+            if (startsWithWord(lhs, "constant")) {
+                lhs = trim(std::string_view(lhs).substr(8));
+            }
+            std::istringstream in(lhs);
+            std::string type;
+            std::string name;
+            in >> type >> name;
+            if (name == "array") {
+                in >> name;
+            }
+            return name;
+        }
+        return lhs;
+    }
+    return {};
+}
+
+std::vector<std::string> expandLeadingDotChains(const std::vector<std::string>& lines) {
+    std::vector<std::string> out;
+    std::string receiver;
+    for (const auto& raw : lines) {
+        std::string t = trim(raw);
+        if (!t.empty() && t.front() == '.' && !receiver.empty()) {
+            out.push_back(receiver + t);
+            continue;
+        }
+        out.push_back(raw);
+        std::string nextReceiver = receiverFromPossibleAssignment(t);
+        if (!nextReceiver.empty()) {
+            receiver = nextReceiver;
+        } else if (!t.empty() && t.front() != '.') {
+            receiver.clear();
+        }
+    }
+    return out;
+}
+
+std::vector<std::string> splitZincStructuralLines(const std::vector<std::string>& lines) {
+    std::vector<std::string> out;
+    for (const auto& raw : lines) {
+        std::string current;
+        bool inString = false;
+        bool inRaw = false;
+        bool escaped = false;
+        int parens = 0;
+        int brackets = 0;
+        auto flush = [&]() {
+            std::string t = trim(current);
+            if (!t.empty()) {
+                out.push_back(t);
+            }
+            current.clear();
+        };
+        for (size_t i = 0; i < raw.size(); ++i) {
+            char c = raw[i];
+            if (!inString && !inRaw && i + 1 < raw.size() && c == '/' && raw[i + 1] == '/') {
+                current += raw.substr(i);
+                break;
+            }
+            if (inString) {
+                current.push_back(c);
+                if (escaped) {
+                    escaped = false;
+                } else if (c == '\\') {
+                    escaped = true;
+                } else if (c == '"') {
+                    inString = false;
+                }
+                continue;
+            }
+            if (inRaw) {
+                current.push_back(c);
+                if (c == '\'') {
+                    inRaw = false;
+                }
+                continue;
+            }
+            if (c == '"') {
+                inString = true;
+                current.push_back(c);
+                continue;
+            }
+            if (c == '\'') {
+                inRaw = true;
+                current.push_back(c);
+                continue;
+            }
+            if (c == '(') {
+                ++parens;
+            } else if (c == ')' && parens > 0) {
+                --parens;
+            } else if (c == '[') {
+                ++brackets;
+            } else if (c == ']' && brackets > 0) {
+                --brackets;
+            }
+            if (parens == 0 && brackets == 0 && c == '{') {
+                current.push_back(c);
+                flush();
+                continue;
+            }
+            if (parens == 0 && brackets == 0 && c == '}') {
+                flush();
+                std::string close = "}";
+                size_t j = i + 1;
+                while (j < raw.size() && std::isspace(static_cast<unsigned char>(raw[j]))) {
+                    ++j;
+                }
+                if (j + 4 <= raw.size() && raw.compare(j, 4, "else") == 0 &&
+                    (j + 4 == raw.size() || !isIdentPart(raw[j + 4]))) {
+                    close += " else";
+                    j += 4;
+                    while (j < raw.size() && std::isspace(static_cast<unsigned char>(raw[j]))) {
+                        ++j;
+                    }
+                    while (j < raw.size()) {
+                        char ec = raw[j];
+                        close.push_back(ec);
+                        if (ec == '{') {
+                            break;
+                        }
+                        ++j;
+                    }
+                    i = j;
+                }
+                out.push_back(trim(close));
+                continue;
+            }
+            if (parens == 0 && brackets == 0 && c == ';') {
+                current.push_back(c);
+                flush();
+                continue;
+            }
+            current.push_back(c);
+        }
+        flush();
+    }
+    return out;
+}
+
+struct RangeForParts {
+    bool ok = false;
+    std::string start;
+    std::string var;
+    std::string upperOp;
+    std::string end;
+};
+
+RangeForParts parseRangeForParts(const std::string& content) {
+    RangeForParts result;
+    std::regex pattern(R"(^\s*(.+?)\s*(?:<=|<)\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*(<=|<)\s*(.+?)\s*$)");
+    std::smatch match;
+    if (std::regex_match(content, match, pattern)) {
+        result.ok = true;
+        result.start = trim(match[1].str());
+        result.var = match[2].str();
+        result.upperOp = match[3].str();
+        result.end = trim(match[4].str());
+    }
+    return result;
+}
+
 bool findMethodCallSpan(const std::string& text,
                         const std::string& method,
                         size_t& receiverStart,
@@ -580,6 +813,8 @@ CodegenResult Phase1Codegen::generate(const Program& program) {
     lambdasUnknownContext_ = 0;
     lambdasCapturing_ = 0;
     lambdasRejected_ = 0;
+    lambdaContextStruct_ = nullptr;
+    lambdaContextContainer_ = nullptr;
     functionInterfaceCalls_ = 0;
     functionObjectCalls_ = 0;
     functionInterfaceMaxEvaluateDepth_ = 0;
@@ -609,7 +844,14 @@ CodegenResult Phase1Codegen::generate(const Program& program) {
 CodegenResult Phase1Codegen::makeResult(bool ok) {
     CodegenResult result;
     result.ok = ok;
-    result.output = ok ? writer_.str() : std::string{};
+    if (ok) {
+        std::istringstream in(writer_.str());
+        std::string line;
+        while (std::getline(in, line)) {
+            result.output += sanitizeGeneratedLine(line);
+            result.output += '\n';
+        }
+    }
     result.lambdasLowered = lambdas_.size();
     result.lambdasCodeContext = lambdasCodeContext_;
     result.lambdasBoolexprContext = lambdasBoolexprContext_;
@@ -935,7 +1177,7 @@ void Phase1Codegen::emitGeneratedLambdas() {
     for (const auto& lambda : lambdas_) {
         writer_.writeln();
         writer_.writeln("function " + lambda.name + " takes " + rewriteParamList(lambda.params, false, nullptr) +
-                        " returns " + rewriteTypeName(lambda.returnType.name, nullptr));
+                        " returns " + rewriteTypeName(lambda.returnType.name, lambda.currentStruct));
         writer_.indent();
         std::unordered_map<std::string, std::string> localTypes;
         for (const auto& param : lambda.params) {
@@ -945,7 +1187,7 @@ void Phase1Codegen::emitGeneratedLambdas() {
         }
         std::vector<std::string> lines = lowerZincBody(lambda.bodyLines);
         std::vector<std::string> tempLocals;
-        LoweringContext ctx{nullptr, nullptr, &localTypes, &tempLocals, 0};
+        LoweringContext ctx{lambda.currentStruct, lambda.container, &localTypes, &tempLocals, 0};
         for (const auto& raw : lines) {
             std::string line = trim(raw);
             if (line.empty()) {
@@ -1088,7 +1330,13 @@ void Phase1Codegen::emitStructMethod(const StructInfo& info, const MethodInfo& m
     for (const auto& logical : method.decl->bodyLines) {
         rawLines.push_back(logical.text);
     }
+    const StructInfo* prevLambdaStruct = lambdaContextStruct_;
+    const Decl* prevLambdaContainer = lambdaContextContainer_;
+    lambdaContextStruct_ = &info;
+    lambdaContextContainer_ = info.container;
     rawLines = extractZincLambdas(rawLines, method.decl->loc);
+    lambdaContextStruct_ = prevLambdaStruct;
+    lambdaContextContainer_ = prevLambdaContainer;
     std::vector<std::string> lines = method.decl->mode == SyntaxMode::Zinc ? lowerZincBody(rawLines) : rawLines;
     std::vector<std::string> tempLocals;
     LoweringContext ctx{&info, info.container, &localTypes, &tempLocals, 0};
@@ -1189,6 +1437,7 @@ void Phase1Codegen::collectStruct(const Decl& decl, const Decl* container) {
     info.originalName = decl.name;
     info.generatedName = makeScopedStructName(decl, container);
     info.prefix = "s__" + info.generatedName;
+    info.typeId = static_cast<int>(structs_.size()) + 1;
     info.isArrayStruct = decl.isArrayStruct;
 
     std::unordered_set<std::string> seenFields;
@@ -1399,7 +1648,13 @@ std::string Phase1Codegen::rewriteForContainer(const std::string& line, const De
 std::string Phase1Codegen::rewriteGlobalLine(const std::string& line, const Decl* container) const {
     std::string out = rewriteForContainer(line, container);
     out = stripAccessPrefixFromLine(out);
-    out = removeSemicolon(out);
+    out = removeSemicolonsOutsideProtected(out);
+    out = replaceRegex(out,
+                       R"(^(\s*(?:constant\s+)?[A-Za-z_][A-Za-z0-9_$]*)\s+([A-Za-z_][A-Za-z0-9_$]*)\s*\[\])",
+                       "$1 array $2");
+    out = replaceRegex(out,
+                       R"(^(\s*(?:constant\s+)?[A-Za-z_][A-Za-z0-9_$]*)\s+([A-Za-z_][A-Za-z0-9_$]*)\s+\[\])",
+                       "$1 array $2");
     std::string t = trim(out);
     bool constant = false;
     if (startsWithWord(t, "constant")) {
@@ -1570,15 +1825,18 @@ std::string Phase1Codegen::rewriteLocalDeclLine(const std::string& line,
     std::string type;
     std::string name;
     in >> type >> name;
+    bool array = false;
     if (type.empty() || name.empty()) {
         return line;
     }
     if (name == "array") {
         in >> name;
+        array = true;
     }
     size_t bracket = name.find('[');
     if (bracket != std::string::npos) {
         name = name.substr(0, bracket);
+        array = true;
     }
     if (type == "thistype") {
         localTypes[name] = currentStruct ? currentStruct->originalName : type;
@@ -1588,7 +1846,7 @@ std::string Phase1Codegen::rewriteLocalDeclLine(const std::string& line,
         localTypes[name] = type;
     }
     std::string rewrittenType = rewriteTypeName(type, currentStruct);
-    std::string out = "local " + std::string(constant ? "constant " : "") + rewrittenType + " " + name;
+    std::string out = "local " + std::string(constant ? "constant " : "") + rewrittenType + (array ? " array " : " ") + name;
     if (!init.empty()) {
         extraLines.push_back("set " + name + "=" + rewriteStructExpression(init, currentStruct, localTypes));
     }
@@ -1601,6 +1859,7 @@ std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
     auto rewriteNormal = [&](std::string text) {
         if (currentStruct) {
             if (text.find("thistype") != std::string::npos) {
+                text = replaceRegex(text, R"(\bthistype\s*\.\s*typeid\b)", std::to_string(currentStruct->typeId));
                 text = replaceRegex(text, R"(\bthistype\s*\.\s*allocate\s*\()", currentStruct->prefix + "__allocate(");
                 text = replaceRegex(text, R"(\bthistype\s*\.\s*create\s*\()", currentStruct->prefix + "_create(");
             }
@@ -1610,6 +1869,9 @@ std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
                 continue;
             }
             std::string structName = regexEscape(info.originalName);
+            text = replaceRegex(text,
+                                "\\b" + structName + R"(\s*\.\s*typeid\b)",
+                                std::to_string(info.typeId));
             for (const auto& method : info.methods) {
                 if (method.isStatic || method.name == "create") {
                     text = replaceRegex(text,
@@ -1636,37 +1898,84 @@ std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
         if (currentStruct) {
             for (const auto& field : currentStruct->fields) {
                 if (text.find(field.name) == std::string::npos) {
-                    continue;
+                    if (text.find(field.generatedName) == std::string::npos) {
+                        continue;
+                    }
                 }
                 if (field.isStatic) {
-                    text = replaceRegex(text, "\\b" + regexEscape(field.name) + "\\b", field.generatedName);
+                    text = replaceRegex(text,
+                                        R"((^|[^A-Za-z0-9_$.]))" + regexEscape(field.name) + R"(\b)",
+                                        "$1" + field.generatedName);
                     text = replaceRegex(text,
                                         R"(\bthistype\s*\.\s*)" + regexEscape(field.name) + R"(\b)",
                                         field.generatedName);
+                    text = replaceRegex(text,
+                                        R"(\bthistype\s*\.\s*)" + regexEscape(field.generatedName) + R"(\b)",
+                                        field.generatedName);
+                    if (const StructInfo* fieldStruct = findStruct(field.typeName)) {
+                        std::string receiverPattern = "\\b" + regexEscape(field.generatedName) + R"((\s*\[[^\]]+\])?)";
+                        std::string receiverExpr = field.generatedName + "$1";
+                        for (const auto& nestedField : fieldStruct->fields) {
+                            if (!nestedField.isStatic) {
+                                text = replaceRegex(text,
+                                                    receiverPattern + R"(\s*\.\s*)" + regexEscape(nestedField.name) + R"(\b)",
+                                                    nestedField.generatedName + "[" + receiverExpr + "]");
+                            }
+                        }
+                        for (const auto& nestedMethod : fieldStruct->methods) {
+                            if (!nestedMethod.isStatic) {
+                                text = replaceRegex(text,
+                                                    receiverPattern + R"(\s*\.\s*)" + regexEscape(nestedMethod.name) + R"(\s*\()",
+                                                    nestedMethod.generatedName + "(" + receiverExpr +
+                                                        (nestedMethod.decl->params.empty() ? "" : ", "));
+                            }
+                        }
+                    }
                     continue;
                 }
                 if (field.isFixedArray && field.fixedArraySize > 0) {
                     std::string indexed = field.generatedName + "[this*" + std::to_string(field.fixedArraySize) + "+$1]";
                     text = replaceRegex(text,
+                                        R"(\bthistype\s*\[\s*([^\]]+)\s*\]\s*\.\s*)" + regexEscape(field.name) + R"(\s*\[\s*([^\]]+)\s*\])",
+                                        field.generatedName + "[$1*" + std::to_string(field.fixedArraySize) + "+$2]");
+                    text = replaceRegex(text,
                                         R"(\bthis\s*\.\s*)" + regexEscape(field.name) + R"(\s*\[\s*([^\]]+)\s*\])",
                                         indexed);
                     text = replaceRegex(text,
-                                        R"((^|[^A-Za-z0-9_$])\.\s*)" + regexEscape(field.name) + R"(\s*\[\s*([^\]]+)\s*\])",
+                                        R"((^|[^A-Za-z0-9_$)\]])\.\s*)" + regexEscape(field.name) + R"(\s*\[\s*([^\]]+)\s*\])",
                                         "$1" + indexed);
                 }
                 std::string access = field.generatedName + "[this]";
+                text = replaceRegex(text,
+                                    R"(\bthistype\s*\[\s*([^\]]+)\s*\]\s*\.\s*)" + regexEscape(field.name) + R"(\b)",
+                                    field.generatedName + "[$1]");
                 text = replaceRegex(text, R"(\bthis\s*\.\s*)" + regexEscape(field.name) + R"(\b)", access);
-                text = replaceRegex(text, R"((^|[^A-Za-z0-9_$])\.\s*)" + regexEscape(field.name) + R"(\b)", "$1" + access);
+                text = replaceRegex(text, R"((^|[^A-Za-z0-9_$)\]])\.\s*)" + regexEscape(field.name) + R"(\b)", "$1" + access);
             }
             for (const auto& method : currentStruct->methods) {
                 if (method.isStatic) {
+                    text = replaceRegex(text,
+                                        R"(\bfunction\s+thistype\s*\.\s*)" + regexEscape(method.name) + R"(\b)",
+                                        "function " + method.generatedName);
+                    text = replaceRegex(text,
+                                        R"(\bfunction\s+thistype\s*\.\s*)" + regexEscape(method.generatedName) + R"(\b)",
+                                        "function " + method.generatedName);
+                    text = replaceRegex(text,
+                                        R"(\bthistype\s*\.\s*)" + regexEscape(method.name) + R"(\s*\()",
+                                        method.generatedName + "(");
+                    text = replaceRegex(text,
+                                        R"(\bthistype\s*\.\s*)" + regexEscape(method.generatedName) + R"(\s*\()",
+                                        method.generatedName + "(");
                     continue;
                 }
                 if (text.find(method.name) == std::string::npos) {
                     continue;
                 }
                 text = replaceRegex(text,
-                                    R"((^|[^A-Za-z0-9_$])\.\s*)" + regexEscape(method.name) + R"(\s*\()",
+                                    R"(\bthistype\s*\[\s*([^\]]+)\s*\]\s*\.\s*)" + regexEscape(method.name) + R"(\s*\()",
+                                    method.generatedName + "($1" + (method.decl->params.empty() ? "" : ", "));
+                text = replaceRegex(text,
+                                    R"((^|[^A-Za-z0-9_$)\]])\.\s*)" + regexEscape(method.name) + R"(\s*\()",
                                     "$1" + method.generatedName + "(this" + (method.decl->params.empty() ? "" : ", "));
             }
             if (!currentStruct->isArrayStruct && text.find("allocate") != std::string::npos) {
@@ -1683,6 +1992,8 @@ std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
                 continue;
             }
             std::string var = regexEscape(varName);
+            std::string receiverPattern = "\\b" + var + R"((\s*\[[^\]]+\])?)";
+            std::string receiverExpr = varName + "$1";
             for (const auto& field : varStruct->fields) {
                 if (field.isStatic) {
                     continue;
@@ -1695,6 +2006,9 @@ std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
                 text = replaceRegex(text,
                                     "\\b" + var + R"(\s*\.\s*)" + regexEscape(field.name) + R"(\b)",
                                     field.generatedName + "[" + varName + "]");
+                text = replaceRegex(text,
+                                    receiverPattern + R"(\s*\.\s*)" + regexEscape(field.name) + R"(\b)",
+                                    field.generatedName + "[" + receiverExpr + "]");
             }
             for (const auto& method : varStruct->methods) {
                 if (method.isStatic) {
@@ -1703,11 +2017,17 @@ std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
                 text = replaceRegex(text,
                                     "\\b" + var + R"(\s*\.\s*)" + regexEscape(method.name) + R"(\s*\()",
                                     method.generatedName + "(" + varName + (method.decl->params.empty() ? "" : ", "));
+                text = replaceRegex(text,
+                                    receiverPattern + R"(\s*\.\s*)" + regexEscape(method.name) + R"(\s*\()",
+                                    method.generatedName + "(" + receiverExpr + (method.decl->params.empty() ? "" : ", "));
             }
             if (!varStruct->isArrayStruct) {
                 text = replaceRegex(text,
                                     "\\b" + var + R"(\s*\.\s*destroy\s*\(\s*\))",
                                     varStruct->prefix + "_destroy(" + varName + ")");
+                text = replaceRegex(text,
+                                    receiverPattern + R"(\s*\.\s*destroy\s*\(\s*\))",
+                                    varStruct->prefix + "_destroy(" + receiverExpr + ")");
             }
         }
         return text;
@@ -1817,6 +2137,11 @@ const Phase1Codegen::FunctionInterfaceInfo* Phase1Codegen::resolveReceiverInterf
     } else if (ctx.currentStruct) {
         if (const FieldInfo* field = findField(*ctx.currentStruct, expr)) {
             return findFunctionInterface(field->typeName);
+        }
+        for (const auto& field : ctx.currentStruct->fields) {
+            if (expr == field.generatedName || expr.rfind(field.generatedName + "[", 0) == 0) {
+                return findFunctionInterface(field.typeName);
+            }
         }
     }
     return nullptr;
@@ -2154,8 +2479,9 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
 std::vector<std::string> Phase1Codegen::lowerZincBody(const std::vector<std::string>& lines) {
     std::vector<std::string> locals;
     std::vector<std::string> body;
+    std::vector<std::string> normalized = splitZincStructuralLines(expandLeadingDotChains(lines));
     size_t index = 0;
-    lowerZincBlock(lines, index, locals, body);
+    lowerZincBlock(normalized, index, locals, body);
     std::vector<std::string> out;
     out.insert(out.end(), locals.begin(), locals.end());
     out.insert(out.end(), body.begin(), body.end());
@@ -2197,6 +2523,8 @@ std::vector<std::string> Phase1Codegen::extractZincLambdas(const std::vector<std
 
             LambdaInfo lambda;
             lambda.loc = loc;
+            lambda.currentStruct = lambdaContextStruct_;
+            lambda.container = lambdaContextContainer_;
             lambda.loc.line += static_cast<uint32_t>(index);
             lambda.name = "vjlambda__" + std::to_string(nextLambdaId_++);
             lambda.returnType = TypeRef{"nothing", loc, false};
@@ -2281,7 +2609,7 @@ std::vector<std::string> Phase1Codegen::extractZincLambdas(const std::vector<std
             FunctionInfo fnInfo;
             fnInfo.sourceName = lambda.name;
             fnInfo.finalName = lambda.name;
-            fnInfo.signature = signatureFromParams(lambda.params, lambda.returnType, nullptr);
+            fnInfo.signature = signatureFromParams(lambda.params, lambda.returnType, lambda.currentStruct);
             size_t fnIndex = functions_.size();
             functions_.push_back(fnInfo);
             functionIndexByName_[lambda.name] = fnIndex;
@@ -2353,9 +2681,30 @@ void Phase1Codegen::lowerZincBlock(const std::vector<std::string>& lines, size_t
         if (startsWithWord(line, "if")) {
             std::string cond = conditionFromHeader(line);
             body.push_back("if " + cond + " then");
+            size_t close = findMatchingParen(line, line.find('('));
+            std::string inlineBody = close == std::string::npos ? "" : trim(std::string_view(line).substr(close + 1));
+            if (!inlineBody.empty() && inlineBody.front() != '{') {
+                lowerZincSimpleStatement(inlineBody, locals, body);
+                body.push_back("endif");
+                ++index;
+                continue;
+            }
             ++index;
             lowerZincBlock(lines, index, locals, body);
-            if (index < lines.size() && trim(lines[index]).rfind("} else", 0) == 0) {
+            if (index + 1 < lines.size() && trim(lines[index]) == "}" && trim(lines[index + 1]).rfind("else", 0) == 0) {
+                ++index;
+            }
+            while (index < lines.size() &&
+                   (trim(lines[index]).rfind("} else if", 0) == 0 || trim(lines[index]).rfind("else if", 0) == 0)) {
+                std::string elseIfLine = trim(lines[index]);
+                size_t ifPos = elseIfLine.find("if");
+                std::string elseIfCond = ifPos == std::string::npos ? "()" : conditionFromHeader(elseIfLine.substr(ifPos));
+                body.push_back("elseif " + elseIfCond + " then");
+                ++index;
+                lowerZincBlock(lines, index, locals, body);
+            }
+            if (index < lines.size() &&
+                (trim(lines[index]).rfind("} else", 0) == 0 || trim(lines[index]).rfind("else", 0) == 0)) {
                 body.push_back("else");
                 ++index;
                 lowerZincBlock(lines, index, locals, body);
@@ -2382,6 +2731,20 @@ void Phase1Codegen::lowerZincBlock(const std::vector<std::string>& lines, size_t
                 body.push_back("endloop");
                 continue;
             }
+            RangeForParts range = parseRangeForParts(content);
+            if (range.ok) {
+                body.push_back("set " + range.var + " = " + range.start);
+                body.push_back("loop");
+                body.push_back("    exitwhen not (" + range.var + " " + range.upperOp + " " + range.end + ")");
+                ++index;
+                lowerZincBlock(lines, index, locals, body);
+                body.push_back("set " + range.var + " = " + range.var + " + 1");
+                if (index < lines.size() && trim(lines[index]) == "}") {
+                    ++index;
+                }
+                body.push_back("endloop");
+                continue;
+            }
         }
         if (line.find(';') != std::string::npos) {
             for (const auto& statement : splitSemicolons(line)) {
@@ -2400,6 +2763,9 @@ void Phase1Codegen::lowerZincBlock(const std::vector<std::string>& lines, size_t
 void Phase1Codegen::lowerZincSimpleStatement(const std::string& rawStatement, std::vector<std::string>& locals, std::vector<std::string>& body) {
     std::string statement = removeSemicolon(rawStatement);
     if (statement.empty()) {
+        return;
+    }
+    if (startsWithWord(statement, "else") || statement.find('{') != std::string::npos || statement.find('}') != std::string::npos) {
         return;
     }
     if (startsWithWord(statement, "return")) {
@@ -2421,7 +2787,17 @@ void Phase1Codegen::lowerZincSimpleStatement(const std::string& rawStatement, st
         std::string name;
         in >> type >> name;
         if (!type.empty() && !name.empty()) {
-            locals.push_back(std::string("local ") + (constant ? "constant " : "") + type + " " + name);
+            bool array = false;
+            if (name == "array") {
+                in >> name;
+                array = true;
+            }
+            size_t bracket = name.find('[');
+            if (bracket != std::string::npos) {
+                name = name.substr(0, bracket);
+                array = true;
+            }
+            locals.push_back(std::string("local ") + (constant ? "constant " : "") + type + (array ? " array " : " ") + name);
             if (!init.empty()) {
                 body.push_back("set " + name + " = " + init);
             }

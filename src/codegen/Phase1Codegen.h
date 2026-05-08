@@ -71,6 +71,7 @@ private:
         std::string originalName;
         std::string generatedName;
         std::string prefix;
+        int typeId = 0;
         bool isArrayStruct = false;
         std::vector<FieldInfo> fields;
         std::vector<MethodInfo> methods;
@@ -108,6 +109,8 @@ private:
     struct LambdaInfo {
         std::string name;
         SourceLocation loc;
+        const StructInfo* currentStruct = nullptr;
+        const Decl* container = nullptr;
         std::vector<ParamDecl> params;
         TypeRef returnType;
         std::vector<std::string> bodyLines;
@@ -220,6 +223,8 @@ private:
     size_t lambdasUnknownContext_ = 0;
     size_t lambdasCapturing_ = 0;
     size_t lambdasRejected_ = 0;
+    const StructInfo* lambdaContextStruct_ = nullptr;
+    const Decl* lambdaContextContainer_ = nullptr;
     mutable size_t functionInterfaceCalls_ = 0;
     mutable size_t functionObjectCalls_ = 0;
     mutable size_t functionInterfaceMaxEvaluateDepth_ = 0;

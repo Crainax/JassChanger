@@ -137,6 +137,9 @@ int main(int argc, char** argv) {
         {"phase5_multiple_lambdas_same_call", "", fixtures / "phase5_multiple_lambdas_same_call.expected.j"},
         {"phase5_nested_lambda", "", fixtures / "phase5_nested_lambda.expected.j"},
         {"phase5_comment_lambda_ignored", "", fixtures / "phase5_comment_lambda_ignored.expected.j"},
+        {"phase6_range_for_zinc", "", fixtures / "phase6_range_for_zinc.expected.j"},
+        {"phase6_method_chain_zinc", "", fixtures / "phase6_method_chain_zinc.expected.j"},
+        {"phase6_thistype_array_typeid", "", fixtures / "phase6_thistype_array_typeid.expected.j"},
     };
 
     bool ok = true;

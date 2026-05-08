@@ -23,6 +23,8 @@ add_executable(vjassc
     src/sema/ModuleExpander.cpp
     src/codegen/CodeWriter.cpp
     src/codegen/Phase1Codegen.cpp
+    src/validation/OutputAnalysis.cpp
+    src/validation/PjassRunner.cpp
     src/util/PathUtil.cpp
     src/util/JsonWriter.cpp
 )

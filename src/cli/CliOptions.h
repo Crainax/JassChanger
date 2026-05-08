@@ -15,11 +15,18 @@ struct CliOptions {
     std::filesystem::path emitAstPath;
     std::filesystem::path emitExpandedAstPath;
     std::filesystem::path emitStatsPath;
+    std::filesystem::path emitValidationReportPath;
+    std::filesystem::path pjassPath;
+    std::filesystem::path commonPath;
+    std::filesystem::path blizzardPath;
+    std::filesystem::path compareJasshelperPath;
     std::vector<std::filesystem::path> importPaths;
+    long long pjassTimeoutMs = 30000;
     bool debugMode = false;
     bool scanOnly = false;
     bool allowUnsupported = false;
     bool checkOutputSyntaxLite = false;
+    bool validatePjass = false;
     bool showHelp = false;
     bool showVersion = false;
 };

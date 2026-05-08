@@ -9,12 +9,15 @@
 #include "sema/ModuleExpander.h"
 #include "util/JsonWriter.h"
 #include "util/PathUtil.h"
+#include "validation/OutputAnalysis.h"
+#include "validation/PjassRunner.h"
 
 #include <chrono>
 #include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <unordered_map>
 #include <vector>
 
 using namespace vjassc;
@@ -28,6 +31,10 @@ struct Timings {
     long long lex = 0;
     long long parse = 0;
     long long moduleExpand = 0;
+    long long codegen = 0;
+    long long syntaxLite = 0;
+    long long pjass = 0;
+    long long comparison = 0;
     long long total = 0;
 };
 
@@ -370,6 +377,179 @@ std::string emitStatsJson(const SourceManager& sources,
         << "    \"lex\": " << timings.lex << ",\n"
         << "    \"parse\": " << timings.parse << ",\n"
         << "    \"moduleExpand\": " << timings.moduleExpand << ",\n"
+        << "    \"codegen\": " << timings.codegen << ",\n"
+        << "    \"syntaxLite\": " << timings.syntaxLite << ",\n"
+        << "    \"pjass\": " << timings.pjass << ",\n"
+        << "    \"comparison\": " << timings.comparison << ",\n"
+        << "    \"total\": " << timings.total << "\n"
+        << "  }\n"
+        << "}\n";
+    return out.str();
+}
+
+void writeMetricsJson(std::ostream& out, const OutputMetrics& metrics, int indent) {
+    std::string pad(static_cast<size_t>(indent), ' ');
+    std::string pad2(static_cast<size_t>(indent + 2), ' ');
+    out << "{\n"
+        << pad2 << "\"bytes\": " << metrics.bytes << ",\n"
+        << pad2 << "\"lines\": " << metrics.lines << ",\n"
+        << pad2 << "\"globalsBlocks\": " << metrics.globalsBlocks << ",\n"
+        << pad2 << "\"globalDeclarations\": " << metrics.globalsDeclarations << ",\n"
+        << pad2 << "\"natives\": " << metrics.natives << ",\n"
+        << pad2 << "\"types\": " << metrics.types << ",\n"
+        << pad2 << "\"functions\": " << metrics.functions << ",\n"
+        << pad2 << "\"generatedLambdaFunctions\": " << metrics.generatedLambdaFunctions << ",\n"
+        << pad2 << "\"structSupportFunctions\": " << metrics.structSupportFunctions << ",\n"
+        << pad2 << "\"functionInterfaceWrappers\": " << metrics.functionInterfaceWrappers << ",\n"
+        << pad2 << "\"sourceFormResidues\": " << metrics.sourceFormResidues << ",\n"
+        << pad2 << "\"duplicateFunctionNames\": " << metrics.duplicateFunctionNames << ",\n"
+        << pad2 << "\"duplicateGlobalNames\": " << metrics.duplicateGlobalNames << ",\n"
+        << pad2 << "\"duplicateNativeNames\": " << metrics.duplicateNativeNames << ",\n"
+        << pad2 << "\"hasMain\": " << (metrics.hasMain ? "true" : "false") << ",\n"
+        << pad2 << "\"hasConfig\": " << (metrics.hasConfig ? "true" : "false") << "\n"
+        << pad << "}";
+}
+
+void writeStringArrayJson(std::ostream& out, const std::vector<std::string>& values, int indent) {
+    std::string pad(static_cast<size_t>(indent), ' ');
+    out << "[";
+    if (!values.empty()) {
+        out << "\n";
+        for (size_t i = 0; i < values.size(); ++i) {
+            out << pad << "  ";
+            writeJsonString(out, values[i]);
+            out << (i + 1 == values.size() ? "\n" : ",\n");
+        }
+        out << pad;
+    }
+    out << "]";
+}
+
+void writeIssueArrayJson(std::ostream& out, const std::vector<ValidationIssue>& issues, int indent, size_t limit) {
+    std::string pad(static_cast<size_t>(indent), ' ');
+    out << "[";
+    if (!issues.empty()) {
+        out << "\n";
+        size_t count = std::min(limit, issues.size());
+        for (size_t i = 0; i < count; ++i) {
+            const auto& issue = issues[i];
+            out << pad << "  {\n"
+                << pad << "    \"check\": ";
+            writeJsonString(out, issue.check);
+            out << ",\n" << pad << "    \"line\": " << issue.line << ",\n"
+                << pad << "    \"message\": ";
+            writeJsonString(out, issue.message);
+            out << ",\n" << pad << "    \"snippet\": ";
+            writeJsonString(out, issue.snippet);
+            out << "\n" << pad << "  }" << (i + 1 == count ? "\n" : ",\n");
+        }
+        out << pad;
+    }
+    out << "]";
+}
+
+void writePjassSummaryJson(std::ostream& out, const std::unordered_map<std::string, size_t>& summary, int indent) {
+    std::string pad(static_cast<size_t>(indent), ' ');
+    out << "{";
+    if (!summary.empty()) {
+        out << "\n";
+        size_t i = 0;
+        for (const auto& [key, value] : summary) {
+            out << pad << "  ";
+            writeJsonString(out, key);
+            out << ": " << value << (++i == summary.size() ? "\n" : ",\n");
+        }
+        out << pad;
+    }
+    out << "}";
+}
+
+std::string emitValidationReportJson(const CliOptions& options,
+                                     const OutputSyntaxReport& syntax,
+                                     const InitValidationReport& init,
+                                     const PjassResult& pjass,
+                                     const ComparisonReport& comparison,
+                                     const Timings& timings) {
+    std::ostringstream out;
+    out << "{\n"
+        << "  \"input\": ";
+    writeJsonString(out, pathToGenericString(options.inputPath));
+    out << ",\n  \"output\": ";
+    writeJsonString(out, pathToGenericString(options.outputPath));
+    out << ",\n  \"syntaxLite\": {\n"
+        << "    \"ran\": " << (syntax.ran ? "true" : "false") << ",\n"
+        << "    \"ok\": " << (syntax.ok ? "true" : "false") << ",\n"
+        << "    \"residualSourceForms\": ";
+    writeStringArrayJson(out, syntax.residualSourceForms, 4);
+    out << ",\n    \"issueCount\": " << syntax.issues.size() << ",\n"
+        << "    \"issuesPreview\": ";
+    writeIssueArrayJson(out, syntax.issues, 4, 20);
+    out << ",\n    \"metrics\": ";
+    writeMetricsJson(out, syntax.metrics, 4);
+    out << "\n  },\n  \"init\": {\n"
+        << "    \"hasMain\": " << (init.hasMain ? "true" : "false") << ",\n"
+        << "    \"hasConfig\": " << (init.hasConfig ? "true" : "false") << ",\n"
+        << "    \"hasStructInit\": " << (init.hasStructInit ? "true" : "false") << ",\n"
+        << "    \"hasFunctionInterfaceInit\": " << (init.hasFunctionInterfaceInit ? "true" : "false") << ",\n"
+        << "    \"hasLibraryInit\": " << (init.hasLibraryInit ? "true" : "false") << ",\n"
+        << "    \"mainCallsStructInit\": " << (init.mainCallsStructInit ? "true" : "false") << ",\n"
+        << "    \"mainCallsFunctionInterfaceInit\": " << (init.mainCallsFunctionInterfaceInit ? "true" : "false") << ",\n"
+        << "    \"mainCallsLibraryInit\": " << (init.mainCallsLibraryInit ? "true" : "false") << ",\n"
+        << "    \"structBeforeFunctionInterface\": " << (init.structBeforeFunctionInterface ? "true" : "false") << ",\n"
+        << "    \"functionInterfaceBeforeLibrary\": " << (init.functionInterfaceBeforeLibrary ? "true" : "false") << ",\n"
+        << "    \"libraryInitializerCount\": " << init.libraryInitializerCount << ",\n"
+        << "    \"structInitializerCount\": " << init.structInitializerCount << ",\n"
+        << "    \"issues\": ";
+    writeStringArrayJson(out, init.issues, 4);
+    out << "\n  },\n  \"pjass\": {\n"
+        << "    \"requested\": " << (pjass.requested ? "true" : "false") << ",\n"
+        << "    \"ran\": " << (pjass.ran ? "true" : "false") << ",\n"
+        << "    \"ok\": " << (pjass.ok ? "true" : "false") << ",\n"
+        << "    \"exitCode\": " << pjass.exitCode << ",\n"
+        << "    \"elapsedMs\": " << pjass.elapsedMs << ",\n"
+        << "    \"commandLine\": ";
+    writeJsonString(out, pjass.commandLine);
+    out << ",\n    \"stdoutPath\": ";
+    writeJsonString(out, pathToGenericString(pjass.stdoutPath));
+    out << ",\n    \"stderrPath\": ";
+    writeJsonString(out, pathToGenericString(pjass.stderrPath));
+    out << ",\n    \"stdoutPreview\": ";
+    writeJsonString(out, previewText(pjass.stdoutText));
+    out << ",\n    \"stderrPreview\": ";
+    writeJsonString(out, previewText(pjass.stderrText));
+    out << ",\n    \"error\": ";
+    writeJsonString(out, pjass.error);
+    out << ",\n    \"errorSummary\": ";
+    writePjassSummaryJson(out, pjass.errorSummary, 4);
+    out << "\n  },\n  \"comparison\": {\n"
+        << "    \"jasshelperReference\": ";
+    writeJsonString(out, pathToGenericString(comparison.referencePath));
+    out << ",\n    \"referenceFound\": " << (comparison.referenceFound ? "true" : "false") << ",\n"
+        << "    \"generated\": ";
+    writeMetricsJson(out, comparison.generated, 4);
+    out << ",\n    \"reference\": ";
+    writeMetricsJson(out, comparison.reference, 4);
+    long long functionDelta = static_cast<long long>(comparison.generated.functions) -
+                              static_cast<long long>(comparison.reference.functions);
+    long long lineDelta = static_cast<long long>(comparison.generated.lines) -
+                          static_cast<long long>(comparison.reference.lines);
+    out << ",\n    \"delta\": {\n"
+        << "      \"functions\": " << functionDelta << ",\n"
+        << "      \"lines\": " << lineDelta << "\n"
+        << "    },\n"
+        << "    \"notes\": ";
+    writeStringArrayJson(out, comparison.notes, 4);
+    out << "\n  },\n  \"timingMs\": {\n"
+        << "    \"read\": " << timings.read << ",\n"
+        << "    \"preprocess\": " << timings.preprocess << ",\n"
+        << "    \"staticIf\": " << timings.staticIf << ",\n"
+        << "    \"lex\": " << timings.lex << ",\n"
+        << "    \"parse\": " << timings.parse << ",\n"
+        << "    \"moduleExpand\": " << timings.moduleExpand << ",\n"
+        << "    \"codegen\": " << timings.codegen << ",\n"
+        << "    \"syntaxLite\": " << timings.syntaxLite << ",\n"
+        << "    \"pjass\": " << timings.pjass << ",\n"
+        << "    \"comparison\": " << timings.comparison << ",\n"
         << "    \"total\": " << timings.total << "\n"
         << "  }\n"
         << "}\n";
@@ -459,9 +639,16 @@ int main(int argc, char** argv) {
     }
 
     CodegenResult codegen;
+    OutputSyntaxReport syntaxReport;
+    InitValidationReport initReport;
+    ComparisonReport comparisonReport;
+    PjassResult pjassResult;
     if (!options.scanOnly && !options.outputPath.empty()) {
+        auto codegenStart = std::chrono::steady_clock::now();
         Phase1Codegen generator(diagnostics, CodegenOptions{options.scanOnly, options.allowUnsupported});
         codegen = generator.generate(expandedProgram);
+        auto codegenEnd = std::chrono::steady_clock::now();
+        timings.codegen = elapsedMs(codegenStart, codegenEnd);
         expandedProgram.stats.lambdasLowered = codegen.lambdasLowered;
         if (codegen.lambdasGeneratedFunctions > expandedProgram.stats.lambdas) {
             expandedProgram.stats.lambdas = codegen.lambdasGeneratedFunctions;
@@ -484,10 +671,68 @@ int main(int argc, char** argv) {
         ok = codegen.ok && ok;
         if (codegen.ok) {
             ok = writeTextFile(options.outputPath, codegen.output) && ok;
-            if (options.checkOutputSyntaxLite) {
-                for (const auto& error : checkOutputSyntaxLite(codegen.output)) {
-                    diagnostics.error(SourceLocation{}, "output syntax lite check failed: " + error);
+            if (options.checkOutputSyntaxLite || !options.emitValidationReportPath.empty()) {
+                auto syntaxStart = std::chrono::steady_clock::now();
+                syntaxReport = analyzeOutputSyntaxLite(codegen.output);
+                initReport = analyzeInitIntegrity(codegen.output);
+                auto syntaxEnd = std::chrono::steady_clock::now();
+                timings.syntaxLite = elapsedMs(syntaxStart, syntaxEnd);
+                if (options.checkOutputSyntaxLite && !syntaxReport.ok) {
+                    size_t shown = 0;
+                    for (const auto& issue : syntaxReport.issues) {
+                        if (shown++ >= 20) {
+                            break;
+                        }
+                        diagnostics.error(SourceLocation{}, "output syntax lite check failed: " +
+                                                              issue.check + ": " + issue.message +
+                                                              (issue.line == 0 ? "" : " at line " + std::to_string(issue.line)));
+                    }
                     ok = false;
+                }
+            }
+            if (!options.compareJasshelperPath.empty() || !options.emitValidationReportPath.empty()) {
+                auto comparisonStart = std::chrono::steady_clock::now();
+                std::filesystem::path reference = options.compareJasshelperPath.empty()
+                    ? std::filesystem::path("samples/output_jasshelper.j")
+                    : options.compareJasshelperPath;
+                comparisonReport = compareWithReference(codegen.output, reference);
+                auto comparisonEnd = std::chrono::steady_clock::now();
+                timings.comparison = elapsedMs(comparisonStart, comparisonEnd);
+            }
+            if (options.validatePjass) {
+                pjassResult.requested = true;
+                PjassResolvedPaths paths = resolvePjassPaths(std::filesystem::current_path(),
+                                                             options.pjassPath,
+                                                             options.commonPath,
+                                                             options.blizzardPath);
+                if (!paths.ok) {
+                    pjassResult.error = paths.error;
+                    diagnostics.error(SourceLocation{}, paths.error);
+                    ok = false;
+                } else {
+                    std::filesystem::path reportBase = options.emitValidationReportPath.empty()
+                        ? options.outputPath
+                        : options.emitValidationReportPath;
+                    std::filesystem::path stdoutPath = reportBase;
+                    stdoutPath.replace_extension(".pjass.stdout.txt");
+                    std::filesystem::path stderrPath = reportBase;
+                    stderrPath.replace_extension(".pjass.stderr.txt");
+                    PjassOptions pjassOptions;
+                    pjassOptions.pjassPath = paths.pjassPath;
+                    pjassOptions.commonPath = paths.commonPath;
+                    pjassOptions.blizzardPath = paths.blizzardPath;
+                    pjassOptions.scriptPath = options.outputPath;
+                    pjassOptions.stdoutPath = stdoutPath;
+                    pjassOptions.stderrPath = stderrPath;
+                    pjassOptions.timeoutMs = options.pjassTimeoutMs;
+                    auto pjassStart = std::chrono::steady_clock::now();
+                    pjassResult = runPjass(pjassOptions);
+                    auto pjassEnd = std::chrono::steady_clock::now();
+                    timings.pjass = elapsedMs(pjassStart, pjassEnd);
+                    if (!pjassResult.ok) {
+                        diagnostics.error(SourceLocation{}, "PJASS validation failed; see validation report and pjass logs");
+                        ok = false;
+                    }
                 }
             }
         }
@@ -496,6 +741,19 @@ int main(int argc, char** argv) {
     timings.total = elapsedMs(totalStart, std::chrono::steady_clock::now());
     if (!options.emitStatsPath.empty()) {
         ok = writeTextFile(options.emitStatsPath, emitStatsJson(sources, preprocessed.stats, expandedProgram.stats, diagnostics, timings)) && ok;
+    }
+    if (!options.emitValidationReportPath.empty()) {
+        if (!syntaxReport.ran && !codegen.output.empty()) {
+            syntaxReport = analyzeOutputSyntaxLite(codegen.output);
+            initReport = analyzeInitIntegrity(codegen.output);
+        }
+        if (comparisonReport.generated.bytes == 0 && !codegen.output.empty()) {
+            comparisonReport = compareWithReference(codegen.output, options.compareJasshelperPath.empty()
+                                                                      ? std::filesystem::path("samples/output_jasshelper.j")
+                                                                      : options.compareJasshelperPath);
+        }
+        ok = writeTextFile(options.emitValidationReportPath,
+                           emitValidationReportJson(options, syntaxReport, initReport, pjassResult, comparisonReport, timings)) && ok;
     }
 
     if (!diagnostics.all().empty()) {
