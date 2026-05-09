@@ -345,9 +345,13 @@ std::string emitStatsJson(const SourceManager& sources,
                           const PreprocessStats& pp,
                           const ParserStats& parser,
                           const Diagnostics& diagnostics,
+                          CompileMode mode,
                           const Timings& timings) {
     std::ostringstream out;
     out << "{\n"
+        << "  \"mode\": ";
+    writeJsonString(out, compileModeName(mode));
+    out << ",\n"
         << "  \"files\": " << sources.fileCount() << ",\n"
         << "  \"bytes\": " << sources.totalBytes() << ",\n"
         << "  \"lines\": " << sources.totalLines() << ",\n"
@@ -736,6 +740,42 @@ bool isCompilerGeneratedFunctionName(std::string_view name) {
            name.find("__action_wrapper") != std::string_view::npos;
 }
 
+bool hasPjassConfiguration(const CliOptions& options) {
+    return options.validatePjass || !options.pjassPath.empty() || !options.commonPath.empty() ||
+           !options.blizzardPath.empty() || std::filesystem::exists("jasshelper/pjass.exe");
+}
+
+bool shouldRunSyntaxLite(const CliOptions& options) {
+    if (options.mode == CompileMode::Fast) {
+        return false;
+    }
+    return options.checkOutputSyntaxLite || options.mode == CompileMode::Validate ||
+           options.mode == CompileMode::FullValidation ||
+           (options.mode == CompileMode::Legacy && !options.emitValidationReportPath.empty());
+}
+
+bool shouldFailOnSyntaxLite(const CliOptions& options) {
+    return options.checkOutputSyntaxLite || options.mode == CompileMode::Validate ||
+           options.mode == CompileMode::FullValidation;
+}
+
+bool shouldRunPjassValidation(const CliOptions& options) {
+    if (options.mode == CompileMode::Fast) {
+        return false;
+    }
+    return options.validatePjass ||
+           ((options.mode == CompileMode::Validate || options.mode == CompileMode::FullValidation) &&
+            hasPjassConfiguration(options));
+}
+
+bool shouldRunComparison(const CliOptions& options) {
+    if (options.mode == CompileMode::Fast) {
+        return false;
+    }
+    return !options.compareJasshelperPath.empty() || options.mode == CompileMode::FullValidation ||
+           (options.mode == CompileMode::Legacy && !options.emitValidationReportPath.empty());
+}
+
 std::string classifyPhase12TriageBucket(const PjassErrorGroup& group, const PjassErrorExample& example) {
     if (group.kind == "returnMissingValue") {
         return isCompilerGeneratedFunctionName(example.functionName) ? "returnMissingValue.generatedWrapper"
@@ -952,7 +992,10 @@ std::string emitValidationReportJson(const CliOptions& options,
                                      const Timings& timings) {
     std::ostringstream out;
     out << "{\n"
-        << "  \"phase\": 13,\n"
+        << "  \"phase\": 15,\n"
+        << "  \"mode\": ";
+    writeJsonString(out, compileModeName(options.mode));
+    out << ",\n"
         << "  \"input\": ";
     writeJsonString(out, pathToGenericString(options.inputPath));
     out << ",\n  \"output\": ";
@@ -1089,6 +1132,10 @@ int main(int argc, char** argv) {
         return 1;
     }
     const CliOptions& options = parsed.options;
+    const bool runSyntaxLite = shouldRunSyntaxLite(options);
+    const bool failOnSyntaxLite = shouldFailOnSyntaxLite(options);
+    const bool runPjassValidation = shouldRunPjassValidation(options);
+    const bool runComparison = shouldRunComparison(options);
     if (options.showHelp) {
         printHelp(std::cout);
         return 0;
@@ -1150,11 +1197,11 @@ int main(int argc, char** argv) {
         initReport = analyzeInitIntegrity(existingOutput);
         auto syntaxEnd = std::chrono::steady_clock::now();
         timings.syntaxLite = elapsedMs(syntaxStart, syntaxEnd);
-        if (options.checkOutputSyntaxLite && !syntaxReport.ok) {
+        if (failOnSyntaxLite && !syntaxReport.ok) {
             ok = false;
         }
 
-        if (!options.compareJasshelperPath.empty() || !options.emitValidationReportPath.empty()) {
+        if (runComparison) {
             auto comparisonStart = std::chrono::steady_clock::now();
             comparisonReport = compareWithReference(existingOutput, options.compareJasshelperPath.empty()
                                                                         ? std::filesystem::path("samples/output_jasshelper.j")
@@ -1163,7 +1210,7 @@ int main(int argc, char** argv) {
             timings.comparison = elapsedMs(comparisonStart, comparisonEnd);
         }
 
-        if (options.validatePjass) {
+        if (runPjassValidation) {
             pjassResult.requested = true;
             PjassResolvedPaths paths = resolvePjassPaths(std::filesystem::current_path(),
                                                          options.pjassPath,
@@ -1307,13 +1354,13 @@ int main(int argc, char** argv) {
         ok = codegen.ok && ok;
         if (codegen.ok) {
             ok = writeTextFile(options.outputPath, codegen.output) && ok;
-            if (options.checkOutputSyntaxLite || !options.emitValidationReportPath.empty()) {
+            if (runSyntaxLite) {
                 auto syntaxStart = std::chrono::steady_clock::now();
                 syntaxReport = analyzeOutputSyntaxLite(codegen.output);
                 initReport = analyzeInitIntegrity(codegen.output);
                 auto syntaxEnd = std::chrono::steady_clock::now();
                 timings.syntaxLite = elapsedMs(syntaxStart, syntaxEnd);
-                if (options.checkOutputSyntaxLite && !syntaxReport.ok) {
+                if (failOnSyntaxLite && !syntaxReport.ok) {
                     size_t shown = 0;
                     for (const auto& issue : syntaxReport.issues) {
                         if (shown++ >= 20) {
@@ -1326,7 +1373,7 @@ int main(int argc, char** argv) {
                     ok = false;
                 }
             }
-            if (!options.compareJasshelperPath.empty() || !options.emitValidationReportPath.empty()) {
+            if (runComparison) {
                 auto comparisonStart = std::chrono::steady_clock::now();
                 std::filesystem::path reference = options.compareJasshelperPath.empty()
                     ? std::filesystem::path("samples/output_jasshelper.j")
@@ -1335,7 +1382,7 @@ int main(int argc, char** argv) {
                 auto comparisonEnd = std::chrono::steady_clock::now();
                 timings.comparison = elapsedMs(comparisonStart, comparisonEnd);
             }
-            if (options.validatePjass) {
+            if (runPjassValidation) {
                 pjassResult.requested = true;
                 PjassResolvedPaths paths = resolvePjassPaths(std::filesystem::current_path(),
                                                              options.pjassPath,
@@ -1378,14 +1425,14 @@ int main(int argc, char** argv) {
 
     timings.total = elapsedMs(totalStart, std::chrono::steady_clock::now());
     if (!options.emitStatsPath.empty()) {
-        ok = writeTextFile(options.emitStatsPath, emitStatsJson(sources, preprocessed.stats, expandedProgram.stats, diagnostics, timings)) && ok;
+        ok = writeTextFile(options.emitStatsPath, emitStatsJson(sources, preprocessed.stats, expandedProgram.stats, diagnostics, options.mode, timings)) && ok;
     }
     if (!options.emitValidationReportPath.empty()) {
-        if (!syntaxReport.ran && !codegen.output.empty()) {
+        if (runSyntaxLite && !syntaxReport.ran && !codegen.output.empty()) {
             syntaxReport = analyzeOutputSyntaxLite(codegen.output);
             initReport = analyzeInitIntegrity(codegen.output);
         }
-        if (comparisonReport.generated.bytes == 0 && !codegen.output.empty()) {
+        if (runComparison && comparisonReport.generated.bytes == 0 && !codegen.output.empty()) {
             comparisonReport = compareWithReference(codegen.output, options.compareJasshelperPath.empty()
                                                                       ? std::filesystem::path("samples/output_jasshelper.j")
                                                                       : options.compareJasshelperPath);

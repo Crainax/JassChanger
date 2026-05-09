@@ -10,6 +10,7 @@
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 
 namespace vjassc {
 namespace {
@@ -379,7 +380,12 @@ std::string blankProtectedForAnalysis(const std::string& line) {
     return out;
 }
 
-std::vector<ValidationIssue> findForwardFunctionReferences(std::string_view output, bool lambdaOnly) {
+struct ForwardReferenceReports {
+    std::vector<ValidationIssue> functions;
+    std::vector<ValidationIssue> lambdas;
+};
+
+ForwardReferenceReports findForwardFunctionReferences(std::string_view output) {
     std::vector<std::string> lines;
     std::istringstream in{std::string(output)};
     std::string line;
@@ -398,9 +404,7 @@ std::vector<ValidationIssue> findForwardFunctionReferences(std::string_view outp
         }
     }
 
-    std::vector<ValidationIssue> issues;
-    std::regex functionRef(R"(\bfunction\s+([A-Za-z_$][A-Za-z0-9_$]*)\b)");
-    std::regex callLike(R"(\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\()");
+    ForwardReferenceReports reports;
     std::string currentFunction;
     for (size_t i = 0; i < lines.size(); ++i) {
         std::string t = trim(stripProtected(lines[i]));
@@ -420,29 +424,51 @@ std::vector<ValidationIssue> findForwardFunctionReferences(std::string_view outp
             if (name.empty() || name == currentFunction) {
                 return;
             }
-            if (lambdaOnly != (name.rfind("vjlambda__", 0) == 0)) {
-                return;
-            }
             auto def = definitions.find(name);
             if (def != definitions.end() && def->second > i + 1) {
-                issues.push_back(ValidationIssue{lambdaOnly ? "forwardLambdaReference" : "forwardFunctionReference",
+                const bool lambda = name.rfind("vjlambda__", 0) == 0;
+                auto& issues = lambda ? reports.lambdas : reports.functions;
+                issues.push_back(ValidationIssue{lambda ? "forwardLambdaReference" : "forwardFunctionReference",
                                                  i + 1,
                                                  "reference before declaration: " + name + " in " + currentFunction,
                                                  trim(lines[i])});
             }
         };
-        for (std::sregex_iterator it(code.begin(), code.end(), functionRef), end; it != end; ++it) {
-            add((*it)[1].str());
-        }
-        for (std::sregex_iterator it(code.begin(), code.end(), callLike), end; it != end; ++it) {
-            std::string name = (*it)[1].str();
-            if (name == "function" || name == "if" || name == "call" || name == "set" || name == "return") {
+        for (size_t pos = 0; pos < code.size();) {
+            if (!isWordPart(code[pos]) || std::isdigit(static_cast<unsigned char>(code[pos]))) {
+                ++pos;
                 continue;
             }
-            add(name);
+            size_t start = pos++;
+            while (pos < code.size() && isWordPart(code[pos])) {
+                ++pos;
+            }
+            std::string name = code.substr(start, pos - start);
+            size_t after = pos;
+            while (after < code.size() && std::isspace(static_cast<unsigned char>(code[after]))) {
+                ++after;
+            }
+            if (name == "function") {
+                while (after < code.size() && !isWordPart(code[after])) {
+                    ++after;
+                }
+                if (after < code.size() && !std::isdigit(static_cast<unsigned char>(code[after]))) {
+                    size_t targetStart = after++;
+                    while (after < code.size() && isWordPart(code[after])) {
+                        ++after;
+                    }
+                    add(code.substr(targetStart, after - targetStart));
+                }
+                continue;
+            }
+            if (after < code.size() && code[after] == '(' &&
+                name != "if" && name != "call" && name != "set" && name != "return" &&
+                name != "loop" && name != "exitwhen") {
+                add(name);
+            }
         }
     }
-    return issues;
+    return reports;
 }
 
 size_t linePositionInMain(std::string_view output, const std::string& callName) {
@@ -741,8 +767,9 @@ OutputSyntaxReport analyzeOutputSyntaxLite(std::string_view output) {
     if (report.metrics.duplicateGlobalNames != 0) {
         addIssue(report, "duplicateGlobalNames", 0, "duplicate global declarations remain", "");
     }
-    report.forwardFunctionReferences = findForwardFunctionReferences(output, false);
-    report.forwardLambdaReferences = findForwardFunctionReferences(output, true);
+    ForwardReferenceReports forwardReferences = findForwardFunctionReferences(output);
+    report.forwardFunctionReferences = std::move(forwardReferences.functions);
+    report.forwardLambdaReferences = std::move(forwardReferences.lambdas);
     for (const auto& issue : report.forwardFunctionReferences) {
         report.trueFunctionCycles.push_back(ValidationIssue{
             "trueFunctionCycleCandidate",

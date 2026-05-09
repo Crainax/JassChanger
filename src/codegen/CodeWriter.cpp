@@ -1,26 +1,69 @@
 #include "codegen/CodeWriter.h"
 
+#include <utility>
+
 namespace vjassc {
 
-void CodeWriter::writeln(const std::string& line) {
-    for (int i = 0; i < indent_; ++i) {
-        out_ << "    ";
+FastCodeWriter::FastCodeWriter(size_t reserveBytes) {
+    indentCache_[0] = "";
+    for (size_t i = 1; i < indentCache_.size(); ++i) {
+        indentCache_[i] = indentCache_[i - 1] + "    ";
     }
-    out_ << line << '\n';
+    reserve(reserveBytes);
 }
 
-void CodeWriter::indent() {
+void FastCodeWriter::reserve(size_t bytes) {
+    out_.reserve(bytes);
+}
+
+void FastCodeWriter::clear() {
+    out_.clear();
+    indent_ = 0;
+}
+
+std::string_view FastCodeWriter::indentText() const {
+    if (indent_ <= 0) {
+        return {};
+    }
+    if (static_cast<size_t>(indent_) < indentCache_.size()) {
+        return indentCache_[static_cast<size_t>(indent_)];
+    }
+    return indentCache_.back();
+}
+
+void FastCodeWriter::writeln(std::string_view line) {
+    if (indent_ > 0) {
+        std::string_view cached = indentText();
+        out_.append(cached.data(), cached.size());
+        for (int i = static_cast<int>(indentCache_.size()); i <= indent_; ++i) {
+            out_.append("    ");
+        }
+    }
+    out_.append(line.data(), line.size());
+    out_.push_back('\n');
+}
+
+void FastCodeWriter::writeRaw(std::string_view text) {
+    out_.append(text.data(), text.size());
+}
+
+void FastCodeWriter::indent() {
     ++indent_;
 }
 
-void CodeWriter::dedent() {
+void FastCodeWriter::dedent() {
     if (indent_ > 0) {
         --indent_;
     }
 }
 
-std::string CodeWriter::str() const {
-    return out_.str();
+std::string FastCodeWriter::str() const {
+    return out_;
+}
+
+std::string FastCodeWriter::take() {
+    indent_ = 0;
+    return std::move(out_);
 }
 
 } // namespace vjassc

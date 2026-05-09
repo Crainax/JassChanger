@@ -194,6 +194,10 @@ int main(int argc, char** argv) {
         {"phase14_zinc_chain_comments_static_field", "", fixtures / "phase14_zinc_chain_comments_static_field.expected.j"},
         {"phase14_zinc_call_result_destroy", "", fixtures / "phase14_zinc_call_result_destroy.expected.j"},
         {"phase14_zinc_standalone_leading_dot_chain", "", fixtures / "phase14_zinc_standalone_leading_dot_chain.expected.j"},
+        {"phase15_mode_fast_cli", "--mode fast", fixtures / "phase15_mode_fast_cli.expected.j"},
+        {"phase15_bare_field_fastpath", "", fixtures / "phase15_bare_field_fastpath.expected.j"},
+        {"phase15_static_method_fastpath", "", fixtures / "phase15_static_method_fastpath.expected.j"},
+        {"phase15_local_shadow_fastpath", "", fixtures / "phase15_local_shadow_fastpath.expected.j"},
     };
 
     bool ok = true;

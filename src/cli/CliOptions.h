@@ -7,6 +7,13 @@
 
 namespace vjassc {
 
+enum class CompileMode {
+    Legacy,
+    Fast,
+    Validate,
+    FullValidation,
+};
+
 struct CliOptions {
     std::filesystem::path inputPath;
     std::filesystem::path outputPath;
@@ -34,6 +41,7 @@ struct CliOptions {
     bool validatePjass = false;
     bool showHelp = false;
     bool showVersion = false;
+    CompileMode mode = CompileMode::Legacy;
 };
 
 struct CliParseResult {
@@ -43,6 +51,7 @@ struct CliParseResult {
 };
 
 CliParseResult parseCli(int argc, char** argv);
+const char* compileModeName(CompileMode mode);
 void printHelp(std::ostream& out);
 void printVersion(std::ostream& out);
 

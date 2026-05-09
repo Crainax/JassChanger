@@ -66,11 +66,21 @@ If unsupported language constructs, capturing lambdas, unknown lambda contexts, 
 
 ## 7. Validate
 
-Phase 6 adds optional validation after output is written:
+Phase 6 added optional validation after output is written. Phase 15 groups the
+common combinations behind compile modes:
+
+- `--mode fast` writes output only and skips syntax-lite, PJASS, and
+  JassHelper comparison
+- `--mode validate` writes output, runs syntax-lite/init validation, and runs
+  PJASS when PJASS paths are available
+- `--mode full-validation` keeps syntax-lite, PJASS, validation reports, and
+  JassHelper structural comparison
 
 - `--check-output-syntax-lite` rejects known residual vJASS/Zinc source forms, anonymous-function syntax, invalid local ordering, invalid return shape, and unbalanced function/globals structure
 - `--emit-validation-report` writes output metrics, syntax-lite findings, initialization integrity, PJASS results, JassHelper comparison, and timing data
 - `--validate-pjass` runs `pjass.exe common.j blizzard.j <output>` when the executable and support files are available, saving stdout/stderr and classifying common failure categories
 - `--compare-jasshelper <path>` compares coarse structure against the legacy JassHelper output without attempting byte-for-byte matching
 
-PJASS is currently a validation hook, not a passing guarantee. The real `samples/input.j` output passes syntax-lite but still fails PJASS on remaining lowering gaps.
+PJASS is a validation hook. The real `samples/input.j` output currently passes
+syntax-lite and PJASS when `InitTrig_japi` is supplied as a validation-only
+external stub.

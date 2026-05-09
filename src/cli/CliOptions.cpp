@@ -13,10 +13,25 @@ bool needsValue(const std::string& arg) {
            arg == "--blizzard" || arg == "--compare-jasshelper" || arg == "--pjass-timeout-ms" ||
            arg == "--import-path" || arg == "--analyze-pjass-log" ||
            arg == "--validate-existing-output" || arg == "--emit-pjass-examples" ||
-           arg == "--pjass-allow-external" || arg == "--allow-external-init";
+           arg == "--pjass-allow-external" || arg == "--allow-external-init" ||
+           arg == "--mode";
 }
 
 } // namespace
+
+const char* compileModeName(CompileMode mode) {
+    switch (mode) {
+    case CompileMode::Legacy:
+        return "legacy";
+    case CompileMode::Fast:
+        return "fast";
+    case CompileMode::Validate:
+        return "validate";
+    case CompileMode::FullValidation:
+        return "full-validation";
+    }
+    return "legacy";
+}
 
 CliParseResult parseCli(int argc, char** argv) {
     CliParseResult result;
@@ -37,6 +52,22 @@ CliParseResult parseCli(int argc, char** argv) {
             opt.showHelp = true;
         } else if (arg == "--version") {
             opt.showVersion = true;
+        } else if (arg == "--mode") {
+            std::filesystem::path value;
+            if (!requireValue(arg, value)) {
+                return result;
+            }
+            std::string mode = value.string();
+            if (mode == "fast") {
+                opt.mode = CompileMode::Fast;
+            } else if (mode == "validate") {
+                opt.mode = CompileMode::Validate;
+            } else if (mode == "full-validation") {
+                opt.mode = CompileMode::FullValidation;
+            } else {
+                result.error = "invalid mode for --mode: " + mode + " (expected fast, validate, or full-validation)";
+                return result;
+            }
         } else if (arg == "-o") {
             if (!requireValue(arg, opt.outputPath)) {
                 return result;
@@ -183,7 +214,7 @@ CliParseResult parseCli(int argc, char** argv) {
 }
 
 void printHelp(std::ostream& out) {
-    out << "vjassc phase6 - vJass/Zinc to JASS compiler prototype\n"
+    out << "vjassc phase15 - vJass/Zinc to JASS compiler prototype\n"
         << "\n"
         << "Usage:\n"
         << "  vjassc <input.j> -o <output.j> [--debug|--release]\n"
@@ -191,6 +222,7 @@ void printHelp(std::ostream& out) {
         << "\n"
         << "Options:\n"
         << "  -o <path>                    Write generated JASS\n"
+        << "  --mode <mode>                fast, validate, or full-validation validation profile\n"
         << "  --debug                      Keep debug lines and strip the debug prefix\n"
         << "  --release                    Drop debug lines (default)\n"
         << "  -warn, --warn                Emit runtime struct allocation/destroy warnings\n"
@@ -220,7 +252,7 @@ void printHelp(std::ostream& out) {
 }
 
 void printVersion(std::ostream& out) {
-    out << "vjassc phase6 0.6.0\n";
+    out << "vjassc phase15 0.15.0\n";
 }
 
 } // namespace vjassc
