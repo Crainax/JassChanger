@@ -119,6 +119,7 @@ private:
     struct InterfaceTarget {
         std::string finalName;
         int id = 0;
+        bool needsAction = false;
     };
 
     struct FunctionInterfaceInfo {
@@ -129,6 +130,8 @@ private:
         FunctionSignature signature;
         std::vector<InterfaceTarget> targets;
         std::unordered_map<std::string, size_t> targetIndexByFinalName;
+        bool allTargetsNeedAction = false;
+        bool syntheticFunctionObject = false;
     };
 
     struct LambdaInfo {
@@ -172,6 +175,10 @@ private:
     void collectStructs(const std::vector<Decl>& decls, const Decl* container, const Decl* libraryContainer);
     void collectStruct(const Decl& decl, const Decl* container, const Decl* libraryContainer);
     void collectFunctionInterfaces(const std::vector<Decl>& decls, const Decl* container);
+    void collectFunctionObjectEvaluateInterfaces(const std::vector<Decl>& decls,
+                                                 const Decl* container,
+                                                 const StructInfo* currentStruct);
+    void collectFunctionObjectEvaluateInterfaceFromLine(const std::string& line, const StructInfo* currentStruct);
     void collectFunctions(const std::vector<Decl>& decls, const Decl* container);
     void collectFunction(const Decl& decl, const Decl* container);
     void rememberFunctionInterfaceParamTypes(const std::string& sourceName,
@@ -216,7 +223,13 @@ private:
     const FunctionInterfaceInfo* resolveReceiverInterface(const std::string& receiver, const LoweringContext& ctx) const;
     std::string rewriteReceiverExpression(const std::string& receiver, const LoweringContext& ctx) const;
     int registerInterfaceTarget(const FunctionInterfaceInfo& iface, const std::string& targetName, SourceLocation loc) const;
+    void markInterfaceTargetNeedsAction(const FunctionInterfaceInfo& iface,
+                                        const std::string& rewrittenReceiverExpression,
+                                        SourceLocation loc) const;
     const FunctionInterfaceInfo* findFunctionInterface(std::string_view name) const;
+    FunctionInterfaceInfo& ensureFunctionObjectInterface(const FunctionSignature& signature) const;
+    const FunctionInterfaceInfo* findFunctionObjectInterface(const FunctionSignature& signature) const;
+    std::string functionSignatureKey(const FunctionSignature& signature) const;
     std::string resolveFunctionInterfaceTypeName(std::string_view name, const Decl* container) const;
     const FunctionInfo* findFunctionInfo(std::string_view name) const;
     std::string resolveFunctionTargetName(const std::string& expression, const StructInfo* currentStruct) const;
@@ -252,6 +265,7 @@ private:
     std::unordered_map<std::string, std::string> globalStructTypes_;
     mutable std::vector<FunctionInterfaceInfo> functionInterfaces_;
     mutable std::unordered_map<std::string, size_t> functionInterfaceIndexByName_;
+    mutable std::unordered_map<std::string, size_t> functionObjectInterfaceIndexBySignature_;
     std::vector<FunctionInfo> functions_;
     std::unordered_map<std::string, size_t> functionIndexByName_;
     std::unordered_map<std::string, std::vector<std::string>> functionInterfaceParamTypesByFunction_;

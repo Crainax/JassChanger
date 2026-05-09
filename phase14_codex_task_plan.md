@@ -771,6 +771,8 @@ Phase 14 完成时，应至少交付：
 - struct onInit 顺序：按 library requires 拓扑排序，修复 uiLifeCycle 早于 uiDragger 的依赖要求。
 - function cycle bridge：优先打断无参反向边，减少带 code 参数调用的全局临时 bridge。
 - function-object 参数 lowering：补齐 .execute/.evaluate 中 receiver-field 参数改写。
+- function interface OOS 风险：默认注册 TriggerAddCondition 并用 TriggerEvaluate 调用；仅显式 .execute() 的目标额外注册 TriggerAddAction 并保留 TriggerExecute。
+- Zinc 前导点链：修复链式调用中间穿插纯注释行时 receiver 丢失的问题，避免 itemBtns.icons[i] 初始化漏掉 setTopRightPadding/setPoint/setTexture。
 ```
 
 ### 14.3 当前保留的三类任务语义

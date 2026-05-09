@@ -59,13 +59,19 @@ endfunction
 function Phase10Target takes integer x returns nothing
 endfunction
 
-function vjfi__Phase10F__Phase10Target__wrapper takes nothing returns nothing
+function vjfi__Phase10F__Phase10Target__condition_wrapper takes nothing returns boolean
+    call Phase10Target(vjfi__Phase10F_arg0)
+    return true
+endfunction
+
+function vjfi__Phase10F__Phase10Target__action_wrapper takes nothing returns nothing
     call Phase10Target(vjfi__Phase10F_arg0)
 endfunction
 
 function vjassc__init_function_interfaces takes nothing returns nothing
     set vjfi__Phase10F_trigger[1]=CreateTrigger()
-    call TriggerAddAction(vjfi__Phase10F_trigger[1], function vjfi__Phase10F__Phase10Target__wrapper)
+    call TriggerAddCondition(vjfi__Phase10F_trigger[1], Condition(function vjfi__Phase10F__Phase10Target__condition_wrapper))
+    call TriggerAddAction(vjfi__Phase10F_trigger[1], function vjfi__Phase10F__Phase10Target__action_wrapper)
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing

@@ -23,20 +23,21 @@ function Test takes real x returns real
     local integer f
     set f=1
     set vjfi__RealFunc_arg0=x
-    call TriggerExecute(vjfi__RealFunc_trigger[f])
+    call TriggerEvaluate(vjfi__RealFunc_trigger[f])
     set vjfi__RealFunc_tmp1=vjfi__RealFunc_result
     set vjfi__RealFunc_arg0=vjfi__RealFunc_tmp1 + 1.0
-    call TriggerExecute(vjfi__RealFunc_trigger[f])
+    call TriggerEvaluate(vjfi__RealFunc_trigger[f])
     return vjfi__RealFunc_result
 endfunction
 
-function vjfi__RealFunc__Double__wrapper takes nothing returns nothing
+function vjfi__RealFunc__Double__condition_wrapper takes nothing returns boolean
     set vjfi__RealFunc_result=Double(vjfi__RealFunc_arg0)
+    return true
 endfunction
 
 function vjassc__init_function_interfaces takes nothing returns nothing
     set vjfi__RealFunc_trigger[1]=CreateTrigger()
-    call TriggerAddAction(vjfi__RealFunc_trigger[1], function vjfi__RealFunc__Double__wrapper)
+    call TriggerAddCondition(vjfi__RealFunc_trigger[1], Condition(function vjfi__RealFunc__Double__condition_wrapper))
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing

@@ -3,6 +3,18 @@
 globals
     constant boolean LIBRARY_Phase14FunctionObjectEvaluateArgs=true
     unit array s__Phase14FunctionObjectEvaluateArgs___keyshop_playerU
+    trigger array vjfi__vjfo__prototype1_trigger
+    unit vjfi__vjfo__prototype1_arg0
+    integer vjfi__vjfo__prototype1_arg1
+    boolean vjfi__vjfo__prototype1_result
+    boolean vjfi__vjfo__prototype1_tmp1
+    boolean vjfi__vjfo__prototype1_tmp2
+    boolean vjfi__vjfo__prototype1_tmp3
+    boolean vjfi__vjfo__prototype1_tmp4
+    boolean vjfi__vjfo__prototype1_tmp5
+    boolean vjfi__vjfo__prototype1_tmp6
+    boolean vjfi__vjfo__prototype1_tmp7
+    boolean vjfi__vjfo__prototype1_tmp8
 endglobals
 
 
@@ -12,6 +24,9 @@ endfunction
 
 function Test takes integer pid, integer idx returns nothing
     call Phase14FunctionObjectEvaluateArgs___RefreshProduct(s__Phase14FunctionObjectEvaluateArgs___keyshop_playerU[pid], idx)
+endfunction
+
+function vjassc__init_function_interfaces takes nothing returns nothing
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing

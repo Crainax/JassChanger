@@ -21,7 +21,7 @@ endfunction
 
 function Apply takes integer x, integer f returns integer
     set vjfi__F_arg0=x
-    call TriggerExecute(vjfi__F_trigger[f])
+    call TriggerEvaluate(vjfi__F_trigger[f])
     return vjfi__F_result
 endfunction
 
@@ -29,13 +29,14 @@ function Test takes nothing returns integer
     return Apply(1, 1)
 endfunction
 
-function vjfi__F__Inc__wrapper takes nothing returns nothing
+function vjfi__F__Inc__condition_wrapper takes nothing returns boolean
     set vjfi__F_result=Inc(vjfi__F_arg0)
+    return true
 endfunction
 
 function vjassc__init_function_interfaces takes nothing returns nothing
     set vjfi__F_trigger[1]=CreateTrigger()
-    call TriggerAddAction(vjfi__F_trigger[1], function vjfi__F__Inc__wrapper)
+    call TriggerAddCondition(vjfi__F_trigger[1], Condition(function vjfi__F__Inc__condition_wrapper))
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing

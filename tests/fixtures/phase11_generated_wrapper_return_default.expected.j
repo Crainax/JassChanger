@@ -21,17 +21,18 @@ endfunction
 function Test takes nothing returns integer
     local integer provider
     set provider=1
-    call TriggerExecute(vjfi__IntProvider_trigger[provider])
+    call TriggerEvaluate(vjfi__IntProvider_trigger[provider])
     return vjfi__IntProvider_result
 endfunction
 
-function vjfi__IntProvider__FortyTwo__wrapper takes nothing returns nothing
+function vjfi__IntProvider__FortyTwo__condition_wrapper takes nothing returns boolean
     set vjfi__IntProvider_result=FortyTwo()
+    return true
 endfunction
 
 function vjassc__init_function_interfaces takes nothing returns nothing
     set vjfi__IntProvider_trigger[1]=CreateTrigger()
-    call TriggerAddAction(vjfi__IntProvider_trigger[1], function vjfi__IntProvider__FortyTwo__wrapper)
+    call TriggerAddCondition(vjfi__IntProvider_trigger[1], Condition(function vjfi__IntProvider__FortyTwo__condition_wrapper))
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing

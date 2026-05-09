@@ -731,7 +731,9 @@ void writeForwardCyclesJson(std::ostream& out, const OutputSyntaxReport& syntax,
 
 bool isCompilerGeneratedFunctionName(std::string_view name) {
     return name.rfind("vjassc__", 0) == 0 || name.rfind("vjlambda__", 0) == 0 ||
-           name.find("__wrapper") != std::string_view::npos;
+           name.find("__wrapper") != std::string_view::npos ||
+           name.find("__condition_wrapper") != std::string_view::npos ||
+           name.find("__action_wrapper") != std::string_view::npos;
 }
 
 std::string classifyPhase12TriageBucket(const PjassErrorGroup& group, const PjassErrorExample& example) {

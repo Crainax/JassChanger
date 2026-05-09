@@ -23,17 +23,18 @@ function Test takes integer x returns boolean
     local integer check
     set check=1
     set vjfi__BoolCheck_arg0=x
-    call TriggerExecute(vjfi__BoolCheck_trigger[check])
+    call TriggerEvaluate(vjfi__BoolCheck_trigger[check])
     return vjfi__BoolCheck_result
 endfunction
 
-function vjfi__BoolCheck__IsPositive__wrapper takes nothing returns nothing
+function vjfi__BoolCheck__IsPositive__condition_wrapper takes nothing returns boolean
     set vjfi__BoolCheck_result=IsPositive(vjfi__BoolCheck_arg0)
+    return true
 endfunction
 
 function vjassc__init_function_interfaces takes nothing returns nothing
     set vjfi__BoolCheck_trigger[1]=CreateTrigger()
-    call TriggerAddAction(vjfi__BoolCheck_trigger[1], function vjfi__BoolCheck__IsPositive__wrapper)
+    call TriggerAddCondition(vjfi__BoolCheck_trigger[1], Condition(function vjfi__BoolCheck__IsPositive__condition_wrapper))
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing

@@ -133,6 +133,45 @@ struct RuntimeInterfaceInfo {
     std::vector<std::pair<std::string, int>> newTargets;
 };
 
+constexpr std::string_view kFunctionObjectExecuteMarker = "vjassc:function-object-execute";
+constexpr std::string_view kFunctionObjectEvaluateMarker = "vjassc:function-object-evaluate";
+
+enum class FunctionObjectCallKind {
+    None,
+    Execute,
+    Evaluate,
+};
+
+struct RuntimeBridgeRequest {
+    std::string prefix;
+    std::string target;
+    FunctionBlockSignature signature;
+    int id = 0;
+    bool needsCondition = false;
+    bool needsAction = false;
+};
+
+FunctionObjectCallKind detectFunctionObjectCallKind(const std::string& line) {
+    if (line.find(kFunctionObjectExecuteMarker) != std::string::npos) {
+        return FunctionObjectCallKind::Execute;
+    }
+    if (line.find(kFunctionObjectEvaluateMarker) != std::string::npos) {
+        return FunctionObjectCallKind::Evaluate;
+    }
+    return FunctionObjectCallKind::None;
+}
+
+std::string stripFunctionObjectCallMarker(const std::string& line) {
+    if (detectFunctionObjectCallKind(line) == FunctionObjectCallKind::None) {
+        return line;
+    }
+    size_t comment = line.find("//");
+    if (comment == std::string::npos) {
+        return line;
+    }
+    return rtrim(line.substr(0, comment));
+}
+
 std::vector<std::string> splitJassParamTypes(const std::string& params) {
     std::vector<std::string> out;
     std::string t = trim(params);
@@ -391,7 +430,7 @@ bool parseDirectCallStatement(const std::string& line,
                               std::vector<std::string>& args) {
     size_t firstNonSpace = line.find_first_not_of(" \t");
     indent = firstNonSpace == std::string::npos ? "" : line.substr(0, firstNonSpace);
-    std::string t = trim(line);
+    std::string t = trim(stripLineCommentPreservingLiterals(line));
     if (!startsWithWord(t, "call")) {
         return false;
     }
@@ -423,10 +462,50 @@ bool parseDirectCallStatement(const std::string& line,
     return true;
 }
 
+RuntimeInterfaceInfo* chooseFunctionObjectRuntimeInterface(std::unordered_map<std::string, RuntimeInterfaceInfo>& interfaces,
+                                                           const FunctionBlockSignature& targetSig) {
+    RuntimeInterfaceInfo* best = nullptr;
+    for (auto& [_, iface] : interfaces) {
+        if (iface.prefix.find("vjfo__prototype") == std::string::npos ||
+            targetSig.returnType != iface.returnType ||
+            targetSig.paramTypes.size() != iface.paramTypes.size()) {
+            continue;
+        }
+        bool sameParams = true;
+        for (size_t i = 0; i < targetSig.paramTypes.size(); ++i) {
+            if (targetSig.paramTypes[i] != iface.paramTypes[i]) {
+                sameParams = false;
+                break;
+            }
+        }
+        if (!sameParams) {
+            continue;
+        }
+        if (!best || iface.prefix < best->prefix) {
+            best = &iface;
+        }
+    }
+    return best;
+}
+
+std::string runtimeBridgeKey(const std::string& prefix, const std::string& target) {
+    return prefix + "|" + target;
+}
+
+std::string runtimeConditionWrapperName(const std::string& prefix, const std::string& target) {
+    return prefix + "__" + sanitizeName(target) + "__condition_wrapper";
+}
+
+std::string runtimeActionWrapperName(const std::string& prefix, const std::string& target) {
+    return prefix + "__" + sanitizeName(target) + "__action_wrapper";
+}
+
 std::vector<std::string> rewriteCyclicDependencyLine(const std::string& line,
                                                      const std::string& target,
                                                      const FunctionBlockSignature& targetSig,
                                                      const std::string& bridgeName,
+                                                     std::unordered_map<std::string, RuntimeInterfaceInfo>& runtimeInterfaces,
+                                                     std::map<std::string, RuntimeBridgeRequest>& runtimeBridgeRequests,
                                                      bool& changed,
                                                      bool& needsFunctionBridge,
                                                      bool& needsGlobalTempBridge) {
@@ -448,6 +527,38 @@ std::vector<std::string> rewriteCyclicDependencyLine(const std::string& line,
     if (!targetSig.returnsNothing() || args.size() != targetSig.paramTypes.size()) {
         return {rewritten};
     }
+
+    FunctionObjectCallKind callKind = detectFunctionObjectCallKind(rewritten);
+    if (callKind != FunctionObjectCallKind::None) {
+        RuntimeInterfaceInfo* iface = chooseFunctionObjectRuntimeInterface(runtimeInterfaces, targetSig);
+        if (iface) {
+            changed = true;
+            std::string key = runtimeBridgeKey(iface->prefix, target);
+            auto [it, inserted] = runtimeBridgeRequests.try_emplace(key);
+            RuntimeBridgeRequest& request = it->second;
+            if (inserted) {
+                request.prefix = iface->prefix;
+                request.target = target;
+                request.signature = targetSig;
+                request.id = ++iface->maxId;
+            }
+            if (callKind == FunctionObjectCallKind::Execute) {
+                request.needsAction = true;
+            } else {
+                request.needsCondition = true;
+            }
+            std::vector<std::string> out;
+            out.reserve(args.size() + 1);
+            for (size_t i = 0; i < args.size(); ++i) {
+                out.push_back(indent + "set " + request.prefix + "_arg" + std::to_string(i) + "=" + args[i]);
+            }
+            const char* triggerCall = callKind == FunctionObjectCallKind::Execute ? "TriggerExecute" : "TriggerEvaluate";
+            out.push_back(indent + "call " + std::string(triggerCall) + "(" + request.prefix + "_trigger[" +
+                          std::to_string(request.id) + "])");
+            return out;
+        }
+    }
+
     changed = true;
     if (targetSig.paramTypes.empty()) {
         return {indent + "call ExecuteFunc(\"" + target + "\")"};
@@ -503,6 +614,9 @@ std::unordered_map<std::string, RuntimeInterfaceInfo> collectRuntimeInterfaces(c
             std::string type;
             std::string name;
             in >> type >> name;
+            if (name == "array") {
+                in >> name;
+            }
             if (type.empty() || name.empty()) {
                 continue;
             }
@@ -635,7 +749,27 @@ RuntimeInterfaceInfo* chooseRuntimeInterface(std::unordered_map<std::string, Run
 }
 
 std::string wrapperNameForRuntimeInterfaceTarget(const RuntimeInterfaceInfo& iface, const std::string& target) {
-    return iface.prefix + "__" + target + "__wrapper";
+    return iface.prefix + "__" + target + "__condition_wrapper";
+}
+
+std::optional<int> parsePositiveIntegerLiteral(std::string text) {
+    text = trim(text);
+    if (text.empty()) {
+        return std::nullopt;
+    }
+    for (char c : text) {
+        if (!std::isdigit(static_cast<unsigned char>(c))) {
+            return std::nullopt;
+        }
+    }
+    try {
+        int value = std::stoi(text);
+        if (value > 0) {
+            return value;
+        }
+    } catch (...) {
+    }
+    return std::nullopt;
 }
 
 std::string adaptFunctionInterfaceCallbacksBySignature(const std::string& output) {
@@ -751,16 +885,22 @@ std::string adaptFunctionInterfaceCallbacksBySignature(const std::string& output
     for (const auto& [_, iface] : interfaces) {
         for (const auto& [target, id] : iface.newTargets) {
             std::string wrapper = wrapperNameForRuntimeInterfaceTarget(iface, target);
-            wrappers.push_back("function " + wrapper + " takes nothing returns nothing");
+            wrappers.push_back("function " + wrapper + " takes nothing returns boolean");
             std::vector<std::string> args;
             for (size_t i = 0; i < iface.paramTypes.size(); ++i) {
                 args.push_back(iface.prefix + "_arg" + std::to_string(i));
             }
-            wrappers.push_back("    call " + target + "(" + joinArgs(args) + ")");
+            if (iface.returnType == "nothing") {
+                wrappers.push_back("    call " + target + "(" + joinArgs(args) + ")");
+            } else {
+                wrappers.push_back("    set " + iface.prefix + "_result=" + target + "(" + joinArgs(args) + ")");
+            }
+            wrappers.push_back("    return true");
             wrappers.push_back("endfunction");
             wrappers.push_back("");
             initLines.push_back("    set " + iface.prefix + "_trigger[" + std::to_string(id) + "]=CreateTrigger()");
-            initLines.push_back("    call TriggerAddAction(" + iface.prefix + "_trigger[" + std::to_string(id) + "], function " + wrapper + ")");
+            initLines.push_back("    call TriggerAddCondition(" + iface.prefix + "_trigger[" + std::to_string(id) +
+                                "], Condition(function " + wrapper + "))");
         }
     }
     if (wrappers.empty()) {
@@ -796,6 +936,145 @@ std::string adaptFunctionInterfaceCallbacksBySignature(const std::string& output
         out += '\n';
     }
     return out;
+}
+
+FunctionObjectCallKind directFunctionObjectCallKindForTarget(const FunctionBlock& block, const std::string& target) {
+    for (const auto& line : block.lines) {
+        FunctionObjectCallKind kind = detectFunctionObjectCallKind(line);
+        if (kind == FunctionObjectCallKind::None) {
+            continue;
+        }
+        std::string indent;
+        std::vector<std::string> args;
+        if (parseDirectCallStatement(line, target, indent, args)) {
+            return kind;
+        }
+    }
+    return FunctionObjectCallKind::None;
+}
+
+std::vector<std::string> runtimeBridgeArgs(const RuntimeBridgeRequest& request) {
+    std::vector<std::string> args;
+    for (size_t i = 0; i < request.signature.paramTypes.size(); ++i) {
+        args.push_back(request.prefix + "_arg" + std::to_string(i));
+    }
+    return args;
+}
+
+void appendRuntimeBridgeWrappersAndInit(std::vector<FunctionBlock>& blocks,
+                                        const std::map<std::string, RuntimeBridgeRequest>& requests) {
+    if (requests.empty()) {
+        return;
+    }
+    std::unordered_set<std::string> existingFunctions;
+    for (const auto& block : blocks) {
+        if (!block.name.empty()) {
+            existingFunctions.insert(block.name);
+        }
+    }
+
+    bool hasRegistrations = false;
+    for (const auto& [_, request] : requests) {
+        std::vector<std::string> args = runtimeBridgeArgs(request);
+        std::string call = request.target + "(" + joinArgs(args) + ")";
+        if (request.needsCondition) {
+            std::string wrapper = runtimeConditionWrapperName(request.prefix, request.target);
+            if (!existingFunctions.contains(wrapper)) {
+                FunctionBlock block;
+                block.name = wrapper;
+                block.originalIndex = blocks.size();
+                block.lines.push_back("function " + wrapper + " takes nothing returns boolean");
+                if (request.signature.returnType == "nothing") {
+                    block.lines.push_back("    call " + call);
+                } else {
+                    block.lines.push_back("    set " + request.prefix + "_result=" + call);
+                }
+                block.lines.push_back("    return true");
+                block.lines.push_back("endfunction");
+                block.lines.push_back("");
+                existingFunctions.insert(block.name);
+                blocks.push_back(std::move(block));
+            }
+            hasRegistrations = true;
+        }
+        if (request.needsAction) {
+            std::string wrapper = runtimeActionWrapperName(request.prefix, request.target);
+            if (!existingFunctions.contains(wrapper)) {
+                FunctionBlock block;
+                block.name = wrapper;
+                block.originalIndex = blocks.size();
+                block.lines.push_back("function " + wrapper + " takes nothing returns nothing");
+                if (request.signature.returnType == "nothing") {
+                    block.lines.push_back("    call " + call);
+                } else {
+                    block.lines.push_back("    set " + request.prefix + "_result=" + call);
+                }
+                block.lines.push_back("endfunction");
+                block.lines.push_back("");
+                existingFunctions.insert(block.name);
+                blocks.push_back(std::move(block));
+            }
+            hasRegistrations = true;
+        }
+    }
+    if (!hasRegistrations) {
+        return;
+    }
+
+    bool inserted = false;
+    for (auto& block : blocks) {
+        if (block.name != "vjassc__init_function_interfaces") {
+            continue;
+        }
+        for (size_t i = 0; i < block.lines.size(); ++i) {
+            if (startsWithWord(trim(block.lines[i]), "endfunction")) {
+                std::vector<std::string> lines;
+                for (const auto& [_, request] : requests) {
+                    lines.push_back("    set " + request.prefix + "_trigger[" + std::to_string(request.id) +
+                                    "]=CreateTrigger()");
+                    if (request.needsCondition) {
+                        lines.push_back("    call TriggerAddCondition(" + request.prefix + "_trigger[" +
+                                        std::to_string(request.id) + "], Condition(function " +
+                                        runtimeConditionWrapperName(request.prefix, request.target) + "))");
+                    }
+                    if (request.needsAction) {
+                        lines.push_back("    call TriggerAddAction(" + request.prefix + "_trigger[" +
+                                        std::to_string(request.id) + "], function " +
+                                        runtimeActionWrapperName(request.prefix, request.target) + ")");
+                    }
+                }
+                block.lines.insert(block.lines.begin() + static_cast<std::ptrdiff_t>(i), lines.begin(), lines.end());
+                inserted = true;
+                break;
+            }
+        }
+        break;
+    }
+    if (inserted) {
+        return;
+    }
+
+    FunctionBlock init;
+    init.name = "vjassc__init_function_interfaces";
+    init.originalIndex = blocks.size();
+    init.lines.push_back("function vjassc__init_function_interfaces takes nothing returns nothing");
+    for (const auto& [_, request] : requests) {
+        init.lines.push_back("    set " + request.prefix + "_trigger[" + std::to_string(request.id) +
+                             "]=CreateTrigger()");
+        if (request.needsCondition) {
+            init.lines.push_back("    call TriggerAddCondition(" + request.prefix + "_trigger[" +
+                                 std::to_string(request.id) + "], Condition(function " +
+                                 runtimeConditionWrapperName(request.prefix, request.target) + "))");
+        }
+        if (request.needsAction) {
+            init.lines.push_back("    call TriggerAddAction(" + request.prefix + "_trigger[" +
+                                 std::to_string(request.id) + "], function " +
+                                 runtimeActionWrapperName(request.prefix, request.target) + ")");
+        }
+    }
+    init.lines.push_back("endfunction");
+    init.lines.push_back("");
+    blocks.push_back(std::move(init));
 }
 
 std::string orderFunctionBlocksForPjass(const std::string& output) {
@@ -896,10 +1175,17 @@ std::string orderFunctionBlocksForPjass(const std::string& output) {
             callerSigIt->second.takesNothingReturnsNothing() &&
             blocks[targetIndex].dependencies.contains(caller)) {
             edge = {targetIndex, callerIndex};
+        } else if (callerIndex < targetIndex &&
+                   directFunctionObjectCallKindForTarget(blocks[callerIndex], target) == FunctionObjectCallKind::Evaluate &&
+                   blocks[targetIndex].dependencies.contains(caller) &&
+                   directFunctionObjectCallKindForTarget(blocks[targetIndex], caller) == FunctionObjectCallKind::Evaluate) {
+            edge = {targetIndex, callerIndex};
         }
         rewriteEdges.insert(edge);
     }
 
+    auto runtimeInterfaces = collectRuntimeInterfaces(lines);
+    std::map<std::string, RuntimeBridgeRequest> runtimeBridgeRequests;
     std::set<std::string> functionBridgeTargets;
     std::map<std::string, FunctionBlockSignature> globalTempBridgeTargets;
     bool cycleRewriteChanged = false;
@@ -922,6 +1208,8 @@ std::string orderFunctionBlocksForPjass(const std::string& output) {
                                                        target,
                                                        sigIt->second,
                                                        bridgeName,
+                                                       runtimeInterfaces,
+                                                       runtimeBridgeRequests,
                                                        lineChanged,
                                                        lineNeedsFunctionBridge,
                                                        lineNeedsGlobalTempBridge);
@@ -941,6 +1229,8 @@ std::string orderFunctionBlocksForPjass(const std::string& output) {
             }
         }
     }
+    bool runtimeBridgeChanged = !runtimeBridgeRequests.empty();
+    appendRuntimeBridgeWrappersAndInit(blocks, runtimeBridgeRequests);
     if (!functionBridgeTargets.empty() || !globalTempBridgeTargets.empty()) {
         insertBridgeGlobals(prefix, globalTempBridgeTargets);
         for (const auto& target : functionBridgeTargets) {
@@ -962,6 +1252,18 @@ std::string orderFunctionBlocksForPjass(const std::string& output) {
             bridge.lines.push_back("");
             blocks.push_back(std::move(bridge));
         }
+        functionIndex.clear();
+        signatures.clear();
+        for (size_t i = 0; i < blocks.size(); ++i) {
+            if (!blocks[i].name.empty()) {
+                functionIndex[blocks[i].name] = i;
+                signatures[blocks[i].name] = parseFunctionBlockSignature(blocks[i].lines.empty() ? "" : blocks[i].lines.front());
+            }
+        }
+        for (auto& block : blocks) {
+            block.dependencies = extractFunctionDependencies(block, functionIndex);
+        }
+    } else if (runtimeBridgeChanged) {
         functionIndex.clear();
         signatures.clear();
         for (size_t i = 0; i < blocks.size(); ++i) {
@@ -1006,7 +1308,7 @@ std::string orderFunctionBlocksForPjass(const std::string& output) {
     out.reserve(output.size() + output.size() / 64);
     auto appendLines = [&](const std::vector<std::string>& append) {
         for (const auto& outLine : append) {
-            out += outLine;
+            out += stripFunctionObjectCallMarker(outLine);
             out += '\n';
         }
     };
@@ -1889,6 +2191,10 @@ std::vector<std::string> expandLeadingDotChains(const std::vector<std::string>& 
     for (size_t index = 0; index < lines.size(); ++index) {
         const auto& raw = lines[index];
         std::string t = trim(raw);
+        if (t.rfind("//", 0) == 0) {
+            out.push_back(raw);
+            continue;
+        }
         if (!t.empty() && t.front() == '.' && !receiver.empty()) {
             out.push_back(receiver + t);
             continue;
@@ -2340,6 +2646,7 @@ CodegenResult Phase1Codegen::generate(const Program& program) {
              "collectStructs",
              "collectFunctions",
              "collectFunctionInterfaces",
+             "collectFunctionObjectInterfaces",
              "lowerLambdas",
              "lowerZincBodies",
              "lowerStructExpressions",
@@ -2365,6 +2672,7 @@ CodegenResult Phase1Codegen::generate(const Program& program) {
     globalStructTypes_.clear();
     functionInterfaces_.clear();
     functionInterfaceIndexByName_.clear();
+    functionObjectInterfaceIndexBySignature_.clear();
     functions_.clear();
     functionIndexByName_.clear();
     functionInterfaceParamTypesByFunction_.clear();
@@ -2405,6 +2713,7 @@ CodegenResult Phase1Codegen::generate(const Program& program) {
     structDeallocateCache_.clear();
     recordPass("collectFunctionInterfaces", [&]() { collectFunctionInterfaces(program.decls, nullptr); });
     recordPass("collectFunctions", [&]() { collectFunctions(program.decls, nullptr); });
+    recordPass("collectFunctionObjectInterfaces", [&]() { collectFunctionObjectEvaluateInterfaces(program.decls, nullptr, nullptr); });
     functionLookupCache_.clear();
     LibraryGraph graph(diagnostics_);
     LibraryGraphResult graphResult;
@@ -2868,21 +3177,36 @@ void Phase1Codegen::emitFunctionInterfaceRuntime() {
     for (const auto& iface : functionInterfaces_) {
         std::string prefix = interfaceGlobalPrefix(iface);
         for (const auto& target : iface.targets) {
-            writer_.writeln("function " + prefix + "__" + sanitizeName(target.finalName) + "__wrapper takes nothing returns nothing");
-            writer_.indent();
             std::vector<std::string> args;
             for (size_t i = 0; i < iface.signature.paramTypes.size(); ++i) {
                 args.push_back(prefix + "_arg" + std::to_string(i));
             }
             std::string call = target.finalName + "(" + joinArgs(args) + ")";
+            std::string conditionWrapper = prefix + "__" + sanitizeName(target.finalName) + "__condition_wrapper";
+            writer_.writeln("function " + conditionWrapper + " takes nothing returns boolean");
+            writer_.indent();
             if (iface.signature.returnType == "nothing") {
                 writer_.writeln("call " + call);
             } else {
                 writer_.writeln("set " + prefix + "_result=" + call);
             }
+            writer_.writeln("return true");
             writer_.dedent();
             writer_.writeln("endfunction");
             writer_.writeln();
+            if (target.needsAction || iface.allTargetsNeedAction) {
+                std::string actionWrapper = prefix + "__" + sanitizeName(target.finalName) + "__action_wrapper";
+                writer_.writeln("function " + actionWrapper + " takes nothing returns nothing");
+                writer_.indent();
+                if (iface.signature.returnType == "nothing") {
+                    writer_.writeln("call " + call);
+                } else {
+                    writer_.writeln("set " + prefix + "_result=" + call);
+                }
+                writer_.dedent();
+                writer_.writeln("endfunction");
+                writer_.writeln();
+            }
             emittedAny = true;
         }
     }
@@ -2894,8 +3218,13 @@ void Phase1Codegen::emitFunctionInterfaceRuntime() {
             std::string prefix = interfaceGlobalPrefix(iface);
             for (const auto& target : iface.targets) {
                 writer_.writeln("set " + prefix + "_trigger[" + std::to_string(target.id) + "]=CreateTrigger()");
-                writer_.writeln("call TriggerAddAction(" + prefix + "_trigger[" + std::to_string(target.id) + "], function " +
-                                prefix + "__" + sanitizeName(target.finalName) + "__wrapper)");
+                writer_.writeln("call TriggerAddCondition(" + prefix + "_trigger[" + std::to_string(target.id) +
+                                "], Condition(function " + prefix + "__" + sanitizeName(target.finalName) +
+                                "__condition_wrapper))");
+                if (target.needsAction || iface.allTargetsNeedAction) {
+                    writer_.writeln("call TriggerAddAction(" + prefix + "_trigger[" + std::to_string(target.id) + "], function " +
+                                    prefix + "__" + sanitizeName(target.finalName) + "__action_wrapper)");
+                }
             }
         }
         writer_.dedent();
@@ -3359,6 +3688,64 @@ void Phase1Codegen::collectFunctionInterfaces(const std::vector<Decl>& decls, co
         }
         const Decl* nextContainer = (decl.kind == DeclKind::Library || decl.kind == DeclKind::Scope) ? &decl : container;
         collectFunctionInterfaces(decl.children, nextContainer);
+    }
+}
+
+void Phase1Codegen::collectFunctionObjectEvaluateInterfaces(const std::vector<Decl>& decls,
+                                                            const Decl* container,
+                                                            const StructInfo* currentStruct) {
+    for (const auto& decl : decls) {
+        const Decl* nextContainer = (decl.kind == DeclKind::Library || decl.kind == DeclKind::Scope) ? &decl : container;
+        if (decl.kind == DeclKind::Function) {
+            for (const auto& line : decl.lines) {
+                collectFunctionObjectEvaluateInterfaceFromLine(line, currentStruct);
+            }
+            continue;
+        }
+        if (decl.kind == DeclKind::Struct) {
+            const StructInfo* info = findStruct(makeScopedStructName(decl, container));
+            if (!info) {
+                info = findStruct(decl.name);
+            }
+            if (info) {
+                for (const auto& method : decl.methods) {
+                    for (const auto& line : method.bodyLines) {
+                        collectFunctionObjectEvaluateInterfaceFromLine(line.text, info);
+                    }
+                }
+            }
+            continue;
+        }
+        if (decl.kind == DeclKind::Module || decl.kind == DeclKind::FunctionInterface) {
+            continue;
+        }
+        collectFunctionObjectEvaluateInterfaces(decl.children, nextContainer, currentStruct);
+    }
+}
+
+void Phase1Codegen::collectFunctionObjectEvaluateInterfaceFromLine(const std::string& line, const StructInfo* currentStruct) {
+    std::string code = blankStringRawcodeAndComment(line);
+    for (const std::string method : {"evaluate", "execute"}) {
+        size_t search = 0;
+        while (search < code.size()) {
+            size_t receiverStart = 0;
+            size_t dotPos = 0;
+            size_t open = 0;
+            size_t close = 0;
+            std::string tail = code.substr(search);
+            if (!findMethodCallSpan(tail, method, receiverStart, dotPos, open, close)) {
+                break;
+            }
+            receiverStart += search;
+            dotPos += search;
+            close += search;
+            std::string receiver = trim(code.substr(receiverStart, dotPos - receiverStart));
+            std::string finalName = resolveFunctionTargetName(receiver, currentStruct);
+            if (const FunctionInfo* fn = findFunctionInfo(finalName)) {
+                ensureFunctionObjectInterface(fn->signature);
+            }
+            search = close + 1;
+        }
     }
 }
 
@@ -4401,6 +4788,15 @@ std::string Phase1Codegen::rewriteReceiverChains(const std::string& line, const 
                     if (methodClose == std::string::npos) {
                         break;
                     }
+                    if (!receiverStruct->isArrayStruct && (memberName == "destroy" || memberName == "deallocate") &&
+                        trim(text.substr(afterMember + 1, methodClose - afterMember - 1)).empty()) {
+                        receiverExpr = receiverStruct->prefix +
+                                       (memberName == "deallocate" ? "_deallocate(" : "_destroy(") +
+                                       receiverExpr + ")";
+                        chainPos = methodClose + 1;
+                        changed = true;
+                        break;
+                    }
                     const MethodInfo* method = findMethod(*receiverStruct, memberName);
                     if (!method || method->isStatic) {
                         break;
@@ -4445,6 +4841,39 @@ std::string Phase1Codegen::rewriteReceiverChains(const std::string& line, const 
 const Phase1Codegen::FunctionInterfaceInfo* Phase1Codegen::findFunctionInterface(std::string_view name) const {
     auto it = functionInterfaceIndexByName_.find(std::string(name));
     return it == functionInterfaceIndexByName_.end() ? nullptr : &functionInterfaces_[it->second];
+}
+
+std::string Phase1Codegen::functionSignatureKey(const FunctionSignature& signature) const {
+    std::string key = rewriteTypeName(signature.returnType, nullptr);
+    key.push_back('|');
+    for (const auto& paramType : signature.paramTypes) {
+        key += rewriteTypeName(paramType, nullptr);
+        key.push_back(';');
+    }
+    return key;
+}
+
+Phase1Codegen::FunctionInterfaceInfo& Phase1Codegen::ensureFunctionObjectInterface(const FunctionSignature& signature) const {
+    std::string key = functionSignatureKey(signature);
+    if (auto it = functionObjectInterfaceIndexBySignature_.find(key); it != functionObjectInterfaceIndexBySignature_.end()) {
+        return functionInterfaces_[it->second];
+    }
+    FunctionInterfaceInfo info;
+    info.sourceName = "vjfo__prototype" + std::to_string(functionObjectInterfaceIndexBySignature_.size() + 1);
+    info.finalName = info.sourceName;
+    info.signature = signature;
+    info.syntheticFunctionObject = true;
+    size_t index = functionInterfaces_.size();
+    functionInterfaces_.push_back(std::move(info));
+    functionInterfaceIndexByName_[functionInterfaces_[index].sourceName] = index;
+    functionInterfaceIndexByName_[functionInterfaces_[index].finalName] = index;
+    functionObjectInterfaceIndexBySignature_[std::move(key)] = index;
+    return functionInterfaces_[index];
+}
+
+const Phase1Codegen::FunctionInterfaceInfo* Phase1Codegen::findFunctionObjectInterface(const FunctionSignature& signature) const {
+    auto it = functionObjectInterfaceIndexBySignature_.find(functionSignatureKey(signature));
+    return it == functionObjectInterfaceIndexBySignature_.end() ? nullptr : &functionInterfaces_[it->second];
 }
 
 std::string Phase1Codegen::resolveFunctionInterfaceTypeName(std::string_view name, const Decl* container) const {
@@ -4540,6 +4969,29 @@ int Phase1Codegen::registerInterfaceTarget(const FunctionInterfaceInfo& ifaceRef
     iface.targets.push_back(InterfaceTarget{finalTarget, id});
     iface.targetIndexByFinalName[finalTarget] = index;
     return id;
+}
+
+void Phase1Codegen::markInterfaceTargetNeedsAction(const FunctionInterfaceInfo& ifaceRef,
+                                                   const std::string& rewrittenReceiverExpression,
+                                                   SourceLocation loc) const {
+    auto ifaceIt = functionInterfaceIndexByName_.find(ifaceRef.finalName);
+    if (ifaceIt == functionInterfaceIndexByName_.end()) {
+        ifaceIt = functionInterfaceIndexByName_.find(ifaceRef.sourceName);
+    }
+    if (ifaceIt == functionInterfaceIndexByName_.end()) {
+        diagnostics_.error(loc, "unknown function interface '" + ifaceRef.sourceName + "'");
+        return;
+    }
+    auto& iface = functionInterfaces_[ifaceIt->second];
+    if (auto literalId = parsePositiveIntegerLiteral(rewrittenReceiverExpression)) {
+        for (auto& target : iface.targets) {
+            if (target.id == *literalId) {
+                target.needsAction = true;
+                return;
+            }
+        }
+    }
+    iface.allTargetsNeedAction = true;
 }
 
 const Phase1Codegen::FunctionInterfaceInfo* Phase1Codegen::resolveReceiverInterface(const std::string& receiver,
@@ -4937,7 +5389,7 @@ std::string Phase1Codegen::lowerExpression(std::string expression,
                 prelude.push_back("set " + prefix + "_arg" + std::to_string(i) + "=" + arg);
             }
             ++functionInterfaceCalls_;
-            prelude.push_back("call TriggerExecute(" + prefix + "_trigger[" + rewriteReceiverExpression(receiver, ctx) + "])");
+            prelude.push_back("call TriggerEvaluate(" + prefix + "_trigger[" + rewriteReceiverExpression(receiver, ctx) + "])");
             std::string replacement = prefix + "_result";
             if (receiverStart == 0 && close + 1 == expression.size()) {
                 expression = replacement;
@@ -4958,6 +5410,42 @@ std::string Phase1Codegen::lowerExpression(std::string expression,
         std::string finalName = resolveFunctionTargetName(receiver, ctx.currentStruct);
         if (const FunctionInfo* fn = findFunctionInfo(finalName)) {
             ++functionObjectCalls_;
+            if (const FunctionInterfaceInfo* iface = findFunctionObjectInterface(fn->signature)) {
+                if (iface->signature.returnType == "nothing") {
+                    diagnostics_.error(SourceLocation{}, "evaluate used as expression on non-returning function '" + fn->sourceName + "'");
+                    break;
+                }
+                std::vector<std::string> args = splitCommaList(argsText);
+                if (args.size() != iface->signature.paramTypes.size()) {
+                    diagnostics_.error(SourceLocation{}, "wrong argument count for evaluate on function '" + fn->sourceName + "'");
+                }
+                std::string prefix = interfaceGlobalPrefix(*iface);
+                for (size_t i = 0; i < args.size() && i < iface->signature.paramTypes.size(); ++i) {
+                    std::vector<std::string> nested;
+                    std::string arg = lowerExpression(args[i], {}, ctx, nested);
+                    prelude.insert(prelude.end(), nested.begin(), nested.end());
+                    prelude.push_back("set " + prefix + "_arg" + std::to_string(i) + "=" + arg);
+                }
+                int targetId = registerInterfaceTarget(*iface, fn->finalName, SourceLocation{});
+                ++functionInterfaceCalls_;
+                prelude.push_back("call TriggerEvaluate(" + prefix + "_trigger[" + std::to_string(targetId) + "])");
+                std::string replacement = prefix + "_result";
+                if (receiverStart == 0 && close + 1 == expression.size()) {
+                    expression = replacement;
+                } else {
+                    size_t depth = static_cast<size_t>(++ctx.tempCounter);
+                    functionInterfaceMaxEvaluateDepth_ = std::max(functionInterfaceMaxEvaluateDepth_, depth);
+                    if (depth > functionInterfaceEvaluateTempLimit_) {
+                        diagnostics_.error(SourceLocation{}, "nested function object evaluate exceeds temp limit " +
+                                                              std::to_string(functionInterfaceEvaluateTempLimit_));
+                        depth = functionInterfaceEvaluateTempLimit_;
+                    }
+                    std::string temp = prefix + "_tmp" + std::to_string(depth);
+                    prelude.push_back("set " + temp + "=" + replacement);
+                    expression.replace(receiverStart, close + 1 - receiverStart, temp);
+                }
+                continue;
+            }
             std::string replacement = fn->finalName + "(" + argsText + ")";
             expression.replace(receiverStart, close + 1 - receiverStart, replacement);
             continue;
@@ -5019,13 +5507,16 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
                     out.push_back("set " + prefix + "_arg" + std::to_string(i) + "=" + arg);
                 }
                 ++functionInterfaceCalls_;
-                out.push_back("call TriggerExecute(" + prefix + "_trigger[" + rewriteReceiverExpression(receiver, ctx) + "])");
+                std::string receiverExpr = rewriteReceiverExpression(receiver, ctx);
+                markInterfaceTargetNeedsAction(*iface, receiverExpr, SourceLocation{});
+                out.push_back("call TriggerExecute(" + prefix + "_trigger[" + receiverExpr + "])");
                 return out;
             }
             std::string finalName = resolveFunctionTargetName(receiver, ctx.currentStruct);
             if (const FunctionInfo* fn = findFunctionInfo(finalName)) {
                 ++functionObjectCalls_;
-                out.push_back("call " + fn->finalName + "(" + lowerCallArgs(argsText) + ")");
+                out.push_back("call " + fn->finalName + "(" + lowerCallArgs(argsText) + ") // " +
+                              std::string(kFunctionObjectExecuteMarker));
                 return out;
             }
         }
@@ -5045,13 +5536,14 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
                     out.push_back("set " + prefix + "_arg" + std::to_string(i) + "=" + arg);
                 }
                 ++functionInterfaceCalls_;
-                out.push_back("call TriggerExecute(" + prefix + "_trigger[" + rewriteReceiverExpression(receiver, ctx) + "])");
+                out.push_back("call TriggerEvaluate(" + prefix + "_trigger[" + rewriteReceiverExpression(receiver, ctx) + "])");
                 return out;
             }
             std::string finalName = resolveFunctionTargetName(receiver, ctx.currentStruct);
             if (const FunctionInfo* fn = findFunctionInfo(finalName)) {
                 ++functionObjectCalls_;
-                out.push_back("call " + fn->finalName + "(" + lowerCallArgs(argsText) + ")");
+                out.push_back("call " + fn->finalName + "(" + lowerCallArgs(argsText) + ") // " +
+                              std::string(kFunctionObjectEvaluateMarker));
                 return out;
             }
         }

@@ -17,13 +17,19 @@ function Test takes unit u returns nothing
     call TriggerExecute(vjfi__Action_trigger[a])
 endfunction
 
-function vjfi__Action__KillTarget__wrapper takes nothing returns nothing
+function vjfi__Action__KillTarget__condition_wrapper takes nothing returns boolean
+    call KillTarget(vjfi__Action_arg0)
+    return true
+endfunction
+
+function vjfi__Action__KillTarget__action_wrapper takes nothing returns nothing
     call KillTarget(vjfi__Action_arg0)
 endfunction
 
 function vjassc__init_function_interfaces takes nothing returns nothing
     set vjfi__Action_trigger[1]=CreateTrigger()
-    call TriggerAddAction(vjfi__Action_trigger[1], function vjfi__Action__KillTarget__wrapper)
+    call TriggerAddCondition(vjfi__Action_trigger[1], Condition(function vjfi__Action__KillTarget__condition_wrapper))
+    call TriggerAddAction(vjfi__Action_trigger[1], function vjfi__Action__KillTarget__action_wrapper)
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing

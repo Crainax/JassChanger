@@ -525,7 +525,10 @@ OutputMetrics collectOutputMetrics(std::string_view output) {
             if (name.rfind("s__", 0) == 0 || name.rfind("sc__", 0) == 0 || name.rfind("si__", 0) == 0) {
                 ++metrics.structSupportFunctions;
             }
-            if (name.rfind("vjfi__", 0) == 0 && name.find("__wrapper") != std::string::npos) {
+            if (name.rfind("vjfi__", 0) == 0 &&
+                (name.find("__wrapper") != std::string::npos ||
+                 name.find("__condition_wrapper") != std::string::npos ||
+                 name.find("__action_wrapper") != std::string::npos)) {
                 ++metrics.functionInterfaceWrappers;
             }
             if (name.rfind("vjassc__init_", 0) == 0) {
