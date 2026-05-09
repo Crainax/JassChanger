@@ -32,7 +32,8 @@ add_executable(vjassc
 target_include_directories(vjassc PRIVATE src)
 
 if (MSVC)
-    target_compile_options(vjassc PRIVATE /W4 /permissive- /utf-8)
+    target_compile_options(vjassc PRIVATE /W4 /permissive- /utf-8 $<$<CONFIG:Release>:/Ot /GL>)
+    target_link_options(vjassc PRIVATE $<$<CONFIG:Release>:/LTCG>)
 else()
     target_compile_options(vjassc PRIVATE -Wall -Wextra -Wpedantic)
 endif()

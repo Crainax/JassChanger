@@ -43,6 +43,33 @@ struct CodegenPerformanceCounters {
     size_t functionOrderTokenScans = 0;
     size_t functionOrderEdges = 0;
     size_t functionOrderSccCount = 0;
+    size_t bodyModeZincFunctions = 0;
+    size_t bodyModeJassLikeFunctions = 0;
+    size_t bodyModeZincMethods = 0;
+    size_t bodyModeJassLikeMethods = 0;
+    size_t bodyModeGeneratedBodies = 0;
+    size_t bodyLowererZincBodies = 0;
+    size_t bodyLowererJassLikeBodies = 0;
+    size_t bodyLowererGeneratedBodies = 0;
+    size_t bodyLowererZincLines = 0;
+    size_t bodyLowererJassLikeLines = 0;
+    size_t bodyLowererGeneratedLines = 0;
+    size_t generatedLinesSkippedGenericLowering = 0;
+    size_t tokenCacheBuilds = 0;
+    size_t tokenCacheLines = 0;
+    size_t tokenCacheHits = 0;
+    size_t tokenCacheMisses = 0;
+    size_t featureScansAvoided = 0;
+    size_t functionOrderScansAvoided = 0;
+    size_t zincFastPathLines = 0;
+    size_t jassLikeFastPathLines = 0;
+    size_t generatedFastPathLines = 0;
+    size_t heavyLoweringAvoidedByMode = 0;
+    size_t functionDependencyRecordedEdges = 0;
+    size_t functionDependencyOutputScanEdges = 0;
+    size_t functionDependencyMatchedEdges = 0;
+    size_t functionDependencyMissingRecordedEdges = 0;
+    size_t functionDependencyExtraRecordedEdges = 0;
 };
 
 struct CodegenResult {
@@ -137,6 +164,12 @@ private:
         CycleBridge,
     };
 
+    enum class BodyMode {
+        JassLike,
+        Zinc,
+        Generated,
+    };
+
     struct FunctionInfo {
         std::string sourceName;
         std::string finalName;
@@ -181,7 +214,38 @@ private:
         std::unordered_map<std::string, std::string>* localTypes = nullptr;
         std::unordered_map<std::string, ArrayShape>* localArrayShapes = nullptr;
         std::vector<std::string>* tempLocals = nullptr;
+        BodyMode mode = BodyMode::JassLike;
+        std::string currentFunctionName;
         int tempCounter = 0;
+    };
+
+    struct IdentifierToken {
+        size_t start = 0;
+        size_t end = 0;
+        bool precededByDot = false;
+    };
+
+    struct LineTokenCache {
+        std::string line;
+        bool hasDot = false;
+        bool hasBracket = false;
+        bool hasParen = false;
+        bool hasCallWord = false;
+        bool hasSetWord = false;
+        bool hasLocalWord = false;
+        bool hasReturnWord = false;
+        bool hasFunctionWord = false;
+        bool hasLambdaStart = false;
+        bool hasThisWord = false;
+        bool hasThistypeWord = false;
+        bool hasNameToken = false;
+        bool hasExecuteEvaluate = false;
+        bool hasBooleanOperators = false;
+        bool hasStringOrRawcode = false;
+        bool hasGeneratedStructPrefix = false;
+        std::vector<IdentifierToken> identifiers;
+        std::vector<size_t> parenPositions;
+        std::vector<size_t> bracketPositions;
     };
 
     struct LineFeatures {
@@ -270,6 +334,15 @@ private:
     bool hasKnownArrayReceiver(const std::string& line,
                                const std::unordered_map<std::string, ArrayShape>* localArrayShapes) const;
     std::vector<std::string> lowerStatementLine(const std::string& line, LoweringContext& ctx) const;
+    std::vector<std::string> lowerBodyByMode(BodyMode mode,
+                                             const std::vector<std::string>& lines,
+                                             LoweringContext& ctx);
+    std::vector<std::string> lowerZincBodyFast(const std::vector<std::string>& lines,
+                                               LoweringContext& ctx);
+    std::vector<std::string> lowerJassLikeBodyFast(const std::vector<std::string>& lines,
+                                                   LoweringContext& ctx);
+    std::vector<std::string> lowerGeneratedBodyFast(const std::vector<std::string>& lines,
+                                                    LoweringContext& ctx);
     std::string lowerExpression(std::string expression,
                                 const std::string& expectedInterfaceType,
                                 LoweringContext& ctx,
@@ -285,6 +358,13 @@ private:
     LineFeatures scanLineFeatures(const std::string& line,
                                   const StructInfo* currentStruct,
                                   const std::unordered_map<std::string, std::string>* localTypes) const;
+    const LineTokenCache& getLineTokenCache(const std::string& line, bool* built = nullptr) const;
+    LineTokenCache buildLineTokenCache(const std::string& line) const;
+    BodyMode bodyModeForFunction(const Decl& decl) const;
+    BodyMode bodyModeForMethod(const MethodDecl& method) const;
+    BodyMode bodyModeForGenerated(GeneratedKind kind) const;
+    void countBodyMode(BodyMode mode, bool isMethod) const;
+    void recordFunctionDependency(const std::string& from, const std::string& to) const;
     bool lineNeedsExpressionLowering(const LineFeatures& features,
                                      const std::string& expectedInterfaceType,
                                      const LoweringContext& ctx) const;
@@ -368,6 +448,8 @@ private:
     mutable std::unordered_map<std::string, const FunctionInfo*> functionLookupCache_;
     mutable std::unordered_map<std::string, bool> arrayStructReceiverCache_;
     mutable std::unordered_map<std::string, bool> structDeallocateCache_;
+    mutable std::unordered_map<std::string, LineTokenCache> lineTokenCache_;
+    mutable std::unordered_set<std::string> recordedFunctionDependencyEdges_;
     mutable bool lineFeatureCacheValid_ = false;
     mutable std::string lineFeatureCacheLine_;
     mutable const StructInfo* lineFeatureCacheStruct_ = nullptr;

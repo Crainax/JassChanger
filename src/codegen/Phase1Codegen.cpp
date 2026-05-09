@@ -96,13 +96,101 @@ std::string removeSemicolonsOutsideProtected(const std::string& line) {
 }
 
 std::string normalizeOperatorsOutsideProtected(const std::string& line) {
-    return rewriteOutsideProtected(line, [](std::string text) {
-        text = replaceRegex(text, R"(\s*&&\s*)", " and ");
-        text = replaceRegex(text, R"(\s*\|\|\s*)", " or ");
-        text = replaceRegex(text, R"((^|[^=!<>])!\s*(?!=))", "$1not ");
-        text = replaceRegex(text, R"(\bnot\s+=)", "!=");
-        return text;
-    });
+    std::string out;
+    out.reserve(line.size());
+    bool inString = false;
+    bool inRaw = false;
+    bool escaped = false;
+    auto trimTrailingWhitespace = [&]() {
+        while (!out.empty() && std::isspace(static_cast<unsigned char>(out.back()))) {
+            out.pop_back();
+        }
+    };
+    for (size_t i = 0; i < line.size();) {
+        if (!inString && !inRaw && i + 1 < line.size() && line[i] == '/' && line[i + 1] == '/') {
+            out.append(line.substr(i));
+            break;
+        }
+        char c = line[i];
+        if (inString) {
+            out.push_back(c);
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                inString = false;
+            }
+            ++i;
+            continue;
+        }
+        if (inRaw) {
+            out.push_back(c);
+            if (c == '\'') {
+                inRaw = false;
+            }
+            ++i;
+            continue;
+        }
+        if (c == '"') {
+            inString = true;
+            out.push_back(c);
+            ++i;
+            continue;
+        }
+        if (c == '\'') {
+            inRaw = true;
+            out.push_back(c);
+            ++i;
+            continue;
+        }
+        if (i + 1 < line.size() && c == '&' && line[i + 1] == '&') {
+            trimTrailingWhitespace();
+            out.append(" and ");
+            i += 2;
+            while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) {
+                ++i;
+            }
+            continue;
+        }
+        if (i + 1 < line.size() && c == '|' && line[i + 1] == '|') {
+            trimTrailingWhitespace();
+            out.append(" or ");
+            i += 2;
+            while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) {
+                ++i;
+            }
+            continue;
+        }
+        if (c == '!' && (i + 1 >= line.size() || line[i + 1] != '=')) {
+            char prev = out.empty() ? '\0' : out.back();
+            if (prev != '=' && prev != '!' && prev != '<' && prev != '>') {
+                out.append("not ");
+                ++i;
+                while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) {
+                    ++i;
+                }
+                continue;
+            }
+        }
+        if ((i == 0 || !isIdentPart(line[i - 1])) &&
+            i + 3 <= line.size() &&
+            line.compare(i, 3, "not") == 0 &&
+            (i + 3 == line.size() || !isIdentPart(line[i + 3]))) {
+            size_t next = i + 3;
+            while (next < line.size() && std::isspace(static_cast<unsigned char>(line[next]))) {
+                ++next;
+            }
+            if (next < line.size() && line[next] == '=') {
+                out.append("!=");
+                i = next + 1;
+                continue;
+            }
+        }
+        out.push_back(c);
+        ++i;
+    }
+    return out;
 }
 
 std::string sanitizeGeneratedLine(const std::string& line) {
@@ -373,13 +461,14 @@ std::string blankStringRawcodeAndComment(const std::string& line) {
 void addFunctionDependency(std::set<std::string>& deps,
                            const std::unordered_map<std::string, size_t>& functionIndex,
                            const std::string& current,
-                           const std::string& candidate,
+                           std::string_view candidate,
                            CodegenPerformanceCounters* counters) {
     if (candidate.empty() || candidate == current) {
         return;
     }
-    if (functionIndex.find(candidate) != functionIndex.end()) {
-        if (deps.insert(candidate).second && counters) {
+    std::string key(candidate);
+    if (functionIndex.find(key) != functionIndex.end()) {
+        if (deps.insert(std::move(key)).second && counters) {
             ++counters->functionOrderEdges;
         }
     }
@@ -395,48 +484,89 @@ std::set<std::string> extractFunctionDependencies(const FunctionBlock& block,
     auto identPart = [](char c) {
         return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '$';
     };
-    static const std::unordered_set<std::string> ignoredCalls = {
+    static const std::unordered_set<std::string_view> ignoredCalls = {
         "function", "if", "call", "set", "return", "loop", "exitwhen",
     };
     for (size_t i = 1; i < block.lines.size(); ++i) {
         const std::string& rawLine = block.lines[i];
         if (rawLine.find('(') == std::string::npos && rawLine.find("function") == std::string::npos) {
+            if (counters) {
+                ++counters->functionOrderScansAvoided;
+            }
             continue;
         }
         if (counters) {
             ++counters->functionOrderTokenScans;
         }
-        std::string code = blankStringRawcodeAndComment(rawLine);
-        for (size_t pos = 0; pos < code.size();) {
-            if (!identStart(code[pos])) {
+        bool inString = false;
+        bool inRaw = false;
+        bool escaped = false;
+        for (size_t pos = 0; pos < rawLine.size();) {
+            if (!inString && !inRaw && pos + 1 < rawLine.size() && rawLine[pos] == '/' && rawLine[pos + 1] == '/') {
+                break;
+            }
+            char c = rawLine[pos];
+            if (inString) {
+                if (escaped) {
+                    escaped = false;
+                } else if (c == '\\') {
+                    escaped = true;
+                } else if (c == '"') {
+                    inString = false;
+                }
+                ++pos;
+                continue;
+            }
+            if (inRaw) {
+                if (c == '\'') {
+                    inRaw = false;
+                }
+                ++pos;
+                continue;
+            }
+            if (c == '"') {
+                inString = true;
+                ++pos;
+                continue;
+            }
+            if (c == '\'') {
+                inRaw = true;
+                ++pos;
+                continue;
+            }
+            if (!identStart(c)) {
                 ++pos;
                 continue;
             }
             size_t start = pos++;
-            while (pos < code.size() && identPart(code[pos])) {
+            while (pos < rawLine.size() && identPart(rawLine[pos])) {
                 ++pos;
             }
-            std::string name = code.substr(start, pos - start);
+            std::string_view name(rawLine.data() + start, pos - start);
             if (name == "function") {
                 size_t targetStart = pos;
-                while (targetStart < code.size() && std::isspace(static_cast<unsigned char>(code[targetStart]))) {
+                while (targetStart < rawLine.size() && std::isspace(static_cast<unsigned char>(rawLine[targetStart]))) {
                     ++targetStart;
                 }
-                if (targetStart < code.size() && identStart(code[targetStart])) {
+                if (targetStart < rawLine.size() && identStart(rawLine[targetStart])) {
                     size_t targetEnd = targetStart + 1;
-                    while (targetEnd < code.size() && identPart(code[targetEnd])) {
+                    while (targetEnd < rawLine.size() && identPart(rawLine[targetEnd])) {
                         ++targetEnd;
                     }
-                    addFunctionDependency(deps, functionIndex, block.name, code.substr(targetStart, targetEnd - targetStart), counters);
+                    addFunctionDependency(deps,
+                                          functionIndex,
+                                          block.name,
+                                          std::string_view(rawLine.data() + targetStart, targetEnd - targetStart),
+                                          counters);
                     pos = targetEnd;
                 }
                 continue;
             }
             size_t open = pos;
-            while (open < code.size() && std::isspace(static_cast<unsigned char>(code[open]))) {
+            while (open < rawLine.size() && std::isspace(static_cast<unsigned char>(rawLine[open]))) {
                 ++open;
             }
-            if (open >= code.size() || code[open] != '(' || ignoredCalls.contains(name)) {
+            if (open >= rawLine.size() || rawLine[open] != '(' || ignoredCalls.contains(name)) {
                 pos = open;
                 continue;
             }
@@ -1292,7 +1422,9 @@ void ensureFunctionInterfaceInitCall(std::vector<FunctionBlock>& blocks) {
     }
 }
 
-std::string orderFunctionBlocksForPjass(const std::string& output, CodegenPerformanceCounters* counters) {
+std::string orderFunctionBlocksForPjass(const std::string& output,
+                                        CodegenPerformanceCounters* counters,
+                                        const std::unordered_set<std::string>* recordedEdges) {
     std::vector<std::string> lines;
     std::istringstream in(output);
     std::string line;
@@ -1348,6 +1480,39 @@ std::string orderFunctionBlocksForPjass(const std::string& output, CodegenPerfor
     for (auto& block : blocks) {
         block.dependencies = extractFunctionDependencies(block, functionIndex, counters);
     }
+    auto rebuildFunctionIndexAndSignatures = [&]() {
+        functionIndex.clear();
+        signatures.clear();
+        for (size_t i = 0; i < blocks.size(); ++i) {
+            if (!blocks[i].name.empty()) {
+                functionIndex[blocks[i].name] = i;
+                signatures[blocks[i].name] = parseFunctionBlockSignature(blocks[i].lines.empty() ? "" : blocks[i].lines.front());
+            }
+        }
+    };
+    auto markAppendedBlocks = [&](size_t start, std::unordered_set<size_t>& dirty) {
+        for (size_t i = start; i < blocks.size(); ++i) {
+            dirty.insert(i);
+        }
+    };
+    auto markBlockByName = [&](std::string_view name, std::unordered_set<size_t>& dirty) {
+        for (size_t i = 0; i < blocks.size(); ++i) {
+            if (blocks[i].name == name) {
+                dirty.insert(i);
+            }
+        }
+    };
+    auto refreshDirtyDependencies = [&](const std::unordered_set<size_t>& dirty) {
+        if (dirty.empty()) {
+            return;
+        }
+        rebuildFunctionIndexAndSignatures();
+        for (size_t index : dirty) {
+            if (index < blocks.size()) {
+                blocks[index].dependencies = extractFunctionDependencies(blocks[index], functionIndex, counters);
+            }
+        }
+    };
 
     std::set<std::pair<size_t, size_t>> cyclicEdges;
     std::vector<int> cycleState(blocks.size(), 0);
@@ -1431,6 +1596,7 @@ std::string orderFunctionBlocksForPjass(const std::string& output, CodegenPerfor
     std::map<std::string, RuntimeBridgeRequest> runtimeBridgeRequests;
     std::map<std::string, MethodCallerRequest> methodCallerRequests;
     std::set<std::string> functionBridgeTargets;
+    std::unordered_set<size_t> dependencyDirtyBlocks;
     bool cycleRewriteChanged = false;
     for (const auto& [callerIndex, targetIndex] : rewriteEdges) {
         const std::string& target = blocks[targetIndex].name;
@@ -1460,6 +1626,7 @@ std::string orderFunctionBlocksForPjass(const std::string& output, CodegenPerfor
         }
         if (blockChanged) {
             cycleRewriteChanged = true;
+            dependencyDirtyBlocks.insert(callerIndex);
             blocks[callerIndex].lines = std::move(rewrittenLines);
             if (needsFunctionBridge) {
                 functionBridgeTargets.insert(target);
@@ -1467,11 +1634,18 @@ std::string orderFunctionBlocksForPjass(const std::string& output, CodegenPerfor
         }
     }
     bool runtimeBridgeChanged = !runtimeBridgeRequests.empty();
+    size_t appendedBridgeStart = blocks.size();
     appendRuntimeBridgeWrappersAndInit(blocks, runtimeBridgeRequests);
     appendMethodCallerWrappersAndInit(blocks, methodCallerRequests);
     ensureFunctionInterfaceInitCall(blocks);
+    if (runtimeBridgeChanged || !methodCallerRequests.empty()) {
+        markAppendedBlocks(appendedBridgeStart, dependencyDirtyBlocks);
+        markBlockByName("vjassc__init_function_interfaces", dependencyDirtyBlocks);
+        markBlockByName("main", dependencyDirtyBlocks);
+    }
     if (!functionBridgeTargets.empty()) {
         insertMethodCallerGlobals(prefix, methodCallerRequests);
+        size_t functionBridgeStart = blocks.size();
         for (const auto& target : functionBridgeTargets) {
             const auto& sig = signatures[target];
             FunctionBlock bridge;
@@ -1491,33 +1665,33 @@ std::string orderFunctionBlocksForPjass(const std::string& output, CodegenPerfor
             bridge.lines.push_back("");
             blocks.push_back(std::move(bridge));
         }
-        functionIndex.clear();
-        signatures.clear();
-        for (size_t i = 0; i < blocks.size(); ++i) {
-            if (!blocks[i].name.empty()) {
-                functionIndex[blocks[i].name] = i;
-                signatures[blocks[i].name] = parseFunctionBlockSignature(blocks[i].lines.empty() ? "" : blocks[i].lines.front());
-            }
-        }
-        for (auto& block : blocks) {
-            block.dependencies = extractFunctionDependencies(block, functionIndex, counters);
-        }
+        markAppendedBlocks(functionBridgeStart, dependencyDirtyBlocks);
+        refreshDirtyDependencies(dependencyDirtyBlocks);
     } else if (runtimeBridgeChanged || !methodCallerRequests.empty()) {
         insertMethodCallerGlobals(prefix, methodCallerRequests);
-        functionIndex.clear();
-        signatures.clear();
-        for (size_t i = 0; i < blocks.size(); ++i) {
-            if (!blocks[i].name.empty()) {
-                functionIndex[blocks[i].name] = i;
-                signatures[blocks[i].name] = parseFunctionBlockSignature(blocks[i].lines.empty() ? "" : blocks[i].lines.front());
+        refreshDirtyDependencies(dependencyDirtyBlocks);
+    } else if (cycleRewriteChanged) {
+        refreshDirtyDependencies(dependencyDirtyBlocks);
+    }
+
+    if (counters) {
+        std::unordered_set<std::string> outputEdges;
+        for (const auto& block : blocks) {
+            for (const auto& dep : block.dependencies) {
+                outputEdges.insert(block.name + "\n" + dep);
             }
         }
-        for (auto& block : blocks) {
-            block.dependencies = extractFunctionDependencies(block, functionIndex, counters);
-        }
-    } else if (cycleRewriteChanged) {
-        for (auto& block : blocks) {
-            block.dependencies = extractFunctionDependencies(block, functionIndex, counters);
+        counters->functionDependencyOutputScanEdges = outputEdges.size();
+        if (recordedEdges) {
+            size_t matched = 0;
+            for (const auto& edge : *recordedEdges) {
+                if (outputEdges.contains(edge)) {
+                    ++matched;
+                }
+            }
+            counters->functionDependencyMatchedEdges = matched;
+            counters->functionDependencyExtraRecordedEdges = recordedEdges->size() - matched;
+            counters->functionDependencyMissingRecordedEdges = outputEdges.size() - matched;
         }
     }
 
@@ -2928,6 +3102,47 @@ ArrayDeclRewrite rewriteMultiDimDeclarationLine(const std::string& line) {
 Phase1Codegen::Phase1Codegen(Diagnostics& diagnostics, CodegenOptions options)
     : diagnostics_(diagnostics), options_(options) {}
 
+Phase1Codegen::BodyMode Phase1Codegen::bodyModeForFunction(const Decl& decl) const {
+    return decl.mode == SyntaxMode::Zinc ? BodyMode::Zinc : BodyMode::JassLike;
+}
+
+Phase1Codegen::BodyMode Phase1Codegen::bodyModeForMethod(const MethodDecl& method) const {
+    return method.mode == SyntaxMode::Zinc ? BodyMode::Zinc : BodyMode::JassLike;
+}
+
+Phase1Codegen::BodyMode Phase1Codegen::bodyModeForGenerated(GeneratedKind) const {
+    return BodyMode::Generated;
+}
+
+void Phase1Codegen::countBodyMode(BodyMode mode, bool isMethod) const {
+    if (mode == BodyMode::Generated) {
+        ++performanceCounters_.bodyModeGeneratedBodies;
+        return;
+    }
+    if (mode == BodyMode::Zinc) {
+        if (isMethod) {
+            ++performanceCounters_.bodyModeZincMethods;
+        } else {
+            ++performanceCounters_.bodyModeZincFunctions;
+        }
+        return;
+    }
+    if (isMethod) {
+        ++performanceCounters_.bodyModeJassLikeMethods;
+    } else {
+        ++performanceCounters_.bodyModeJassLikeFunctions;
+    }
+}
+
+void Phase1Codegen::recordFunctionDependency(const std::string& from, const std::string& to) const {
+    if (from.empty() || to.empty() || from == to || functionIndexByName_.find(to) == functionIndexByName_.end()) {
+        return;
+    }
+    if (recordedFunctionDependencyEdges_.insert(from + "\n" + to).second) {
+        ++performanceCounters_.functionDependencyRecordedEdges;
+    }
+}
+
 CodegenResult Phase1Codegen::generate(const Program& program) {
     auto recordPass = [this](const std::string& name, auto&& fn) {
         auto start = std::chrono::steady_clock::now();
@@ -3017,6 +3232,10 @@ CodegenResult Phase1Codegen::generate(const Program& program) {
     functionLookupCache_.clear();
     arrayStructReceiverCache_.clear();
     structDeallocateCache_.clear();
+    lineTokenCache_.clear();
+    lineTokenCache_.reserve(80000);
+    recordedFunctionDependencyEdges_.clear();
+    recordedFunctionDependencyEdges_.reserve(20000);
     lineFeatureCacheValid_ = false;
     structInitializers_.clear();
     mainFunction_ = nullptr;
@@ -3077,7 +3296,7 @@ CodegenResult Phase1Codegen::makeResult(bool ok) {
         result.output = commentMissingInitTriggerCalls(std::move(result.output));
         auto sanitized = std::chrono::steady_clock::now();
         result.output = adaptFunctionInterfaceCallbacksBySignature(result.output);
-        result.output = orderFunctionBlocksForPjass(result.output, &performanceCounters_);
+        result.output = orderFunctionBlocksForPjass(result.output, &performanceCounters_, &recordedFunctionDependencyEdges_);
         auto ordered = std::chrono::steady_clock::now();
         long long sanitizeMs = std::chrono::duration_cast<std::chrono::milliseconds>(sanitized - start).count();
         long long orderingMs = std::chrono::duration_cast<std::chrono::milliseconds>(ordered - sanitized).count();
@@ -3289,6 +3508,8 @@ void Phase1Codegen::emitJassFunction(const Decl& decl, const Decl* container, bo
         return;
     }
     lineFeatureCacheValid_ = false;
+    BodyMode mode = bodyModeForFunction(decl);
+    countBodyMode(mode, false);
     std::string header = rewriteFunctionHeader(decl, container);
     FunctionSignature declaredSig = parseFunctionSignatureFromHeader(stripAccessPrefixFromLine(decl.lines.front()), decl.mode);
     rememberFunctionInterfaceParamTypes(decl.name, functionNameFromHeaderLine(header), declaredSig.paramTypes, container);
@@ -3298,7 +3519,7 @@ void Phase1Codegen::emitJassFunction(const Decl& decl, const Decl* container, bo
     seedFunctionLocalTypes(stripAccessPrefixFromLine(decl.lines.front()), localTypes);
     std::vector<std::string> tempLocals;
     std::unordered_map<std::string, ArrayShape> localArrayShapes;
-    LoweringContext ctx{nullptr, container, &localTypes, &localArrayShapes, &tempLocals, 0};
+    LoweringContext ctx{nullptr, container, &localTypes, &localArrayShapes, &tempLocals, mode, functionNameFromHeaderLine(header), 0};
     bool injected = false;
     std::vector<std::string> locals;
     std::vector<std::string> body;
@@ -3312,7 +3533,8 @@ void Phase1Codegen::emitJassFunction(const Decl& decl, const Decl* container, bo
     }
     lambdaContextStruct_ = prevLambdaStruct;
     lambdaContextContainer_ = prevLambdaContainer;
-    for (const auto& rawLine : rawLines) {
+    std::vector<std::string> loweredBodyLines = lowerBodyByMode(mode, rawLines, ctx);
+    for (const auto& rawLine : loweredBodyLines) {
         std::string t = trim(rawLine);
         if (startsWithWord(t, "endfunction")) {
             break;
@@ -3364,6 +3586,8 @@ void Phase1Codegen::emitZincFunction(const Decl& decl, const Decl* container) {
         return;
     }
     lineFeatureCacheValid_ = false;
+    BodyMode mode = bodyModeForFunction(decl);
+    countBodyMode(mode, false);
     std::string header = trim(decl.lines.front());
     std::string accessHeader = header;
     (void)stripAccessPrefixFromLine(accessHeader);
@@ -3440,8 +3664,8 @@ void Phase1Codegen::emitZincFunction(const Decl& decl, const Decl* container) {
     lambdaContextContainer_ = prevLambdaContainer;
     std::vector<std::string> tempLocals;
     std::unordered_map<std::string, ArrayShape> localArrayShapes;
-    LoweringContext ctx{nullptr, container, &localTypes, &localArrayShapes, &tempLocals, 0};
-    for (const auto& line : lowerZincBody(bodyLines)) {
+    LoweringContext ctx{nullptr, container, &localTypes, &localArrayShapes, &tempLocals, mode, finalName, 0};
+    for (const auto& line : lowerBodyByMode(mode, bodyLines, ctx)) {
         std::string out = rewriteForContainer(line, container);
         std::vector<std::string> extraLines;
         if (startsWithWord(trim(out), "local")) {
@@ -3477,10 +3701,12 @@ void Phase1Codegen::emitGeneratedLambdas() {
                                          ? lambda.currentStruct->originalName
                                          : param.type.name;
         }
-        std::vector<std::string> lines = lowerZincBody(lambda.bodyLines);
         std::vector<std::string> tempLocals;
         std::unordered_map<std::string, ArrayShape> localArrayShapes;
-        LoweringContext ctx{lambda.currentStruct, lambda.container, &localTypes, &localArrayShapes, &tempLocals, 0};
+        BodyMode mode = BodyMode::Zinc;
+        countBodyMode(mode, false);
+        LoweringContext ctx{lambda.currentStruct, lambda.container, &localTypes, &localArrayShapes, &tempLocals, mode, lambda.name, 0};
+        std::vector<std::string> lines = lowerBodyByMode(mode, lambda.bodyLines, ctx);
         bool lastEmittedReturn = false;
         for (const auto& raw : lines) {
             std::string line = trim(rewriteForContainer(raw, lambda.container));
@@ -3663,8 +3889,16 @@ void Phase1Codegen::emitStructGeneratedSupport(const StructInfo& info, const Met
             writer_.writeln();
         }
     }
-    performanceCounters_.generatedSupportLinesEmitted += writer_.lineCount() - beforeLines;
-    performanceCounters_.linesSkippedGeneratedSupport += writer_.lineCount() - beforeLines;
+    size_t emittedLines = writer_.lineCount() - beforeLines;
+    performanceCounters_.generatedSupportLinesEmitted += emittedLines;
+    performanceCounters_.linesSkippedGeneratedSupport += emittedLines;
+    if (emittedLines > 0) {
+        countBodyMode(bodyModeForGenerated(GeneratedKind::StructAllocate), false);
+        ++performanceCounters_.bodyLowererGeneratedBodies;
+        performanceCounters_.bodyLowererGeneratedLines += emittedLines;
+        performanceCounters_.generatedLinesSkippedGenericLowering += emittedLines;
+        performanceCounters_.generatedFastPathLines += emittedLines;
+    }
 }
 
 void Phase1Codegen::emitStructLifecycleSupport(const StructInfo& info,
@@ -3724,8 +3958,16 @@ void Phase1Codegen::emitStructLifecycleSupport(const StructInfo& info,
     writer_.dedent();
     writer_.writeln("endfunction");
     writer_.writeln();
-    performanceCounters_.generatedSupportLinesEmitted += writer_.lineCount() - beforeLines;
-    performanceCounters_.linesSkippedGeneratedSupport += writer_.lineCount() - beforeLines;
+    size_t emittedLines = writer_.lineCount() - beforeLines;
+    performanceCounters_.generatedSupportLinesEmitted += emittedLines;
+    performanceCounters_.linesSkippedGeneratedSupport += emittedLines;
+    if (emittedLines > 0) {
+        countBodyMode(bodyModeForGenerated(GeneratedKind::StructDestroy), false);
+        ++performanceCounters_.bodyLowererGeneratedBodies;
+        performanceCounters_.bodyLowererGeneratedLines += emittedLines;
+        performanceCounters_.generatedLinesSkippedGenericLowering += emittedLines;
+        performanceCounters_.generatedFastPathLines += emittedLines;
+    }
 }
 
 void Phase1Codegen::emitStructSourceMethods(const StructInfo& info,
@@ -3751,6 +3993,8 @@ void Phase1Codegen::emitStructSourceMethods(const StructInfo& info,
 
 void Phase1Codegen::emitStructMethod(const StructInfo& info, const MethodInfo& method) {
     lineFeatureCacheValid_ = false;
+    BodyMode mode = bodyModeForMethod(*method.decl);
+    countBodyMode(mode, true);
     std::string params = rewriteParamList(method.decl->params, !method.isStatic, &info);
     std::string returns = rewriteTypeName(method.decl->returnType.name, &info);
     FunctionSignature declaredSig = signatureFromParams(method.decl->params, method.decl->returnType, &info);
@@ -3764,8 +4008,10 @@ void Phase1Codegen::emitStructMethod(const StructInfo& info, const MethodInfo& m
     writer_.writeln("function " + method.generatedName + " takes " + params + " returns " + returns);
     writer_.indent();
     std::unordered_map<std::string, std::string> localTypes;
+    localTypes.reserve(method.decl->params.size() + 4);
     seedMethodLocalTypes(info, method, localTypes);
     std::vector<std::string> rawLines;
+    rawLines.reserve(method.decl->bodyLines.size());
     for (const auto& logical : method.decl->bodyLines) {
         rawLines.push_back(logical.text);
     }
@@ -3778,12 +4024,16 @@ void Phase1Codegen::emitStructMethod(const StructInfo& info, const MethodInfo& m
     }
     lambdaContextStruct_ = prevLambdaStruct;
     lambdaContextContainer_ = prevLambdaContainer;
-    std::vector<std::string> lines = method.decl->mode == SyntaxMode::Zinc ? lowerZincBody(rawLines) : rawLines;
     std::vector<std::string> tempLocals;
+    tempLocals.reserve(4);
     std::unordered_map<std::string, ArrayShape> localArrayShapes;
-    LoweringContext ctx{&info, info.container, &localTypes, &localArrayShapes, &tempLocals, 0};
+    localArrayShapes.reserve(2);
+    LoweringContext ctx{&info, info.container, &localTypes, &localArrayShapes, &tempLocals, mode, method.generatedName, 0};
+    std::vector<std::string> lines = lowerBodyByMode(mode, rawLines, ctx);
     std::vector<std::string> locals;
+    locals.reserve(lines.size() / 4 + 1);
     std::vector<std::string> body;
+    body.reserve(lines.size() + tempLocals.size());
     for (const auto& raw : lines) {
         std::string line = trim(rewriteForContainer(raw, info.container));
         if (line.empty() || line.rfind("//", 0) == 0) {
@@ -4409,7 +4659,7 @@ int Phase1Codegen::structInstanceLimit(const StructInfo& info) const {
 std::string Phase1Codegen::rewriteArrayAccesses(
     const std::string& line,
     const std::unordered_map<std::string, ArrayShape>* localArrayShapes) const {
-    if (line.find('[') == std::string::npos) {
+    if (line.find('[') == std::string::npos || !hasKnownArrayReceiver(line, localArrayShapes)) {
         return line;
     }
     bool countedAttempt = false;
@@ -4482,11 +4732,6 @@ std::string Phase1Codegen::rewriteArrayAccesses(
             out += name;
             continue;
         }
-        if (!countedAttempt) {
-            ++performanceCounters_.arrayAccessRewriteAttempts;
-            countedAttempt = true;
-        }
-
         size_t afterName = i;
         std::vector<std::string> indexes;
         size_t cursor = afterName;
@@ -4509,6 +4754,10 @@ std::string Phase1Codegen::rewriteArrayAccesses(
         if (indexes.size() < needed || needed == 0) {
             out += name;
             continue;
+        }
+        if (!countedAttempt) {
+            ++performanceCounters_.arrayAccessRewriteAttempts;
+            countedAttempt = true;
         }
 
         std::string flat;
@@ -4544,63 +4793,23 @@ bool Phase1Codegen::hasKnownArrayReceiver(
     if (line.find('[') == std::string::npos) {
         return false;
     }
-    bool inString = false;
-    bool inRaw = false;
-    bool escaped = false;
-    for (size_t i = 0; i < line.size();) {
-        if (!inString && !inRaw && i + 1 < line.size() && line[i] == '/' && line[i + 1] == '/') {
-            break;
-        }
-        char c = line[i];
-        if (inString) {
-            if (escaped) {
-                escaped = false;
-            } else if (c == '\\') {
-                escaped = true;
-            } else if (c == '"') {
-                inString = false;
-            }
-            ++i;
-            continue;
-        }
-        if (inRaw) {
-            if (c == '\'') {
-                inRaw = false;
-            }
-            ++i;
-            continue;
-        }
-        if (c == '"') {
-            inString = true;
-            ++i;
-            continue;
-        }
-        if (c == '\'') {
-            inRaw = true;
-            ++i;
-            continue;
-        }
-        if (!isIdentStart(c)) {
-            ++i;
-            continue;
-        }
-
-        size_t nameStart = i++;
-        while (i < line.size() && isIdentPart(line[i])) {
-            ++i;
-        }
-        size_t cursor = i;
+    const LineTokenCache& tokens = getLineTokenCache(line);
+    if (!tokens.hasBracket) {
+        return false;
+    }
+    for (const auto& token : tokens.identifiers) {
+        size_t cursor = token.end;
         while (cursor < line.size() && std::isspace(static_cast<unsigned char>(line[cursor]))) {
             ++cursor;
         }
         if (cursor >= line.size() || line[cursor] != '[') {
             continue;
         }
-        std::string name = line.substr(nameStart, i - nameStart);
-        if (globalArrayShapes_.contains(name)) {
+        std::string tokenText(tokens.line.data() + token.start, token.end - token.start);
+        if (globalArrayShapes_.contains(tokenText)) {
             return true;
         }
-        if (localArrayShapes && localArrayShapes->contains(name)) {
+        if (localArrayShapes && localArrayShapes->contains(tokenText)) {
             return true;
         }
     }
@@ -5281,25 +5490,97 @@ std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
 
         if (text.find('.') != std::string::npos) {
             ++performanceCounters_.memberAccessScans;
-            for (const auto& [varName, typeName] : localTypes) {
-                if (text.find(varName) == std::string::npos) {
-                    continue;
+            auto collectReceiverNames = [&]() {
+                std::vector<std::string> receiverNames;
+                bool inString = false;
+                bool inRaw = false;
+                bool escaped = false;
+                for (size_t pos = 0; pos < text.size();) {
+                    if (!inString && !inRaw && pos + 1 < text.size() && text[pos] == '/' && text[pos + 1] == '/') {
+                        break;
+                    }
+                    char c = text[pos];
+                    if (inString) {
+                        if (escaped) {
+                            escaped = false;
+                        } else if (c == '\\') {
+                            escaped = true;
+                        } else if (c == '"') {
+                            inString = false;
+                        }
+                        ++pos;
+                        continue;
+                    }
+                    if (inRaw) {
+                        if (c == '\'') {
+                            inRaw = false;
+                        }
+                        ++pos;
+                        continue;
+                    }
+                    if (c == '"') {
+                        inString = true;
+                        ++pos;
+                        continue;
+                    }
+                    if (c == '\'') {
+                        inRaw = true;
+                        ++pos;
+                        continue;
+                    }
+                    if (!isIdentStart(c)) {
+                        ++pos;
+                        continue;
+                    }
+                    size_t nameStart = pos++;
+                    while (pos < text.size() && isIdentPart(text[pos])) {
+                        ++pos;
+                    }
+                    size_t nameEnd = pos;
+                    size_t cursor = pos;
+                    while (cursor < text.size() && std::isspace(static_cast<unsigned char>(text[cursor]))) {
+                        ++cursor;
+                    }
+                    while (cursor < text.size() && text[cursor] == '[') {
+                        size_t close = findMatchingBracketOutsideProtected(text, cursor);
+                        if (close == std::string::npos) {
+                            break;
+                        }
+                        cursor = close + 1;
+                        while (cursor < text.size() && std::isspace(static_cast<unsigned char>(text[cursor]))) {
+                            ++cursor;
+                        }
+                    }
+                    if (cursor < text.size() && text[cursor] == '.') {
+                        std::string_view receiverName(text.data() + nameStart, nameEnd - nameStart);
+                        bool seen = false;
+                        for (const auto& existing : receiverNames) {
+                            if (existing == receiverName) {
+                                seen = true;
+                                break;
+                            }
+                        }
+                        if (!seen) {
+                            receiverNames.emplace_back(receiverName);
+                        }
+                    }
                 }
-                const StructInfo* varStruct = typeName == "thistype" ? currentStruct : findStruct(typeName);
-                if (!varStruct) {
-                    continue;
+                return receiverNames;
+            };
+            for (const auto& varName : collectReceiverNames()) {
+                if (auto localIt = localTypes.find(varName); localIt != localTypes.end()) {
+                    const StructInfo* varStruct = localIt->second == "thistype" ? currentStruct : findStruct(localIt->second);
+                    if (varStruct) {
+                        rewriteNamedStructReceiver(*varStruct, varName);
+                    }
                 }
-                rewriteNamedStructReceiver(*varStruct, varName);
             }
-            for (const auto& [varName, typeName] : globalStructTypes_) {
-                if (text.find(varName) == std::string::npos) {
-                    continue;
+            for (const auto& varName : collectReceiverNames()) {
+                if (auto globalIt = globalStructTypes_.find(varName); globalIt != globalStructTypes_.end()) {
+                    if (const StructInfo* varStruct = findStruct(globalIt->second)) {
+                        rewriteNamedStructReceiver(*varStruct, varName);
+                    }
                 }
-                const StructInfo* varStruct = findStruct(typeName);
-                if (!varStruct) {
-                    continue;
-                }
-                rewriteNamedStructReceiver(*varStruct, varName);
             }
         }
         return text;
@@ -5718,7 +5999,139 @@ const Phase1Codegen::FunctionInterfaceInfo* Phase1Codegen::resolveReceiverInterf
 }
 
 std::string Phase1Codegen::rewriteReceiverExpression(const std::string& receiver, const LoweringContext& ctx) const {
-    return rewriteStructExpression(receiver, ctx.currentStruct, ctx.localTypes ? *ctx.localTypes : std::unordered_map<std::string, std::string>{});
+    static const std::unordered_map<std::string, std::string> kEmptyLocalTypes;
+    const auto& localTypes = ctx.localTypes ? *ctx.localTypes : kEmptyLocalTypes;
+    return rewriteStructExpression(receiver, ctx.currentStruct, localTypes);
+}
+
+Phase1Codegen::LineTokenCache Phase1Codegen::buildLineTokenCache(const std::string& line) const {
+    LineTokenCache cache;
+    cache.line = line;
+    cache.hasGeneratedStructPrefix = line.find("s__") != std::string::npos ||
+                                     line.find("sc__") != std::string::npos ||
+                                     line.find("si__") != std::string::npos;
+    bool inString = false;
+    bool inRaw = false;
+    bool escaped = false;
+    for (size_t i = 0; i < line.size();) {
+        if (!inString && !inRaw && i + 1 < line.size() && line[i] == '/' && line[i + 1] == '/') {
+            break;
+        }
+        char c = line[i];
+        if (inString) {
+            cache.hasStringOrRawcode = true;
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                inString = false;
+            }
+            ++i;
+            continue;
+        }
+        if (inRaw) {
+            cache.hasStringOrRawcode = true;
+            if (c == '\'') {
+                inRaw = false;
+            }
+            ++i;
+            continue;
+        }
+        if (c == '"') {
+            cache.hasStringOrRawcode = true;
+            inString = true;
+            ++i;
+            continue;
+        }
+        if (c == '\'') {
+            cache.hasStringOrRawcode = true;
+            inRaw = true;
+            ++i;
+            continue;
+        }
+        if (c == '.') {
+            size_t nameStart = i + 1;
+            while (nameStart < line.size() && std::isspace(static_cast<unsigned char>(line[nameStart]))) {
+                ++nameStart;
+            }
+            if (nameStart < line.size() && isIdentStart(line[nameStart])) {
+                cache.hasDot = true;
+            }
+        } else if (c == '[') {
+            cache.hasBracket = true;
+            cache.bracketPositions.push_back(i);
+        } else if (c == '(') {
+            cache.hasParen = true;
+            cache.parenPositions.push_back(i);
+        } else if (c == '&' || c == '|' || c == '!') {
+            cache.hasBooleanOperators = true;
+        }
+        if (!isIdentStart(c)) {
+            ++i;
+            continue;
+        }
+        size_t start = i++;
+        while (i < line.size() && isIdentPart(line[i])) {
+            ++i;
+        }
+        std::string_view word(line.data() + start, i - start);
+        size_t prev = start;
+        while (prev > 0 && std::isspace(static_cast<unsigned char>(line[prev - 1]))) {
+            --prev;
+        }
+        bool precededByDot = prev > 0 && line[prev - 1] == '.';
+        cache.identifiers.push_back({start, i, precededByDot});
+        if (word == "call") {
+            cache.hasCallWord = true;
+        } else if (word == "set") {
+            cache.hasSetWord = true;
+        } else if (word == "local") {
+            cache.hasLocalWord = true;
+        } else if (word == "return") {
+            cache.hasReturnWord = true;
+        } else if (word == "function") {
+            cache.hasFunctionWord = true;
+            size_t next = i;
+            while (next < line.size() && std::isspace(static_cast<unsigned char>(line[next]))) {
+                ++next;
+            }
+            if (next < line.size() && line[next] == '(') {
+                cache.hasLambdaStart = true;
+            }
+        } else if (word == "this") {
+            cache.hasThisWord = true;
+        } else if (word == "thistype") {
+            cache.hasThistypeWord = true;
+        }
+        if (precededByDot) {
+            if (word == "name") {
+                cache.hasNameToken = true;
+            } else if (word == "execute" || word == "evaluate") {
+                cache.hasExecuteEvaluate = true;
+            }
+        }
+    }
+    return cache;
+}
+
+const Phase1Codegen::LineTokenCache& Phase1Codegen::getLineTokenCache(const std::string& line, bool* built) const {
+    auto it = lineTokenCache_.find(line);
+    if (it != lineTokenCache_.end()) {
+        ++performanceCounters_.tokenCacheHits;
+        if (built) {
+            *built = false;
+        }
+        return it->second;
+    }
+    ++performanceCounters_.tokenCacheMisses;
+    ++performanceCounters_.tokenCacheBuilds;
+    ++performanceCounters_.tokenCacheLines;
+    auto [inserted, _] = lineTokenCache_.emplace(line, buildLineTokenCache(line));
+    if (built) {
+        *built = true;
+    }
+    return inserted->second;
 }
 
 Phase1Codegen::LineFeatures Phase1Codegen::scanLineFeatures(
@@ -5731,11 +6144,30 @@ Phase1Codegen::LineFeatures Phase1Codegen::scanLineFeatures(
         lineFeatureCacheLine_ == line) {
         return lineFeatureCacheValue_;
     }
-    ++performanceCounters_.lineFeatureScans;
+    bool builtTokenCache = false;
+    const LineTokenCache& tokens = getLineTokenCache(line, &builtTokenCache);
+    if (builtTokenCache) {
+        ++performanceCounters_.lineFeatureScans;
+    } else {
+        ++performanceCounters_.featureScansAvoided;
+    }
     LineFeatures features;
-    features.hasGeneratedStructPrefix = line.find("s__") != std::string::npos ||
-                                        line.find("sc__") != std::string::npos ||
-                                        line.find("si__") != std::string::npos;
+    features.hasDot = tokens.hasDot;
+    features.hasBracket = tokens.hasBracket;
+    features.hasParen = tokens.hasParen;
+    features.hasCall = tokens.hasCallWord;
+    features.hasSet = tokens.hasSetWord;
+    features.hasLocal = tokens.hasLocalWord;
+    features.hasReturn = tokens.hasReturnWord;
+    features.hasFunctionKeyword = tokens.hasFunctionWord;
+    features.hasLambdaStart = tokens.hasLambdaStart;
+    features.hasThis = tokens.hasThisWord;
+    features.hasThistype = tokens.hasThistypeWord;
+    features.hasNameToken = tokens.hasNameToken;
+    features.hasExecuteEvaluate = tokens.hasExecuteEvaluate;
+    features.hasBooleanOperators = tokens.hasBooleanOperators;
+    features.hasGeneratedStructPrefix = tokens.hasGeneratedStructPrefix;
+    features.hasStringOrRawcode = tokens.hasStringOrRawcode;
     auto addCurrentStructMember = [&](std::string_view name) {
         if (!currentStruct) {
             return false;
@@ -5760,117 +6192,59 @@ Phase1Codegen::LineFeatures Phase1Codegen::scanLineFeatures(
         }
         return matched;
     };
-    bool inString = false;
-    bool inRaw = false;
-    bool escaped = false;
-    for (size_t i = 0; i < line.size();) {
-        if (!inString && !inRaw && i + 1 < line.size() && line[i] == '/' && line[i + 1] == '/') {
-            break;
+    auto dottedTokenMayReferenceCurrentStruct = [&](const IdentifierToken& token) {
+        size_t dot = token.start;
+        while (dot > 0 && std::isspace(static_cast<unsigned char>(line[dot - 1]))) {
+            --dot;
         }
-        char c = line[i];
-        if (inString) {
-            features.hasStringOrRawcode = true;
-            if (escaped) {
-                escaped = false;
-            } else if (c == '\\') {
-                escaped = true;
-            } else if (c == '"') {
-                inString = false;
-            }
-            ++i;
-            continue;
+        if (dot == 0 || line[dot - 1] != '.') {
+            return false;
         }
-        if (inRaw) {
-            features.hasStringOrRawcode = true;
-            if (c == '\'') {
-                inRaw = false;
-            }
-            ++i;
-            continue;
+        size_t beforeDot = dot - 1;
+        while (beforeDot > 0 && std::isspace(static_cast<unsigned char>(line[beforeDot - 1]))) {
+            --beforeDot;
         }
-        if (c == '"') {
-            features.hasStringOrRawcode = true;
-            inString = true;
-            ++i;
-            continue;
+        if (beforeDot == 0) {
+            return true;
         }
-        if (c == '\'') {
-            features.hasStringOrRawcode = true;
-            inRaw = true;
-            ++i;
-            continue;
+        char prev = line[beforeDot - 1];
+        if (prev == ']') {
+            return true;
         }
-        if (c == '.') {
-            size_t nameStart = i + 1;
-            while (nameStart < line.size() && std::isspace(static_cast<unsigned char>(line[nameStart]))) {
-                ++nameStart;
-            }
-            if (nameStart >= line.size() || !isIdentStart(line[nameStart])) {
-                ++i;
+        if (!isIdentPart(prev) && prev != ')') {
+            return true;
+        }
+        if (!isIdentPart(prev)) {
+            return false;
+        }
+        size_t receiverStart = beforeDot - 1;
+        while (receiverStart > 0 && isIdentPart(line[receiverStart - 1])) {
+            --receiverStart;
+        }
+        std::string_view receiver(line.data() + receiverStart, beforeDot - receiverStart);
+        return receiver == "this" || receiver == "thistype";
+    };
+    if (features.hasThistype && currentStruct) {
+        features.hasPossibleStructMember = true;
+    }
+    if (currentStruct) {
+        for (const auto& token : tokens.identifiers) {
+            std::string_view word(tokens.line.data() + token.start, token.end - token.start);
+            if (token.precededByDot) {
+                if (dottedTokenMayReferenceCurrentStruct(token) && addCurrentStructMember(word)) {
+                    features.hasPossibleStructMember = true;
+                }
                 continue;
             }
-            features.hasDot = true;
-            size_t nameEnd = nameStart;
-            while (nameEnd < line.size() && isIdentPart(line[nameEnd])) {
-                ++nameEnd;
-            }
-            std::string_view member(line.data() + nameStart, nameEnd - nameStart);
-            if (member == "name") {
-                features.hasNameToken = true;
-            } else if (member == "execute" || member == "evaluate") {
-                features.hasExecuteEvaluate = true;
-            }
-            if (addCurrentStructMember(member)) {
-                features.hasPossibleStructMember = true;
-            }
-            i = std::max(i + 1, nameEnd);
-            continue;
-        }
-        if (c == '[') {
-            features.hasBracket = true;
-        } else if (c == '(') {
-            features.hasParen = true;
-        } else if (c == '&' || c == '|' || c == '!') {
-            features.hasBooleanOperators = true;
-        }
-        if (!isIdentStart(c)) {
-            ++i;
-            continue;
-        }
-        size_t start = i++;
-        while (i < line.size() && isIdentPart(line[i])) {
-            ++i;
-        }
-        std::string_view word(line.data() + start, i - start);
-        if (word == "call") {
-            features.hasCall = true;
-        } else if (word == "set") {
-            features.hasSet = true;
-        } else if (word == "local") {
-            features.hasLocal = true;
-        } else if (word == "return") {
-            features.hasReturn = true;
-        } else if (word == "function") {
-            features.hasFunctionKeyword = true;
-            size_t next = i;
-            while (next < line.size() && std::isspace(static_cast<unsigned char>(line[next]))) {
-                ++next;
-            }
-            if (next < line.size() && line[next] == '(') {
-                features.hasLambdaStart = true;
-            }
-        } else if (word == "this") {
-            features.hasThis = true;
-        } else if (word == "thistype") {
-            features.hasThistype = true;
-            features.hasPossibleStructMember = currentStruct != nullptr;
-        }
-        if (currentStruct) {
             if (word == "allocate" || word == "destroy" || word == "deallocate") {
                 features.hasPossibleStructMember = true;
-            } else if (localTypes && localTypes->find(std::string(word)) != localTypes->end()) {
                 continue;
-            } else if (addCurrentStructMember(word)) {
+            }
+            std::string key(word);
+            if (localTypes && localTypes->find(key) != localTypes->end()) {
+                continue;
+            }
+            if (addCurrentStructMember(key)) {
                 features.hasPossibleStructMember = true;
             }
         }
@@ -5938,6 +6312,8 @@ std::string Phase1Codegen::lowerFunctionValue(std::string expression,
                                               LoweringContext& ctx,
                                               std::vector<std::string>& prelude) const {
     expression = trim(expression);
+    static const std::unordered_map<std::string, std::string> kEmptyLocalTypes;
+    const auto& localTypes = ctx.localTypes ? *ctx.localTypes : kEmptyLocalTypes;
     if (expression.empty()) {
         return expression;
     }
@@ -5973,7 +6349,7 @@ std::string Phase1Codegen::lowerFunctionValue(std::string expression,
         }
         return rewriteCallArguments(rewriteFunctionNames(rewriteStructExpression(expression,
                                                                                 ctx.currentStruct,
-                                                                                ctx.localTypes ? *ctx.localTypes : std::unordered_map<std::string, std::string>{}),
+                                                                                localTypes),
                                                         ctx.currentStruct),
                                     ctx,
                                     prelude);
@@ -6248,6 +6624,8 @@ std::string Phase1Codegen::lowerExpression(std::string expression,
                                            LoweringContext& ctx,
                                            std::vector<std::string>& prelude) const {
     expression = trim(expression);
+    static const std::unordered_map<std::string, std::string> kEmptyLocalTypes;
+    const auto& localTypes = ctx.localTypes ? *ctx.localTypes : kEmptyLocalTypes;
     if (expectedInterfaceType.empty() && ctx.currentStruct == nullptr &&
         expression.find_first_of(".[(") == std::string::npos &&
         !containsIdentifierWord(expression, "function")) {
@@ -6360,12 +6738,12 @@ std::string Phase1Codegen::lowerExpression(std::string expression,
     }
     expression = rewriteFunctionNames(expression, ctx.currentStruct);
     std::string beforeStructExpression = expression;
-    expression = rewriteStructExpression(expression, ctx.currentStruct, ctx.localTypes ? *ctx.localTypes : std::unordered_map<std::string, std::string>{});
+    expression = rewriteStructExpression(expression, ctx.currentStruct, localTypes);
     expression = rewriteArrayAccesses(expression, ctx.localArrayShapes);
     if (expression != beforeStructExpression && expression.find('.') != std::string::npos) {
         expression = rewriteStructExpression(expression,
                                              ctx.currentStruct,
-                                             ctx.localTypes ? *ctx.localTypes : std::unordered_map<std::string, std::string>{});
+                                             localTypes);
         expression = rewriteArrayAccesses(expression, ctx.localArrayShapes);
     }
     std::string beforeCallArguments = expression;
@@ -6373,7 +6751,7 @@ std::string Phase1Codegen::lowerExpression(std::string expression,
     if (expression != beforeCallArguments && expression.find('.') != std::string::npos) {
         expression = rewriteStructExpression(expression,
                                              ctx.currentStruct,
-                                             ctx.localTypes ? *ctx.localTypes : std::unordered_map<std::string, std::string>{});
+                                             localTypes);
         expression = rewriteArrayAccesses(expression, ctx.localArrayShapes);
     }
     return trim(expression);
@@ -6394,6 +6772,101 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
     std::vector<std::string> out;
     if (line.empty()) {
         return out;
+    }
+    LineFeatures statementFeatures = scanLineFeatures(line, ctx.currentStruct, ctx.localTypes);
+    auto countFastPath = [&]() {
+        if (ctx.mode == BodyMode::Zinc) {
+            ++performanceCounters_.zincFastPathLines;
+        } else if (ctx.mode == BodyMode::Generated) {
+            ++performanceCounters_.generatedFastPathLines;
+        } else {
+            ++performanceCounters_.jassLikeFastPathLines;
+        }
+        ++performanceCounters_.heavyLoweringAvoidedByMode;
+    };
+    auto directCallName = [](const std::string& text) {
+        std::string t = trim(text);
+        if (!startsWithWord(t, "call")) {
+            return std::string{};
+        }
+        size_t pos = 4;
+        while (pos < t.size() && std::isspace(static_cast<unsigned char>(t[pos]))) {
+            ++pos;
+        }
+        if (pos >= t.size() || !isIdentStart(t[pos])) {
+            return std::string{};
+        }
+        size_t start = pos++;
+        while (pos < t.size() && isIdentPart(t[pos])) {
+            ++pos;
+        }
+        return t.substr(start, pos - start);
+    };
+    auto containsFunctionArgumentCandidateCall = [&]() {
+        if (!statementFeatures.hasParen || functionArgumentLoweringCandidates_.empty()) {
+            return false;
+        }
+        const LineTokenCache& tokens = getLineTokenCache(line);
+        for (const auto& token : tokens.identifiers) {
+            size_t cursor = token.end;
+            while (cursor < line.size() && std::isspace(static_cast<unsigned char>(line[cursor]))) {
+                ++cursor;
+            }
+            std::string_view word(tokens.line.data() + token.start, token.end - token.start);
+            if (cursor < line.size() && line[cursor] == '(' &&
+                functionArgumentLoweringCandidates_.contains(std::string(word))) {
+                return true;
+            }
+        }
+        return false;
+    };
+    const bool hasModeHeavyToken =
+        statementFeatures.hasDot ||
+        statementFeatures.hasBracket ||
+        statementFeatures.hasFunctionKeyword ||
+        statementFeatures.hasLambdaStart ||
+        statementFeatures.hasNameToken ||
+        statementFeatures.hasExecuteEvaluate ||
+        statementFeatures.hasBooleanOperators ||
+        statementFeatures.hasThis ||
+        statementFeatures.hasThistype ||
+        statementFeatures.hasGeneratedStructPrefix ||
+        (ctx.currentStruct != nullptr && statementFeatures.hasPossibleStructMember);
+    if (!hasModeHeavyToken) {
+        bool canUseFastPath = true;
+        if (startsWithWord(line, "call")) {
+            std::string callName = directCallName(line);
+            if (callName.empty() || functionArgumentLoweringCandidates_.contains(callName)) {
+                canUseFastPath = false;
+            } else {
+                recordFunctionDependency(ctx.currentFunctionName, callName);
+            }
+        } else if (startsWithWord(line, "set")) {
+            std::string rest = trim(std::string_view(line).substr(3));
+            if (containsFunctionArgumentCandidateCall()) {
+                canUseFastPath = false;
+            }
+            if (auto eq = findTopLevelAssignment(rest)) {
+                std::string lhs = trim(std::string_view(rest).substr(0, *eq));
+                std::string rhs = trim(std::string_view(rest).substr(*eq + 1));
+                if (ctx.localTypes) {
+                    auto it = ctx.localTypes->find(lhs);
+                    if (it != ctx.localTypes->end() && findFunctionInterface(it->second)) {
+                        canUseFastPath = false;
+                    }
+                }
+                if (functionIndexByName_.contains(rhs)) {
+                    canUseFastPath = false;
+                }
+            }
+        } else if (containsFunctionArgumentCandidateCall()) {
+            canUseFastPath = false;
+        }
+        if (canUseFastPath) {
+            countFastPath();
+            out.push_back(!leading.empty() ? rawLine : line);
+            return out;
+        }
     }
     if (startsWithWord(line, "call")) {
         std::string callExpr = trim(std::string_view(line).substr(4));
@@ -6496,7 +6969,9 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
             std::string lhsOut = lhs;
             LineFeatures lhsFeatures = scanLineFeatures(lhs, ctx.currentStruct, ctx.localTypes);
             if (lineNeedsStructRewrite(lhsFeatures, ctx.currentStruct)) {
-                lhsOut = rewriteStructExpression(lhs, ctx.currentStruct, ctx.localTypes ? *ctx.localTypes : std::unordered_map<std::string, std::string>{});
+                static const std::unordered_map<std::string, std::string> kEmptyLocalTypes;
+                const auto& localTypes = ctx.localTypes ? *ctx.localTypes : kEmptyLocalTypes;
+                lhsOut = rewriteStructExpression(lhs, ctx.currentStruct, localTypes);
                 lhsOut = rewriteArrayAccesses(lhsOut, ctx.localArrayShapes);
             }
             out.push_back("set " + lhsOut + op + rhs);
@@ -6525,9 +7000,85 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
     return out;
 }
 
+std::vector<std::string> Phase1Codegen::lowerBodyByMode(BodyMode mode,
+                                                        const std::vector<std::string>& lines,
+                                                        LoweringContext& ctx) {
+    ctx.mode = mode;
+    if (mode == BodyMode::Zinc) {
+        return lowerZincBodyFast(lines, ctx);
+    }
+    if (mode == BodyMode::Generated) {
+        return lowerGeneratedBodyFast(lines, ctx);
+    }
+    return lowerJassLikeBodyFast(lines, ctx);
+}
+
+std::vector<std::string> Phase1Codegen::lowerZincBodyFast(const std::vector<std::string>& lines,
+                                                          LoweringContext&) {
+    ++performanceCounters_.bodyLowererZincBodies;
+    performanceCounters_.bodyLowererZincLines += lines.size();
+    std::vector<std::string> lowered = lowerZincBody(lines);
+    if (lowered.size() < lines.size()) {
+        performanceCounters_.zincFastPathLines += lines.size() - lowered.size();
+    }
+    return lowered;
+}
+
+std::vector<std::string> Phase1Codegen::lowerJassLikeBodyFast(const std::vector<std::string>& lines,
+                                                              LoweringContext&) {
+    ++performanceCounters_.bodyLowererJassLikeBodies;
+    performanceCounters_.bodyLowererJassLikeLines += lines.size();
+    return lines;
+}
+
+std::vector<std::string> Phase1Codegen::lowerGeneratedBodyFast(const std::vector<std::string>& lines,
+                                                               LoweringContext&) {
+    ++performanceCounters_.bodyLowererGeneratedBodies;
+    performanceCounters_.bodyLowererGeneratedLines += lines.size();
+    performanceCounters_.generatedLinesSkippedGenericLowering += lines.size();
+    performanceCounters_.generatedFastPathLines += lines.size();
+    return lines;
+}
+
 std::vector<std::string> Phase1Codegen::lowerZincBody(const std::vector<std::string>& lines) {
     std::vector<std::string> locals;
     std::vector<std::string> body;
+    bool simpleBody = true;
+    for (const auto& raw : lines) {
+        std::string t = trim(stripLineCommentPreservingLiterals(raw));
+        if (t.empty() || t.rfind("//", 0) == 0) {
+            continue;
+        }
+        if (t.front() == '.' ||
+            t.find('{') != std::string::npos ||
+            t.find('}') != std::string::npos ||
+            startsWithWord(t, "if") ||
+            startsWithWord(t, "else") ||
+            startsWithWord(t, "while") ||
+            startsWithWord(t, "for") ||
+            hasUnclosedContinuation(t) ||
+            startsWithZincContinuationOperator(t)) {
+            simpleBody = false;
+            break;
+        }
+        size_t semicolon = t.find(';');
+        if (semicolon != std::string::npos) {
+            size_t last = t.find_last_not_of(" \t");
+            if (semicolon != last || t.find(';', semicolon + 1) != std::string::npos) {
+                simpleBody = false;
+                break;
+            }
+        }
+    }
+    if (simpleBody) {
+        for (const auto& raw : lines) {
+            lowerZincSimpleStatement(trim(stripLineCommentPreservingLiterals(raw)), locals, body);
+        }
+        std::vector<std::string> out;
+        out.insert(out.end(), locals.begin(), locals.end());
+        out.insert(out.end(), body.begin(), body.end());
+        return out;
+    }
     std::vector<std::string> normalized = splitZincStructuralLines(expandLeadingDotChains(joinZincContinuationLines(lines)));
     size_t index = 0;
     lowerZincBlock(normalized, index, locals, body);

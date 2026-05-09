@@ -3,13 +3,40 @@
 #include "parser/Ast.h"
 
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
 namespace vjassc {
 
+struct TransparentStringHash {
+    using is_transparent = void;
+
+    size_t operator()(std::string_view value) const noexcept {
+        return std::hash<std::string_view>{}(value);
+    }
+
+    size_t operator()(const std::string& value) const noexcept {
+        return std::hash<std::string_view>{}(value);
+    }
+
+    size_t operator()(const char* value) const noexcept {
+        return std::hash<std::string_view>{}(value);
+    }
+};
+
+struct TransparentStringEqual {
+    using is_transparent = void;
+
+    bool operator()(std::string_view lhs, std::string_view rhs) const noexcept {
+        return lhs == rhs;
+    }
+};
+
+using ReplacementMap = std::unordered_map<std::string, std::string, TransparentStringHash, TransparentStringEqual>;
+
 struct ScopedSymbolMap {
-    std::unordered_map<std::string, std::string> replacements;
+    ReplacementMap replacements;
 };
 
 class SymbolTable {
@@ -25,7 +52,7 @@ private:
     void collectGlobalNames(const Decl& globalBlock, const std::vector<std::string>& scopePath, ScopedSymbolMap& map);
 
     std::unordered_map<const Decl*, ScopedSymbolMap> scoped_;
-    std::unordered_map<std::string, std::string> publicReplacements_;
+    ReplacementMap publicReplacements_;
 };
 
 std::string extractGlobalName(std::string line, std::string& access);
