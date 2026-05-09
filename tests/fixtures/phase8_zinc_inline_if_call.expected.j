@@ -5,7 +5,7 @@ globals
 endglobals
 
 
-function Test takes boolean flag returns nothing
+function L___Test takes boolean flag returns nothing
     if (flag) then
     call BJDebugMsg("ok")
     endif
@@ -16,3 +16,4 @@ endfunction
 
 function vjassc__init_libraries takes nothing returns nothing
 endfunction
+

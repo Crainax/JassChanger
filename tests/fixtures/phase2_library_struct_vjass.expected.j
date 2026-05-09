@@ -2,48 +2,51 @@
 
 globals
     constant boolean LIBRARY_LibA=true
-    integer array si__LibA_Pub_F
-    integer si__LibA_Pub_I=0
-    integer array si__LibA_Pub_V
-    integer array s__LibA_Pub_x
-    integer array si__LibA___Priv_F
+    integer si__Pub_F=0
+    integer si__Pub_I=0
+    integer array si__Pub_V
+    integer array s__Pub_x
+    integer si__LibA___Priv_F=0
     integer si__LibA___Priv_I=0
     integer array si__LibA___Priv_V
     integer array s__LibA___Priv_x
 endglobals
 
 
-function s__LibA_Pub__allocate takes nothing returns integer
-    local integer this
-    if si__LibA_Pub_F[0] == 0 then
-        set si__LibA_Pub_I=si__LibA_Pub_I+1
-        set this=si__LibA_Pub_I
+function s__Pub__allocate takes nothing returns integer
+    local integer this=si__Pub_F
+    if (this!=0) then
+        set si__Pub_F=si__Pub_V[this]
     else
-        set this=si__LibA_Pub_F[0]
-        set si__LibA_Pub_F[0]=si__LibA_Pub_F[this]
+        set si__Pub_I=si__Pub_I+1
+        set this=si__Pub_I
     endif
-    set si__LibA_Pub_V[this]=-1
+    if (this>8190) then
+        return 0
+    endif
+    set si__Pub_V[this]=-1
     return this
 endfunction
 
-function s__LibA_Pub_create takes nothing returns integer
-    return s__LibA_Pub__allocate()
+function s__Pub_create takes nothing returns integer
+    return s__Pub__allocate()
 endfunction
 
-function s__LibA_Pub_destroy takes integer this returns nothing
-    set si__LibA_Pub_V[this]=0
-    set si__LibA_Pub_F[this]=si__LibA_Pub_F[0]
-    set si__LibA_Pub_F[0]=this
+function s__Pub_destroy takes integer this returns nothing
+    set si__Pub_V[this]=si__Pub_F
+    set si__Pub_F=this
 endfunction
 
 function s__LibA___Priv__allocate takes nothing returns integer
-    local integer this
-    if si__LibA___Priv_F[0] == 0 then
+    local integer this=si__LibA___Priv_F
+    if (this!=0) then
+        set si__LibA___Priv_F=si__LibA___Priv_V[this]
+    else
         set si__LibA___Priv_I=si__LibA___Priv_I+1
         set this=si__LibA___Priv_I
-    else
-        set this=si__LibA___Priv_F[0]
-        set si__LibA___Priv_F[0]=si__LibA___Priv_F[this]
+    endif
+    if (this>8190) then
+        return 0
     endif
     set si__LibA___Priv_V[this]=-1
     return this
@@ -54,9 +57,8 @@ function s__LibA___Priv_create takes nothing returns integer
 endfunction
 
 function s__LibA___Priv_destroy takes integer this returns nothing
-    set si__LibA___Priv_V[this]=0
-    set si__LibA___Priv_F[this]=si__LibA___Priv_F[0]
-    set si__LibA___Priv_F[0]=this
+    set si__LibA___Priv_V[this]=si__LibA___Priv_F
+    set si__LibA___Priv_F=this
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing
@@ -64,3 +66,4 @@ endfunction
 
 function vjassc__init_libraries takes nothing returns nothing
 endfunction
+

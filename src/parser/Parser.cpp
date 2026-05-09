@@ -1475,7 +1475,6 @@ std::vector<Decl> Parser::parseZincMembers(const std::vector<LogicalLine>& lines
             globals.kind = DeclKind::GlobalBlock;
             globals.mode = SyntaxMode::Zinc;
             globals.loc = lines[index].loc;
-            globals.access = access;
             while (index < lines.size()) {
                 if (!isZincGlobalDeclLine(lines[index])) {
                     break;

@@ -2,11 +2,11 @@
 
 globals
     constant boolean LIBRARY_L=true
-    integer array si__Inner_F
+    integer si__Inner_F=0
     integer si__Inner_I=0
     integer array si__Inner_V
     integer array s__Inner_value
-    integer array si__Outer_F
+    integer si__Outer_F=0
     integer si__Outer_I=0
     integer array si__Outer_V
     integer array s__Outer_child
@@ -14,13 +14,15 @@ endglobals
 
 
 function s__Inner__allocate takes nothing returns integer
-    local integer this
-    if si__Inner_F[0] == 0 then
+    local integer this=si__Inner_F
+    if (this!=0) then
+        set si__Inner_F=si__Inner_V[this]
+    else
         set si__Inner_I=si__Inner_I+1
         set this=si__Inner_I
-    else
-        set this=si__Inner_F[0]
-        set si__Inner_F[0]=si__Inner_F[this]
+    endif
+    if (this>8190) then
+        return 0
     endif
     set si__Inner_V[this]=-1
     return this
@@ -31,19 +33,20 @@ function s__Inner_create takes nothing returns integer
 endfunction
 
 function s__Inner_destroy takes integer this returns nothing
-    set si__Inner_V[this]=0
-    set si__Inner_F[this]=si__Inner_F[0]
-    set si__Inner_F[0]=this
+    set si__Inner_V[this]=si__Inner_F
+    set si__Inner_F=this
 endfunction
 
 function s__Outer__allocate takes nothing returns integer
-    local integer this
-    if si__Outer_F[0] == 0 then
+    local integer this=si__Outer_F
+    if (this!=0) then
+        set si__Outer_F=si__Outer_V[this]
+    else
         set si__Outer_I=si__Outer_I+1
         set this=si__Outer_I
-    else
-        set this=si__Outer_F[0]
-        set si__Outer_F[0]=si__Outer_F[this]
+    endif
+    if (this>8190) then
+        return 0
     endif
     set si__Outer_V[this]=-1
     return this
@@ -54,9 +57,8 @@ function s__Outer_create takes nothing returns integer
 endfunction
 
 function s__Outer_destroy takes integer this returns nothing
-    set si__Outer_V[this]=0
-    set si__Outer_F[this]=si__Outer_F[0]
-    set si__Outer_F[0]=this
+    set si__Outer_V[this]=si__Outer_F
+    set si__Outer_F=this
 endfunction
 
 function Test takes nothing returns integer
@@ -72,3 +74,4 @@ endfunction
 
 function vjassc__init_libraries takes nothing returns nothing
 endfunction
+

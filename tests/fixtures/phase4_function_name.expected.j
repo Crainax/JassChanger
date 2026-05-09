@@ -5,11 +5,11 @@ globals
 endglobals
 
 
-function L_Foo takes nothing returns nothing
+function Foo takes nothing returns nothing
 endfunction
 
 function Test takes nothing returns nothing
-    call ExecuteFunc("L_Foo")
+    call ExecuteFunc("Foo")
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing
@@ -17,3 +17,4 @@ endfunction
 
 function vjassc__init_libraries takes nothing returns nothing
 endfunction
+

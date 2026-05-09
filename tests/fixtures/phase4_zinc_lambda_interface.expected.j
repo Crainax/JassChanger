@@ -2,21 +2,21 @@
 
 globals
     constant boolean LIBRARY_L=true
-    trigger array vjfi__Pred_trigger
-    integer vjfi__Pred_arg0
-    boolean vjfi__Pred_result
-    boolean vjfi__Pred_tmp1
-    boolean vjfi__Pred_tmp2
-    boolean vjfi__Pred_tmp3
-    boolean vjfi__Pred_tmp4
-    boolean vjfi__Pred_tmp5
-    boolean vjfi__Pred_tmp6
-    boolean vjfi__Pred_tmp7
-    boolean vjfi__Pred_tmp8
+    trigger array vjfi__L___Pred_trigger
+    integer vjfi__L___Pred_arg0
+    boolean vjfi__L___Pred_result
+    boolean vjfi__L___Pred_tmp1
+    boolean vjfi__L___Pred_tmp2
+    boolean vjfi__L___Pred_tmp3
+    boolean vjfi__L___Pred_tmp4
+    boolean vjfi__L___Pred_tmp5
+    boolean vjfi__L___Pred_tmp6
+    boolean vjfi__L___Pred_tmp7
+    boolean vjfi__L___Pred_tmp8
 endglobals
 
 
-function Test takes nothing returns nothing
+function L___Test takes nothing returns nothing
     local integer p
     set p = 1
 endfunction
@@ -26,13 +26,13 @@ function vjlambda__1 takes integer x returns boolean
     return x > 0
 endfunction
 
-function vjfi__Pred__vjlambda__1__wrapper takes nothing returns nothing
-    set vjfi__Pred_result=vjlambda__1(vjfi__Pred_arg0)
+function vjfi__L___Pred__vjlambda__1__wrapper takes nothing returns nothing
+    set vjfi__L___Pred_result=vjlambda__1(vjfi__L___Pred_arg0)
 endfunction
 
 function vjassc__init_function_interfaces takes nothing returns nothing
-    set vjfi__Pred_trigger[1]=CreateTrigger()
-    call TriggerAddAction(vjfi__Pred_trigger[1], function vjfi__Pred__vjlambda__1__wrapper)
+    set vjfi__L___Pred_trigger[1]=CreateTrigger()
+    call TriggerAddAction(vjfi__L___Pred_trigger[1], function vjfi__L___Pred__vjlambda__1__wrapper)
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing
@@ -40,3 +40,4 @@ endfunction
 
 function vjassc__init_libraries takes nothing returns nothing
 endfunction
+

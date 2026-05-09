@@ -5,7 +5,7 @@ globals
 endglobals
 
 
-function Test takes integer x returns integer
+function L___Test takes integer x returns integer
     local integer y
     set y = 0
     if (x > 0) then
@@ -19,3 +19,4 @@ endfunction
 
 function vjassc__init_libraries takes nothing returns nothing
 endfunction
+

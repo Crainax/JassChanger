@@ -2,45 +2,48 @@
 
 globals
     constant boolean LIBRARY_Demo=true
-    integer array si__Bag_F
-    integer si__Bag_I=0
-    integer array si__Bag_V
-    integer array s__Bag_value
-    constant integer s___Bag_items_size=4
-    integer array s__Bag_items
+    integer si__Demo___Bag_F=0
+    integer si__Demo___Bag_I=0
+    integer array si__Demo___Bag_V
+    integer array s__Demo___Bag_value
+    constant integer s___Demo___Bag_items_size=4
+    integer array s___Demo___Bag_items
+    integer array s__Demo___Bag_items
 endglobals
 
 
-function s__Bag__allocate takes nothing returns integer
-    local integer this
-    if si__Bag_F[0] == 0 then
-        set si__Bag_I=si__Bag_I+1
-        set this=si__Bag_I
+function s__Demo___Bag__allocate takes nothing returns integer
+    local integer this=si__Demo___Bag_F
+    if (this!=0) then
+        set si__Demo___Bag_F=si__Demo___Bag_V[this]
     else
-        set this=si__Bag_F[0]
-        set si__Bag_F[0]=si__Bag_F[this]
+        set si__Demo___Bag_I=si__Demo___Bag_I+1
+        set this=si__Demo___Bag_I
     endif
-    set si__Bag_V[this]=-1
+    if (this>2046) then
+        return 0
+    endif
+    set s__Demo___Bag_items[this]=(this-1)*4
+    set si__Demo___Bag_V[this]=-1
     return this
 endfunction
 
-function s__Bag_create takes nothing returns integer
-    return s__Bag__allocate()
+function s__Demo___Bag_create takes nothing returns integer
+    return s__Demo___Bag__allocate()
 endfunction
 
-function s__Bag_destroy takes integer this returns nothing
-    set si__Bag_V[this]=0
-    set si__Bag_F[this]=si__Bag_F[0]
-    set si__Bag_F[0]=this
+function s__Demo___Bag_destroy takes integer this returns nothing
+    set si__Demo___Bag_V[this]=si__Demo___Bag_F
+    set si__Demo___Bag_F=this
 endfunction
 
-function s__Bag_reset takes integer this returns nothing
-    set s__Bag_value[this] = 0
+function s__Demo___Bag_reset takes integer this returns nothing
+    set s__Demo___Bag_value[this] = 0
 endfunction
 
-function s__Bag_clear takes integer this, integer i returns nothing
-    call s__Bag_reset(this)
-    set s__Bag_items[((this) * 4 + (i))] = s__Bag_value[this]
+function s__Demo___Bag_clear takes integer this, integer i returns nothing
+    call s__Demo___Bag_reset(this)
+    set s___Demo___Bag_items[(s__Demo___Bag_items[this]+i)] = s__Demo___Bag_value[this]
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing
@@ -48,3 +51,4 @@ endfunction
 
 function vjassc__init_libraries takes nothing returns nothing
 endfunction
+

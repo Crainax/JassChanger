@@ -27,6 +27,17 @@ std::string joinScope(const std::vector<std::string>& scopePath) {
     return out;
 }
 
+std::string makeScopedGlobalName(const std::vector<std::string>& scopePath, std::string_view access, std::string_view name) {
+    std::string scope = joinScope(scopePath);
+    if (access == "private") {
+        return scope + "__" + std::string(name);
+    }
+    if (access == "public") {
+        return std::string(name);
+    }
+    return scope + "_" + std::string(name);
+}
+
 std::string parseAccess(std::string& line) {
     std::string t = trim(line);
     if (startsWithWord(t, "public")) {
@@ -189,9 +200,14 @@ void SymbolTable::buildInContainer(const Decl& container, std::vector<std::strin
     scopePath.push_back(container.name);
     ScopedSymbolMap map;
     for (const auto& child : container.children) {
-        if ((child.kind == DeclKind::Function || child.kind == DeclKind::FunctionInterface) &&
-            (!child.access.empty() || child.name == "onInit")) {
-            std::string access = child.access.empty() ? "private" : child.access;
+        if (child.kind == DeclKind::Function || child.kind == DeclKind::FunctionInterface) {
+            std::string access = child.access;
+            if (child.name == "onInit" || (access.empty() && container.mode == SyntaxMode::Zinc)) {
+                access = "private";
+            }
+            if (access.empty()) {
+                continue;
+            }
             std::string scopedName = makeScopedName(scopePath, access, child.name);
             map.replacements[child.name] = scopedName;
             if (child.access == "public") {
@@ -216,6 +232,9 @@ std::string SymbolTable::makeScopedName(const std::vector<std::string>& scopePat
     if (access == "private") {
         return scope + "___" + std::string(name);
     }
+    if (access == "public") {
+        return std::string(name);
+    }
     return scope + "_" + std::string(name);
 }
 
@@ -228,7 +247,7 @@ void SymbolTable::collectGlobalNames(const Decl& globalBlock, const std::vector<
                 continue;
             }
             std::string effectiveAccess = access.empty() ? (globalBlock.access.empty() ? "private" : globalBlock.access) : access;
-            std::string scopedName = makeScopedName(scopePath, effectiveAccess, name);
+            std::string scopedName = makeScopedGlobalName(scopePath, effectiveAccess, name);
             map.replacements[name] = scopedName;
             if (effectiveAccess == "public") {
                 publicReplacements_[name] = scopedName;

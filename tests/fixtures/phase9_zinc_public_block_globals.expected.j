@@ -2,13 +2,13 @@
 
 globals
     constant boolean LIBRARY_Phase9PublicBlock=true
-    integer Phase9PublicBlock_HASH_TIMER = 1
-    integer Phase9PublicBlock_HASH_ABILITY = 2
+    integer HASH_TIMER = 1
+    integer HASH_ABILITY = 2
 endglobals
 
 
-function Test takes nothing returns integer
-    return Phase9PublicBlock_HASH_TIMER + Phase9PublicBlock_HASH_ABILITY
+function Phase9PublicBlock___Test takes nothing returns integer
+    return HASH_TIMER + HASH_ABILITY
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing
@@ -16,3 +16,4 @@ endfunction
 
 function vjassc__init_libraries takes nothing returns nothing
 endfunction
+

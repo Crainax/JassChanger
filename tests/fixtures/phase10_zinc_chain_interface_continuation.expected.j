@@ -2,57 +2,58 @@
 
 globals
     constant boolean LIBRARY_Phase10Continuations=true
-    integer array si__Phase10Continuations_Builder_F
-    integer si__Phase10Continuations_Builder_I=0
-    integer array si__Phase10Continuations_Builder_V
-    string array s__Phase10Continuations_Builder_text
+    integer si__Builder_F=0
+    integer si__Builder_I=0
+    integer array si__Builder_V
+    string array s__Builder_text
     trigger array vjfi__Phase10F_trigger
     integer vjfi__Phase10F_arg0
 endglobals
 
 
-function s__Phase10Continuations_Builder__allocate takes nothing returns integer
-    local integer this
-    if si__Phase10Continuations_Builder_F[0] == 0 then
-        set si__Phase10Continuations_Builder_I=si__Phase10Continuations_Builder_I+1
-        set this=si__Phase10Continuations_Builder_I
+function s__Builder__allocate takes nothing returns integer
+    local integer this=si__Builder_F
+    if (this!=0) then
+        set si__Builder_F=si__Builder_V[this]
     else
-        set this=si__Phase10Continuations_Builder_F[0]
-        set si__Phase10Continuations_Builder_F[0]=si__Phase10Continuations_Builder_F[this]
+        set si__Builder_I=si__Builder_I+1
+        set this=si__Builder_I
     endif
-    set si__Phase10Continuations_Builder_V[this]=-1
+    if (this>8190) then
+        return 0
+    endif
+    set si__Builder_V[this]=-1
     return this
 endfunction
 
-function s__Phase10Continuations_Builder_destroy takes integer this returns nothing
-    set si__Phase10Continuations_Builder_V[this]=0
-    set si__Phase10Continuations_Builder_F[this]=si__Phase10Continuations_Builder_F[0]
-    set si__Phase10Continuations_Builder_F[0]=this
+function s__Builder_destroy takes integer this returns nothing
+    set si__Builder_V[this]=si__Builder_F
+    set si__Builder_F=this
 endfunction
 
-function s__Phase10Continuations_Builder_create takes nothing returns integer
+function s__Builder_create takes nothing returns integer
     local integer this
-    set this = s__Phase10Continuations_Builder__allocate()
+    set this = s__Builder__allocate()
     return this
 endfunction
 
-function s__Phase10Continuations_Builder_append takes integer this, string left, string right returns integer
-    set s__Phase10Continuations_Builder_text[this] = left + right
+function s__Builder_append takes integer this, string left, string right returns integer
+    set s__Builder_text[this] = left + right
     return this
 endfunction
 
-function s__Phase10Continuations_Builder_value takes integer this returns string
-    return s__Phase10Continuations_Builder_text[this]
+function s__Builder_value takes integer this returns string
+    return s__Builder_text[this]
 endfunction
 
-function Phase10Continuations_Use takes integer f returns nothing
+function Use takes integer f returns nothing
     set vjfi__Phase10F_arg0=3
     call TriggerExecute(vjfi__Phase10F_trigger[f])
 endfunction
 
-function Phase10Continuations_Test takes nothing returns string
-    call Phase10Continuations_Use(1)
-    return s__Phase10Continuations_Builder_value(s__Phase10Continuations_Builder_append(s__Phase10Continuations_Builder_create(), "a", "b")) + "-" + I2S(3)
+function Test takes nothing returns string
+    call Use(1)
+    return s__Builder_value(s__Builder_append(s__Builder_create(), "a", "b")) + "-" + I2S(3)
 endfunction
 
 function Phase10Target takes integer x returns nothing
@@ -72,3 +73,4 @@ endfunction
 
 function vjassc__init_libraries takes nothing returns nothing
 endfunction
+

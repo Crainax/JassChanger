@@ -3,44 +3,45 @@
 globals
     constant boolean LIBRARY_ModuleLib=true
     constant boolean LIBRARY_UseLib=true
-    integer array si__UseLib_A_F
-    integer si__UseLib_A_I=0
-    integer array si__UseLib_A_V
-    integer array s__UseLib_A_x
+    integer si__A_F=0
+    integer si__A_I=0
+    integer array si__A_V
+    integer array s__A_x
 endglobals
 
 
-function s__UseLib_A__allocate takes nothing returns integer
-    local integer this
-    if si__UseLib_A_F[0] == 0 then
-        set si__UseLib_A_I=si__UseLib_A_I+1
-        set this=si__UseLib_A_I
+function s__A__allocate takes nothing returns integer
+    local integer this=si__A_F
+    if (this!=0) then
+        set si__A_F=si__A_V[this]
     else
-        set this=si__UseLib_A_F[0]
-        set si__UseLib_A_F[0]=si__UseLib_A_F[this]
+        set si__A_I=si__A_I+1
+        set this=si__A_I
     endif
-    set si__UseLib_A_V[this]=-1
+    if (this>8190) then
+        return 0
+    endif
+    set si__A_V[this]=-1
     return this
 endfunction
 
-function s__UseLib_A_create takes nothing returns integer
-    return s__UseLib_A__allocate()
+function s__A_create takes nothing returns integer
+    return s__A__allocate()
 endfunction
 
-function s__UseLib_A_destroy takes integer this returns nothing
-    set si__UseLib_A_V[this]=0
-    set si__UseLib_A_F[this]=si__UseLib_A_F[0]
-    set si__UseLib_A_F[0]=this
+function s__A_destroy takes integer this returns nothing
+    set si__A_V[this]=si__A_F
+    set si__A_F=this
 endfunction
 
-function s__UseLib_A_foo takes integer this returns nothing
+function s__A_foo takes integer this returns nothing
     call BJDebugMsg("foo")
 endfunction
 
-function Test takes nothing returns nothing
+function UseLib___Test takes nothing returns nothing
     local integer a
-    set a = s__UseLib_A_create()
-    call s__UseLib_A_foo(a)
+    set a = s__A_create()
+    call s__A_foo(a)
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing

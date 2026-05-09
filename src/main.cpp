@@ -1277,7 +1277,7 @@ int main(int argc, char** argv) {
     PjassResult pjassResult;
     if (!options.scanOnly && !options.outputPath.empty()) {
         auto codegenStart = std::chrono::steady_clock::now();
-        Phase1Codegen generator(diagnostics, CodegenOptions{options.scanOnly, options.allowUnsupported});
+        Phase1Codegen generator(diagnostics, CodegenOptions{options.scanOnly, options.allowUnsupported, options.warnMode});
         codegen = generator.generate(expandedProgram);
         auto codegenEnd = std::chrono::steady_clock::now();
         timings.codegen = elapsedMs(codegenStart, codegenEnd);

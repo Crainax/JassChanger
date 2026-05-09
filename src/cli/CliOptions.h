@@ -29,6 +29,7 @@ struct CliOptions {
     bool debugMode = false;
     bool scanOnly = false;
     bool allowUnsupported = false;
+    bool warnMode = false;
     bool checkOutputSyntaxLite = false;
     bool validatePjass = false;
     bool showHelp = false;

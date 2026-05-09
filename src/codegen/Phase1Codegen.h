@@ -17,6 +17,7 @@ namespace vjassc {
 struct CodegenOptions {
     bool scanOnly = false;
     bool allowUnsupported = false;
+    bool warnMode = false;
 };
 
 struct CodegenPerformanceCounters {
@@ -86,6 +87,7 @@ private:
     struct StructInfo {
         const Decl* decl = nullptr;
         const Decl* container = nullptr;
+        const Decl* libraryContainer = nullptr;
         std::string originalName;
         std::string generatedName;
         std::string prefix;
@@ -95,6 +97,11 @@ private:
         std::vector<MethodInfo> methods;
         std::unordered_map<std::string, size_t> fieldIndex;
         std::unordered_map<std::string, size_t> methodIndex;
+    };
+
+    struct StructInitializerInfo {
+        std::string name;
+        const Decl* libraryContainer = nullptr;
     };
 
     struct FunctionSignature {
@@ -162,8 +169,8 @@ private:
     void emitInitHelper(const LibraryGraphResult& graph, const Program& program);
     void collectInitializers(const Decl& decl, const Decl* container);
     void collectRootInitializers(const std::vector<Decl>& decls);
-    void collectStructs(const std::vector<Decl>& decls, const Decl* container);
-    void collectStruct(const Decl& decl, const Decl* container);
+    void collectStructs(const std::vector<Decl>& decls, const Decl* container, const Decl* libraryContainer);
+    void collectStruct(const Decl& decl, const Decl* container, const Decl* libraryContainer);
     void collectFunctionInterfaces(const std::vector<Decl>& decls, const Decl* container);
     void collectFunctions(const std::vector<Decl>& decls, const Decl* container);
     void collectFunction(const Decl& decl, const Decl* container);
@@ -177,6 +184,9 @@ private:
     std::string rewriteFunctionHeader(const Decl& decl, const Decl* container) const;
     std::string renameInContainer(const std::string& name, const Decl* container) const;
     std::string makeScopedStructName(const Decl& decl, const Decl* container) const;
+    std::string fixedArrayStorageName(const StructInfo& info, const FieldInfo& field) const;
+    int structFixedArrayStride(const StructInfo& info) const;
+    int structInstanceLimit(const StructInfo& info) const;
     std::string rewriteTypeName(const std::string& typeName, const StructInfo* currentStruct) const;
     std::string rewriteParamList(const std::vector<ParamDecl>& params, bool includeThis, const StructInfo* currentStruct) const;
     std::string rewriteStructExpression(const std::string& line,
@@ -234,7 +244,7 @@ private:
     CodeWriter writer_;
     std::unordered_set<std::string> emittedNatives_;
     std::vector<std::pair<std::string, bool>> initializers_;
-    std::vector<std::string> structInitializers_;
+    std::vector<StructInitializerInfo> structInitializers_;
     std::vector<StructInfo> structs_;
     std::unordered_map<const Decl*, size_t> structIndexByDecl_;
     std::unordered_map<std::string, size_t> structIndexByName_;

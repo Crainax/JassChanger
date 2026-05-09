@@ -2,7 +2,7 @@
 
 globals
     constant boolean LIBRARY_L=true
-    integer array si__Node_F
+    integer si__Node_F=0
     integer si__Node_I=0
     integer array si__Node_V
     integer array s__Node_value
@@ -10,13 +10,15 @@ endglobals
 
 
 function s__Node__allocate takes nothing returns integer
-    local integer this
-    if si__Node_F[0] == 0 then
+    local integer this=si__Node_F
+    if (this!=0) then
+        set si__Node_F=si__Node_V[this]
+    else
         set si__Node_I=si__Node_I+1
         set this=si__Node_I
-    else
-        set this=si__Node_F[0]
-        set si__Node_F[0]=si__Node_F[this]
+    endif
+    if (this>8190) then
+        return 0
     endif
     set si__Node_V[this]=-1
     return this
@@ -27,9 +29,8 @@ function s__Node_create takes nothing returns integer
 endfunction
 
 function s__Node_destroy takes integer this returns nothing
-    set si__Node_V[this]=0
-    set si__Node_F[this]=si__Node_F[0]
-    set si__Node_F[0]=this
+    set si__Node_V[this]=si__Node_F
+    set si__Node_F=this
 endfunction
 
 function Test takes nothing returns integer
@@ -44,3 +45,4 @@ endfunction
 
 function vjassc__init_libraries takes nothing returns nothing
 endfunction
+

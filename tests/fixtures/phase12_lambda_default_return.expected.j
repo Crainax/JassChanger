@@ -2,21 +2,21 @@
 
 globals
     constant boolean LIBRARY_Phase12LambdaDefaultReturn=true
-    trigger array vjfi__Check_trigger
-    integer vjfi__Check_arg0
-    boolean vjfi__Check_result
-    boolean vjfi__Check_tmp1
-    boolean vjfi__Check_tmp2
-    boolean vjfi__Check_tmp3
-    boolean vjfi__Check_tmp4
-    boolean vjfi__Check_tmp5
-    boolean vjfi__Check_tmp6
-    boolean vjfi__Check_tmp7
-    boolean vjfi__Check_tmp8
+    trigger array vjfi__Phase12LambdaDefaultReturn___Check_trigger
+    integer vjfi__Phase12LambdaDefaultReturn___Check_arg0
+    boolean vjfi__Phase12LambdaDefaultReturn___Check_result
+    boolean vjfi__Phase12LambdaDefaultReturn___Check_tmp1
+    boolean vjfi__Phase12LambdaDefaultReturn___Check_tmp2
+    boolean vjfi__Phase12LambdaDefaultReturn___Check_tmp3
+    boolean vjfi__Phase12LambdaDefaultReturn___Check_tmp4
+    boolean vjfi__Phase12LambdaDefaultReturn___Check_tmp5
+    boolean vjfi__Phase12LambdaDefaultReturn___Check_tmp6
+    boolean vjfi__Phase12LambdaDefaultReturn___Check_tmp7
+    boolean vjfi__Phase12LambdaDefaultReturn___Check_tmp8
 endglobals
 
 
-function Phase12LambdaDefaultReturn_Test takes nothing returns nothing
+function Test takes nothing returns nothing
     local integer check
     set check = 1
 endfunction
@@ -29,13 +29,13 @@ function vjlambda__1 takes integer value returns boolean
     return false
 endfunction
 
-function vjfi__Check__vjlambda__1__wrapper takes nothing returns nothing
-    set vjfi__Check_result=vjlambda__1(vjfi__Check_arg0)
+function vjfi__Phase12LambdaDefaultReturn___Check__vjlambda__1__wrapper takes nothing returns nothing
+    set vjfi__Phase12LambdaDefaultReturn___Check_result=vjlambda__1(vjfi__Phase12LambdaDefaultReturn___Check_arg0)
 endfunction
 
 function vjassc__init_function_interfaces takes nothing returns nothing
-    set vjfi__Check_trigger[1]=CreateTrigger()
-    call TriggerAddAction(vjfi__Check_trigger[1], function vjfi__Check__vjlambda__1__wrapper)
+    set vjfi__Phase12LambdaDefaultReturn___Check_trigger[1]=CreateTrigger()
+    call TriggerAddAction(vjfi__Phase12LambdaDefaultReturn___Check_trigger[1], function vjfi__Phase12LambdaDefaultReturn___Check__vjlambda__1__wrapper)
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing

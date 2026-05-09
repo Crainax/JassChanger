@@ -5,7 +5,7 @@ globals
 endglobals
 
 
-function Sum takes integer n returns integer
+function Phase6Range___Sum takes integer n returns integer
     local integer i
     local integer total
     set total = 0
@@ -23,3 +23,4 @@ endfunction
 
 function vjassc__init_libraries takes nothing returns nothing
 endfunction
+

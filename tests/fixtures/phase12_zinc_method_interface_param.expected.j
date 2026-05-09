@@ -2,52 +2,53 @@
 
 globals
     constant boolean LIBRARY_Phase12MethodInterfaceParam=true
-    integer array si__Phase12MethodInterfaceParam_Picker_F
-    integer si__Phase12MethodInterfaceParam_Picker_I=0
-    integer array si__Phase12MethodInterfaceParam_Picker_V
-    integer array s__Phase12MethodInterfaceParam_Picker_cb
-    trigger array vjfi__Phase12MethodInterfaceParam_OnPick_trigger
-    player vjfi__Phase12MethodInterfaceParam_OnPick_arg0
-    integer vjfi__Phase12MethodInterfaceParam_OnPick_arg1
-    integer vjfi__Phase12MethodInterfaceParam_OnPick_arg2
+    integer si__Picker_F=0
+    integer si__Picker_I=0
+    integer array si__Picker_V
+    integer array s__Picker_cb
+    trigger array vjfi__OnPick_trigger
+    player vjfi__OnPick_arg0
+    integer vjfi__OnPick_arg1
+    integer vjfi__OnPick_arg2
 endglobals
 
 
-function s__Phase12MethodInterfaceParam_Picker__allocate takes nothing returns integer
-    local integer this
-    if si__Phase12MethodInterfaceParam_Picker_F[0] == 0 then
-        set si__Phase12MethodInterfaceParam_Picker_I=si__Phase12MethodInterfaceParam_Picker_I+1
-        set this=si__Phase12MethodInterfaceParam_Picker_I
+function s__Picker__allocate takes nothing returns integer
+    local integer this=si__Picker_F
+    if (this!=0) then
+        set si__Picker_F=si__Picker_V[this]
     else
-        set this=si__Phase12MethodInterfaceParam_Picker_F[0]
-        set si__Phase12MethodInterfaceParam_Picker_F[0]=si__Phase12MethodInterfaceParam_Picker_F[this]
+        set si__Picker_I=si__Picker_I+1
+        set this=si__Picker_I
     endif
-    set si__Phase12MethodInterfaceParam_Picker_V[this]=-1
+    if (this>8190) then
+        return 0
+    endif
+    set si__Picker_V[this]=-1
     return this
 endfunction
 
-function s__Phase12MethodInterfaceParam_Picker_destroy takes integer this returns nothing
-    set si__Phase12MethodInterfaceParam_Picker_V[this]=0
-    set si__Phase12MethodInterfaceParam_Picker_F[this]=si__Phase12MethodInterfaceParam_Picker_F[0]
-    set si__Phase12MethodInterfaceParam_Picker_F[0]=this
+function s__Picker_destroy takes integer this returns nothing
+    set si__Picker_V[this]=si__Picker_F
+    set si__Picker_F=this
 endfunction
 
-function s__Phase12MethodInterfaceParam_Picker_create takes player p, integer cb returns integer
+function s__Picker_create takes player p, integer cb returns integer
     local integer this
-    set this = s__Phase12MethodInterfaceParam_Picker__allocate()
-    set s__Phase12MethodInterfaceParam_Picker_cb[this] = cb
+    set this = s__Picker__allocate()
+    set s__Picker_cb[this] = cb
     return this
 endfunction
 
-function s__Phase12MethodInterfaceParam_Picker_fire takes integer this, player p, integer value returns nothing
-    set vjfi__Phase12MethodInterfaceParam_OnPick_arg0=p
-    set vjfi__Phase12MethodInterfaceParam_OnPick_arg1=value
-    set vjfi__Phase12MethodInterfaceParam_OnPick_arg2=this
-    call TriggerExecute(vjfi__Phase12MethodInterfaceParam_OnPick_trigger[s__Phase12MethodInterfaceParam_Picker_cb[this]])
+function s__Picker_fire takes integer this, player p, integer value returns nothing
+    set vjfi__OnPick_arg0=p
+    set vjfi__OnPick_arg1=value
+    set vjfi__OnPick_arg2=this
+    call TriggerExecute(vjfi__OnPick_trigger[s__Picker_cb[this]])
 endfunction
 
-function Phase12MethodInterfaceParam_Test takes player p returns nothing
-    call s__Phase12MethodInterfaceParam_Picker_create(p, 1)
+function Test takes player p returns nothing
+    call s__Picker_create(p, 1)
 endfunction
 
 
@@ -55,13 +56,13 @@ function vjlambda__1 takes player p2, integer value, integer picker returns noth
     call BJDebugMsg(I2S(value))
 endfunction
 
-function vjfi__Phase12MethodInterfaceParam_OnPick__vjlambda__1__wrapper takes nothing returns nothing
-    call vjlambda__1(vjfi__Phase12MethodInterfaceParam_OnPick_arg0, vjfi__Phase12MethodInterfaceParam_OnPick_arg1, vjfi__Phase12MethodInterfaceParam_OnPick_arg2)
+function vjfi__OnPick__vjlambda__1__wrapper takes nothing returns nothing
+    call vjlambda__1(vjfi__OnPick_arg0, vjfi__OnPick_arg1, vjfi__OnPick_arg2)
 endfunction
 
 function vjassc__init_function_interfaces takes nothing returns nothing
-    set vjfi__Phase12MethodInterfaceParam_OnPick_trigger[1]=CreateTrigger()
-    call TriggerAddAction(vjfi__Phase12MethodInterfaceParam_OnPick_trigger[1], function vjfi__Phase12MethodInterfaceParam_OnPick__vjlambda__1__wrapper)
+    set vjfi__OnPick_trigger[1]=CreateTrigger()
+    call TriggerAddAction(vjfi__OnPick_trigger[1], function vjfi__OnPick__vjlambda__1__wrapper)
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing

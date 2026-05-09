@@ -2,14 +2,14 @@
 
 globals
     constant boolean LIBRARY_Phase6TypeId=true
-    integer array s__Phase6TypeId_Entry_value
-    integer s__Phase6TypeId_Entry_seen
+    integer array s__Entry_value
+    integer s__Entry_seen
 endglobals
 
 
-function s__Phase6TypeId_Entry_bind takes integer index returns nothing
-    set s__Phase6TypeId_Entry_value[index] = 1
-    set s__Phase6TypeId_Entry_seen = s__Phase6TypeId_Entry_value[index]
+function s__Entry_bind takes integer index returns nothing
+    set s__Entry_value[index] = 1
+    set s__Entry_seen = s__Entry_value[index]
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing
@@ -17,3 +17,4 @@ endfunction
 
 function vjassc__init_libraries takes nothing returns nothing
 endfunction
+

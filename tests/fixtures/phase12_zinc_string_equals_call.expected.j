@@ -5,7 +5,7 @@ globals
 endglobals
 
 
-function Phase12StringEqualsCall_Test takes nothing returns nothing
+function Test takes nothing returns nothing
     call BJDebugMsg("a=b")
 endfunction
 

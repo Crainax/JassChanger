@@ -2,42 +2,43 @@
 
 globals
     constant boolean LIBRARY_Demo=true
-    integer array si__Node_F
-    integer si__Node_I=0
-    integer array si__Node_V
-    integer array s__Node_value
-    integer array Demo___nodes
-    integer array Demo___fixed
+    integer si__Demo___Node_F=0
+    integer si__Demo___Node_I=0
+    integer array si__Demo___Node_V
+    integer array s__Demo___Node_value
+    integer array Demo__nodes
+    integer array Demo__fixed
 endglobals
 
 
-function s__Node__allocate takes nothing returns integer
-    local integer this
-    if si__Node_F[0] == 0 then
-        set si__Node_I=si__Node_I+1
-        set this=si__Node_I
+function s__Demo___Node__allocate takes nothing returns integer
+    local integer this=si__Demo___Node_F
+    if (this!=0) then
+        set si__Demo___Node_F=si__Demo___Node_V[this]
     else
-        set this=si__Node_F[0]
-        set si__Node_F[0]=si__Node_F[this]
+        set si__Demo___Node_I=si__Demo___Node_I+1
+        set this=si__Demo___Node_I
     endif
-    set si__Node_V[this]=-1
+    if (this>8190) then
+        return 0
+    endif
+    set si__Demo___Node_V[this]=-1
     return this
 endfunction
 
-function s__Node_create takes nothing returns integer
-    return s__Node__allocate()
+function s__Demo___Node_create takes nothing returns integer
+    return s__Demo___Node__allocate()
 endfunction
 
-function s__Node_destroy takes integer this returns nothing
-    set si__Node_V[this]=0
-    set si__Node_F[this]=si__Node_F[0]
-    set si__Node_F[0]=this
+function s__Demo___Node_destroy takes integer this returns nothing
+    set si__Demo___Node_V[this]=si__Demo___Node_F
+    set si__Demo___Node_F=this
 endfunction
 
-function Demo_Get takes integer i, integer j returns integer
-    set Demo___nodes[((i) * 3 + (j))] = s__Node_create()
-    set Demo___fixed[(i)] = Demo___nodes[((i) * 3 + (j))]
-    return Demo___fixed[(i)]
+function Get takes integer i, integer j returns integer
+    set Demo__nodes[((i) * 3 + (j))] = s__Demo___Node_create()
+    set Demo__fixed[(i)] = Demo__nodes[((i) * 3 + (j))]
+    return Demo__fixed[(i)]
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing
@@ -45,3 +46,4 @@ endfunction
 
 function vjassc__init_libraries takes nothing returns nothing
 endfunction
+

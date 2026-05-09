@@ -2,14 +2,14 @@
 
 globals
     constant boolean LIBRARY_A=true
-    integer A_X = 1
-    integer A___Y = 2
+    integer X = 1
+    integer A__Y = 2
 endglobals
 
 
-function A_Foo takes nothing returns nothing
-    set A_X = A_X + 1
-    set A___Y = A___Y + 1
+function Foo takes nothing returns nothing
+    set X = X + 1
+    set A__Y = A__Y + 1
 endfunction
 
 function A___Bar takes nothing returns nothing

@@ -13,7 +13,7 @@ function vjlambda__1 takes nothing returns nothing
     call TimerStart(CreateTimer(), 1.0, false, function vjlambda__2)
 endfunction
 
-function Test takes nothing returns nothing
+function L___Test takes nothing returns nothing
     local group g
     set g = CreateGroup()
     call ForGroup(g, function vjlambda__1)
@@ -25,3 +25,4 @@ endfunction
 
 function vjassc__init_libraries takes nothing returns nothing
 endfunction
+

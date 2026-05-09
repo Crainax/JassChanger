@@ -9,7 +9,7 @@ function vjlambda__1 takes nothing returns nothing
     call BJDebugMsg("x")
 endfunction
 
-function Test takes nothing returns nothing
+function L___Test takes nothing returns nothing
     local code c
     set c = function vjlambda__1
 endfunction
@@ -20,3 +20,4 @@ endfunction
 
 function vjassc__init_libraries takes nothing returns nothing
 endfunction
+

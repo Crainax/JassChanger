@@ -18,3 +18,4 @@ endfunction
 function vjassc__init_libraries takes nothing returns nothing
     call ExecuteFunc("Init")
 endfunction
+

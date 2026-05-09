@@ -4,22 +4,22 @@ globals
     constant boolean LIBRARY_Phase13RawIface=true
     constant boolean LIBRARY_Phase13RawWrapper=true
     constant boolean LIBRARY_Phase13RawUse=true
-    trigger array vjfi__Phase13RawIface_AfterBuffTime_trigger
-    timer vjfi__Phase13RawIface_AfterBuffTime_arg0
-    unit vjfi__Phase13RawIface_AfterBuffTime_arg1
+    trigger array vjfi__AfterBuffTime_trigger
+    timer vjfi__AfterBuffTime_arg0
+    unit vjfi__AfterBuffTime_arg1
 endglobals
 
 
-function Phase13RawIface_CreateBuff takes unit u, integer cb returns timer
+function CreateBuff takes unit u, integer cb returns timer
     return null
 endfunction
 
-function Phase13RawWrapper_Wrap takes unit u, integer cb returns timer
-    return Phase13RawIface_CreateBuff(u, cb)
+function Wrap takes unit u, integer cb returns timer
+    return CreateBuff(u, cb)
 endfunction
 
-function Phase13RawUse_Test takes unit u returns nothing
-    call Phase13RawWrapper_Wrap(u, 1)
+function Test takes unit u returns nothing
+    call Wrap(u, 1)
 endfunction
 
 
@@ -27,13 +27,13 @@ function vjlambda__1 takes timer t, unit u2 returns nothing
     call BJDebugMsg("ok")
 endfunction
 
-function vjfi__Phase13RawIface_AfterBuffTime__vjlambda__1__wrapper takes nothing returns nothing
-    call vjlambda__1(vjfi__Phase13RawIface_AfterBuffTime_arg0, vjfi__Phase13RawIface_AfterBuffTime_arg1)
+function vjfi__AfterBuffTime__vjlambda__1__wrapper takes nothing returns nothing
+    call vjlambda__1(vjfi__AfterBuffTime_arg0, vjfi__AfterBuffTime_arg1)
 endfunction
 
 function vjassc__init_function_interfaces takes nothing returns nothing
-    set vjfi__Phase13RawIface_AfterBuffTime_trigger[1]=CreateTrigger()
-    call TriggerAddAction(vjfi__Phase13RawIface_AfterBuffTime_trigger[1], function vjfi__Phase13RawIface_AfterBuffTime__vjlambda__1__wrapper)
+    set vjfi__AfterBuffTime_trigger[1]=CreateTrigger()
+    call TriggerAddAction(vjfi__AfterBuffTime_trigger[1], function vjfi__AfterBuffTime__vjlambda__1__wrapper)
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing
@@ -41,3 +41,4 @@ endfunction
 
 function vjassc__init_libraries takes nothing returns nothing
 endfunction
+

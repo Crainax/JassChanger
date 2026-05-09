@@ -2,39 +2,42 @@
 
 globals
     constant boolean LIBRARY_Demo=true
-    integer array si__Demo_Bag_F
-    integer si__Demo_Bag_I=0
-    integer array si__Demo_Bag_V
-    constant integer s___Demo_Bag_items_size=10
-    integer array s__Demo_Bag_items
+    integer si__Bag_F=0
+    integer si__Bag_I=0
+    integer array si__Bag_V
+    constant integer s___Bag_items_size=10
+    integer array s___Bag_items
+    integer array s__Bag_items
 endglobals
 
 
-function s__Demo_Bag__allocate takes nothing returns integer
-    local integer this
-    if si__Demo_Bag_F[0] == 0 then
-        set si__Demo_Bag_I=si__Demo_Bag_I+1
-        set this=si__Demo_Bag_I
+function s__Bag__allocate takes nothing returns integer
+    local integer this=si__Bag_F
+    if (this!=0) then
+        set si__Bag_F=si__Bag_V[this]
     else
-        set this=si__Demo_Bag_F[0]
-        set si__Demo_Bag_F[0]=si__Demo_Bag_F[this]
+        set si__Bag_I=si__Bag_I+1
+        set this=si__Bag_I
     endif
-    set si__Demo_Bag_V[this]=-1
+    if (this>818) then
+        return 0
+    endif
+    set s__Bag_items[this]=(this-1)*10
+    set si__Bag_V[this]=-1
     return this
 endfunction
 
-function s__Demo_Bag_create takes nothing returns integer
-    return s__Demo_Bag__allocate()
+function s__Bag_create takes nothing returns integer
+    return s__Bag__allocate()
 endfunction
 
-function s__Demo_Bag_destroy takes integer this returns nothing
-    set si__Demo_Bag_V[this]=0
-    set si__Demo_Bag_F[this]=si__Demo_Bag_F[0]
-    set si__Demo_Bag_F[0]=this
+function s__Bag_destroy takes integer this returns nothing
+    set si__Bag_V[this]=si__Bag_F
+    set si__Bag_F=this
 endfunction
 
-function s__Demo_Bag_setItem takes integer this, integer i, integer v returns nothing
-    set s__Demo_Bag_items[this*10+i] = v
+function s__Bag_setItem takes integer this, integer i, integer v returns nothing
+    set s___Bag_items[(s__Bag_items[this]+i)] = v
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing
@@ -42,3 +45,4 @@ endfunction
 
 function vjassc__init_libraries takes nothing returns nothing
 endfunction
+

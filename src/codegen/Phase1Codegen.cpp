@@ -28,6 +28,7 @@ std::string joinArgs(const std::vector<std::string>& args);
 std::string sanitizeName(std::string text);
 bool isIdentStart(char c);
 bool isIdentPart(char c);
+std::string commentMissingInitTriggerCalls(std::string output);
 
 std::string removeSemicolon(std::string text) {
     text = trim(text);
@@ -183,6 +184,42 @@ std::string compactIdentifierHint(std::string text) {
         }
     }
     return out;
+}
+
+std::string commentMissingInitTriggerCalls(std::string output) {
+    std::unordered_set<std::string> definedFunctions;
+    std::istringstream collect(output);
+    std::string line;
+    std::regex functionRe(R"(^\s*function\s+([A-Za-z_][A-Za-z0-9_]*)\s+takes\b)");
+    std::smatch match;
+    while (std::getline(collect, line)) {
+        if (std::regex_search(line, match, functionRe)) {
+            definedFunctions.insert(match[1].str());
+        }
+    }
+
+    std::ostringstream out;
+    std::istringstream in(output);
+    std::regex callRe(R"(^(\s*)call\s+(InitTrig_[A-Za-z0-9_]+)\s*\(\s*\)\s*$)");
+    bool inInitCustomTriggers = false;
+    while (std::getline(in, line)) {
+        std::string trimmed = trim(line);
+        if (trimmed == "function InitCustomTriggers takes nothing returns nothing") {
+            inInitCustomTriggers = true;
+        } else if (inInitCustomTriggers && trimmed == "endfunction") {
+            inInitCustomTriggers = false;
+        }
+
+        if (inInitCustomTriggers && std::regex_match(line, match, callRe)) {
+            std::string name = match[2].str();
+            if (!definedFunctions.contains(name)) {
+                out << match[1].str() << "//Function not found: call " << name << "()\n";
+                continue;
+            }
+        }
+        out << line << '\n';
+    }
+    return out.str();
 }
 
 std::string functionNameFromHeaderLine(const std::string& line) {
@@ -845,9 +882,28 @@ std::string orderFunctionBlocksForPjass(const std::string& output) {
         findCycles(i);
     }
 
+    std::set<std::pair<size_t, size_t>> rewriteEdges;
+    for (const auto& [callerIndex, targetIndex] : cyclicEdges) {
+        std::pair<size_t, size_t> edge{callerIndex, targetIndex};
+        const std::string& caller = blocks[callerIndex].name;
+        const std::string& target = blocks[targetIndex].name;
+        auto targetSigIt = signatures.find(target);
+        auto callerSigIt = signatures.find(caller);
+        if (targetSigIt != signatures.end() &&
+            callerSigIt != signatures.end() &&
+            targetSigIt->second.returnsNothing() &&
+            !targetSigIt->second.paramTypes.empty() &&
+            callerSigIt->second.takesNothingReturnsNothing() &&
+            blocks[targetIndex].dependencies.contains(caller)) {
+            edge = {targetIndex, callerIndex};
+        }
+        rewriteEdges.insert(edge);
+    }
+
     std::set<std::string> functionBridgeTargets;
     std::map<std::string, FunctionBlockSignature> globalTempBridgeTargets;
-    for (const auto& [callerIndex, targetIndex] : cyclicEdges) {
+    bool cycleRewriteChanged = false;
+    for (const auto& [callerIndex, targetIndex] : rewriteEdges) {
         const std::string& target = blocks[targetIndex].name;
         auto sigIt = signatures.find(target);
         if (target.empty() || sigIt == signatures.end() || !sigIt->second.returnsNothing()) {
@@ -875,6 +931,7 @@ std::string orderFunctionBlocksForPjass(const std::string& output) {
             rewrittenLines.insert(rewrittenLines.end(), lineOut.begin(), lineOut.end());
         }
         if (blockChanged) {
+            cycleRewriteChanged = true;
             blocks[callerIndex].lines = std::move(rewrittenLines);
             if (needsFunctionBridge || needsGlobalTempBridge) {
                 functionBridgeTargets.insert(target);
@@ -913,6 +970,10 @@ std::string orderFunctionBlocksForPjass(const std::string& output) {
                 signatures[blocks[i].name] = parseFunctionBlockSignature(blocks[i].lines.empty() ? "" : blocks[i].lines.front());
             }
         }
+        for (auto& block : blocks) {
+            block.dependencies = extractFunctionDependencies(block, functionIndex);
+        }
+    } else if (cycleRewriteChanged) {
         for (auto& block : blocks) {
             block.dependencies = extractFunctionDependencies(block, functionIndex);
         }
@@ -2333,7 +2394,7 @@ CodegenResult Phase1Codegen::generate(const Program& program) {
     structInitializers_.clear();
     mainFunction_ = nullptr;
     mainContainer_ = nullptr;
-    recordPass("collectStructs", [&]() { collectStructs(program.decls, nullptr); });
+    recordPass("collectStructs", [&]() { collectStructs(program.decls, nullptr, nullptr); });
     for (size_t i = 0; i < structs_.size(); ++i) {
         if (structs_[i].isArrayStruct) {
             arrayStructIndexes_.push_back(i);
@@ -2376,6 +2437,7 @@ CodegenResult Phase1Codegen::makeResult(bool ok) {
             result.output += sanitizeGeneratedLine(line);
             result.output += '\n';
         }
+        result.output = commentMissingInitTriggerCalls(std::move(result.output));
         auto sanitized = std::chrono::steady_clock::now();
         result.output = adaptFunctionInterfaceCallbacksBySignature(result.output);
         result.output = orderFunctionBlocksForPjass(result.output);
@@ -2471,12 +2533,18 @@ void Phase1Codegen::emitStructGlobals() {
 
 void Phase1Codegen::emitStructGlobalBlock(const StructInfo& info) {
     if (!info.isArrayStruct) {
-        writer_.writeln("integer array si__" + info.generatedName + "_F");
+        writer_.writeln("integer si__" + info.generatedName + "_F=0");
         writer_.writeln("integer si__" + info.generatedName + "_I=0");
         writer_.writeln("integer array si__" + info.generatedName + "_V");
     }
     for (const auto& field : info.fields) {
         std::string typeName = rewriteTypeName(field.typeName, &info);
+        if (field.isFixedArray && field.fixedArraySize > 0 && !field.isStatic) {
+            writer_.writeln("constant integer s___" + info.generatedName + "_" + field.name + "_size=" + std::to_string(field.fixedArraySize));
+            writer_.writeln(typeName + " array " + fixedArrayStorageName(info, field));
+            writer_.writeln("integer array " + field.generatedName);
+            continue;
+        }
         if (field.isFixedArray && field.fixedArraySize > 0) {
             writer_.writeln("constant integer s___" + info.generatedName + "_" + field.name + "_size=" + std::to_string(field.fixedArraySize));
         }
@@ -2848,20 +2916,56 @@ void Phase1Codegen::emitStructSupportFunctions(const StructInfo& info) {
     bool needsDeallocate = structUsesDeallocate(info);
     std::unordered_set<const MethodDecl*> emittedBeforeDestroy;
     if (!info.isArrayStruct) {
+        const int instanceLimit = structInstanceLimit(info);
+        auto emitStructWarning = [&](const std::string& message) {
+            writer_.writeln("call DisplayTimedTextToPlayer(GetLocalPlayer(),0,0,1000.,\"" + message + "\")");
+        };
+        auto emitDestroyGuard = [&]() {
+            if (!options_.warnMode) {
+                return;
+            }
+            writer_.writeln("if this==null then");
+            writer_.indent();
+            emitStructWarning("Attempt to destroy a null struct of type: " + info.generatedName);
+            writer_.writeln("return");
+            writer_.dedent();
+            writer_.writeln("elseif (si__" + info.generatedName + "_V[this]!=-1) then");
+            writer_.indent();
+            emitStructWarning("Double free of type: " + info.generatedName);
+            writer_.writeln("return");
+            writer_.dedent();
+            writer_.writeln("endif");
+        };
+        auto emitRecycle = [&]() {
+            writer_.writeln("set si__" + info.generatedName + "_V[this]=si__" + info.generatedName + "_F");
+            writer_.writeln("set si__" + info.generatedName + "_F=this");
+        };
         writer_.writeln("function " + info.prefix + "__allocate takes nothing returns integer");
         writer_.indent();
-        writer_.writeln("local integer this");
-        writer_.writeln("if si__" + info.generatedName + "_F[0] == 0 then");
+        writer_.writeln("local integer this=si__" + info.generatedName + "_F");
+        writer_.writeln("if (this!=0) then");
+        writer_.indent();
+        writer_.writeln("set si__" + info.generatedName + "_F=si__" + info.generatedName + "_V[this]");
+        writer_.dedent();
+        writer_.writeln("else");
         writer_.indent();
         writer_.writeln("set si__" + info.generatedName + "_I=si__" + info.generatedName + "_I+1");
         writer_.writeln("set this=si__" + info.generatedName + "_I");
         writer_.dedent();
-        writer_.writeln("else");
+        writer_.writeln("endif");
+        writer_.writeln("if (this>" + std::to_string(instanceLimit) + ") then");
         writer_.indent();
-        writer_.writeln("set this=si__" + info.generatedName + "_F[0]");
-        writer_.writeln("set si__" + info.generatedName + "_F[0]=si__" + info.generatedName + "_F[this]");
+        if (options_.warnMode) {
+            emitStructWarning("Unable to allocate id for an object of type: " + info.generatedName);
+        }
+        writer_.writeln("return 0");
         writer_.dedent();
         writer_.writeln("endif");
+        for (const auto& field : info.fields) {
+            if (field.isFixedArray && field.fixedArraySize > 0 && !field.isStatic) {
+                writer_.writeln("set " + field.generatedName + "[this]=(this-1)*" + std::to_string(field.fixedArraySize));
+            }
+        }
         writer_.writeln("set si__" + info.generatedName + "_V[this]=-1");
         writer_.writeln("return this");
         writer_.dedent();
@@ -2888,9 +2992,8 @@ void Phase1Codegen::emitStructSupportFunctions(const StructInfo& info) {
         if (needsDeallocate) {
             writer_.writeln("function " + info.prefix + "_deallocate takes integer this returns nothing");
             writer_.indent();
-            writer_.writeln("set si__" + info.generatedName + "_V[this]=0");
-            writer_.writeln("set si__" + info.generatedName + "_F[this]=si__" + info.generatedName + "_F[0]");
-            writer_.writeln("set si__" + info.generatedName + "_F[0]=this");
+            emitDestroyGuard();
+            emitRecycle();
             writer_.dedent();
             writer_.writeln("endfunction");
             writer_.writeln();
@@ -2898,6 +3001,7 @@ void Phase1Codegen::emitStructSupportFunctions(const StructInfo& info) {
 
         writer_.writeln("function " + info.prefix + "_destroy takes integer this returns nothing");
         writer_.indent();
+        emitDestroyGuard();
         for (const auto& method : info.methods) {
             if (method.isOnDestroy) {
                 writer_.writeln("call " + method.generatedName + "(this)");
@@ -2906,9 +3010,7 @@ void Phase1Codegen::emitStructSupportFunctions(const StructInfo& info) {
         if (needsDeallocate) {
             writer_.writeln("call " + info.prefix + "_deallocate(this)");
         } else {
-            writer_.writeln("set si__" + info.generatedName + "_V[this]=0");
-            writer_.writeln("set si__" + info.generatedName + "_F[this]=si__" + info.generatedName + "_F[0]");
-            writer_.writeln("set si__" + info.generatedName + "_F[0]=this");
+            emitRecycle();
         }
         writer_.dedent();
         writer_.writeln("endfunction");
@@ -2922,7 +3024,7 @@ void Phase1Codegen::emitStructSupportFunctions(const StructInfo& info) {
         emitStructMethod(info, method);
         writer_.writeln();
         if (method.isOnInit) {
-            structInitializers_.push_back(method.generatedName);
+            structInitializers_.push_back({method.generatedName, info.libraryContainer});
         }
     }
 }
@@ -2989,11 +3091,35 @@ void Phase1Codegen::emitStructMethod(const StructInfo& info, const MethodInfo& m
     writer_.writeln("endfunction");
 }
 
-void Phase1Codegen::emitInitHelper(const LibraryGraphResult&, const Program&) {
+void Phase1Codegen::emitInitHelper(const LibraryGraphResult& graph, const Program&) {
     writer_.writeln("function vjassc__init_structs takes nothing returns nothing");
     writer_.indent();
-    for (const auto& name : structInitializers_) {
-        writer_.writeln("call " + name + "()");
+    std::unordered_map<const Decl*, size_t> libraryOrder;
+    for (size_t i = 0; i < graph.sortedLibraries.size(); ++i) {
+        libraryOrder[graph.sortedLibraries[i]] = i;
+    }
+    std::vector<const StructInitializerInfo*> libraryInitializers;
+    libraryInitializers.reserve(structInitializers_.size());
+    for (const auto& initializer : structInitializers_) {
+        if (initializer.libraryContainer != nullptr) {
+            libraryInitializers.push_back(&initializer);
+        }
+    }
+    std::stable_sort(libraryInitializers.begin(), libraryInitializers.end(),
+                     [&libraryOrder](const StructInitializerInfo* a, const StructInitializerInfo* b) {
+                         auto rankOf = [&libraryOrder](const Decl* library) {
+                             auto it = libraryOrder.find(library);
+                             return it == libraryOrder.end() ? static_cast<size_t>(-1) : it->second;
+                         };
+                         return rankOf(a->libraryContainer) < rankOf(b->libraryContainer);
+                     });
+    size_t nextLibraryInitializer = 0;
+    for (const auto& initializer : structInitializers_) {
+        const StructInitializerInfo* current = &initializer;
+        if (initializer.libraryContainer != nullptr && nextLibraryInitializer < libraryInitializers.size()) {
+            current = libraryInitializers[nextLibraryInitializer++];
+        }
+        writer_.writeln("call " + current->name + "()");
     }
     writer_.dedent();
     writer_.writeln("endfunction");
@@ -3017,8 +3143,18 @@ void Phase1Codegen::collectInitializers(const Decl& decl, const Decl* container)
     if (decl.kind == DeclKind::Module) {
         return;
     }
-    if ((decl.kind == DeclKind::Library || decl.kind == DeclKind::Scope) && !decl.initializer.empty()) {
-        initializers_.push_back({renameInContainer(decl.initializer, container), decl.kind == DeclKind::Library});
+    if (decl.kind == DeclKind::Library || decl.kind == DeclKind::Scope) {
+        const Decl* selfContainer = &decl;
+        if (!decl.initializer.empty()) {
+            initializers_.push_back({renameInContainer(decl.initializer, selfContainer), decl.kind == DeclKind::Library});
+        } else {
+            for (const auto& child : decl.children) {
+                if (child.kind == DeclKind::Function && child.name == "onInit") {
+                    initializers_.push_back({renameInContainer(child.name, selfContainer), decl.kind == DeclKind::Library});
+                    break;
+                }
+            }
+        }
     }
     const Decl* nextContainer = (decl.kind == DeclKind::Library || decl.kind == DeclKind::Scope) ? &decl : container;
     for (const auto& child : decl.children) {
@@ -3034,24 +3170,28 @@ void Phase1Codegen::collectRootInitializers(const std::vector<Decl>& decls) {
     }
 }
 
-void Phase1Codegen::collectStructs(const std::vector<Decl>& decls, const Decl* container) {
+void Phase1Codegen::collectStructs(const std::vector<Decl>& decls,
+                                   const Decl* container,
+                                   const Decl* libraryContainer) {
     for (const auto& decl : decls) {
         if (decl.kind == DeclKind::Struct) {
-            collectStruct(decl, container);
+            collectStruct(decl, container, libraryContainer);
             continue;
         }
         if (decl.kind == DeclKind::Module) {
             continue;
         }
         const Decl* nextContainer = (decl.kind == DeclKind::Library || decl.kind == DeclKind::Scope) ? &decl : container;
-        collectStructs(decl.children, nextContainer);
+        const Decl* nextLibraryContainer = decl.kind == DeclKind::Library ? &decl : libraryContainer;
+        collectStructs(decl.children, nextContainer, nextLibraryContainer);
     }
 }
 
-void Phase1Codegen::collectStruct(const Decl& decl, const Decl* container) {
+void Phase1Codegen::collectStruct(const Decl& decl, const Decl* container, const Decl* libraryContainer) {
     StructInfo info;
     info.decl = &decl;
     info.container = container;
+    info.libraryContainer = libraryContainer;
     info.originalName = decl.name;
     info.generatedName = makeScopedStructName(decl, container);
     info.prefix = "s__" + info.generatedName;
@@ -3076,9 +3216,17 @@ void Phase1Codegen::collectStruct(const Decl& decl, const Decl* container) {
         fieldInfo.arrayDimensions = field.arrayDimensions;
         if (fieldInfo.arrayDimensions.size() > 1 ||
             (!fieldInfo.isStatic && fieldInfo.isFixedArray && !fieldInfo.arrayDimensions.empty())) {
-            globalArrayShapes_[fieldInfo.generatedName] = ArrayShape{fieldInfo.arrayDimensions, !fieldInfo.isStatic};
+            std::string shapeName = (!fieldInfo.isStatic && fieldInfo.isFixedArray)
+                                        ? fixedArrayStorageName(info, fieldInfo)
+                                        : fieldInfo.generatedName;
+            globalArrayShapes_[shapeName] = ArrayShape{fieldInfo.arrayDimensions, false};
         }
-        globalStructTypes_[fieldInfo.generatedName] = fieldInfo.typeName == "thistype" ? info.originalName : fieldInfo.typeName;
+        if (!fieldInfo.isStatic && fieldInfo.isFixedArray && fieldInfo.fixedArraySize > 0) {
+            globalStructTypes_[fixedArrayStorageName(info, fieldInfo)] =
+                fieldInfo.typeName == "thistype" ? info.originalName : fieldInfo.typeName;
+        } else {
+            globalStructTypes_[fieldInfo.generatedName] = fieldInfo.typeName == "thistype" ? info.originalName : fieldInfo.typeName;
+        }
         info.fieldIndex[fieldInfo.name] = info.fields.size();
         info.fields.push_back(std::move(fieldInfo));
     }
@@ -3410,13 +3558,41 @@ std::string Phase1Codegen::renameInContainer(const std::string& name, const Decl
 }
 
 std::string Phase1Codegen::makeScopedStructName(const Decl& decl, const Decl* container) const {
-    if (!container || decl.access.empty()) {
+    if (!container) {
         return decl.name;
     }
     if (decl.access == "private") {
         return container->name + "___" + decl.name;
     }
-    return container->name + "_" + decl.name;
+    if (decl.access == "public") {
+        return decl.name;
+    }
+    if (decl.mode == SyntaxMode::Zinc) {
+        return container->name + "___" + decl.name;
+    }
+    return decl.name;
+}
+
+std::string Phase1Codegen::fixedArrayStorageName(const StructInfo& info, const FieldInfo& field) const {
+    return "s___" + info.generatedName + "_" + field.name;
+}
+
+int Phase1Codegen::structFixedArrayStride(const StructInfo& info) const {
+    int stride = 0;
+    for (const auto& field : info.fields) {
+        if (!field.isStatic && field.isFixedArray && field.fixedArraySize > stride) {
+            stride = field.fixedArraySize;
+        }
+    }
+    return stride;
+}
+
+int Phase1Codegen::structInstanceLimit(const StructInfo& info) const {
+    int stride = structFixedArrayStride(info);
+    if (stride <= 0) {
+        return 8190;
+    }
+    return std::max(0, 8190 / stride - 1);
 }
 
 std::string Phase1Codegen::rewriteArrayAccesses(
@@ -3907,8 +4083,8 @@ std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
                                 break;
                             }
                             std::string indexExpr = trim(text.substr(afterMember + 1, close - afterMember - 1));
-                            std::string replacement = field->generatedName + "[" + receiverExpr + "*" +
-                                                      std::to_string(field->fixedArraySize) + "+" + indexExpr + "]";
+                            std::string replacement = fixedArrayStorageName(varStruct, *field) + "[" +
+                                                      field->generatedName + "[" + receiverExpr + "]+" + indexExpr + "]";
                             text.replace(namePos, close + 1 - namePos, replacement);
                             pos = namePos + replacement.size();
                             changed = true;
@@ -3958,16 +4134,22 @@ std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
                     continue;
                 }
                 if (field.isFixedArray && field.fixedArraySize > 0 && field.arrayDimensions.size() <= 1) {
-                    std::string indexed = field.generatedName + "[this*" + std::to_string(field.fixedArraySize) + "+$1]";
+                    std::string storage = fixedArrayStorageName(*currentStruct, field);
+                    std::string indexed = storage + "[" + field.generatedName + "[this]+$1]";
+                    if (!localTypes.contains(field.name)) {
+                        text = replaceRegex(text,
+                                            R"((^|[^A-Za-z0-9_$.]))" + regexEscape(field.name) + R"(\s*\[\s*([^\]]+)\s*\])",
+                                            "$1" + storage + "[" + field.generatedName + "[this]+$2]");
+                    }
                     text = replaceRegex(text,
                                         R"(\bthistype\s*\[\s*([^\]]+)\s*\]\s*\.\s*)" + regexEscape(field.name) + R"(\s*\[\s*([^\]]+)\s*\])",
-                                        field.generatedName + "[$1*" + std::to_string(field.fixedArraySize) + "+$2]");
+                                        storage + "[" + field.generatedName + "[$1]+$2]");
                     text = replaceRegex(text,
                                         R"(\bthis\s*\.\s*)" + regexEscape(field.name) + R"(\s*\[\s*([^\]]+)\s*\])",
                                         indexed);
                     text = replaceRegex(text,
                                         R"((^|[^A-Za-z0-9_$)\]])\.\s*)" + regexEscape(field.name) + R"(\s*\[\s*([^\]]+)\s*\])",
-                                        "$1" + indexed);
+                                        "$1" + storage + "[" + field.generatedName + "[this]+$2]");
                 }
                 std::string access = field.generatedName + "[this]";
                 if (!localTypes.contains(field.name)) {
@@ -4808,6 +4990,16 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
         size_t dotPos = 0;
         size_t open = 0;
         size_t close = 0;
+        auto lowerCallArgs = [&](const std::string& argsText) {
+            std::vector<std::string> loweredArgs;
+            for (const auto& argText : splitCommaList(argsText)) {
+                std::vector<std::string> prelude;
+                std::string arg = lowerExpression(argText, {}, ctx, prelude);
+                out.insert(out.end(), prelude.begin(), prelude.end());
+                loweredArgs.push_back(arg);
+            }
+            return joinArgs(loweredArgs);
+        };
         if (findMethodCallSpan(callExpr, "execute", receiverStart, dotPos, open, close) && receiverStart == 0 && close + 1 == callExpr.size()) {
             std::string receiver = trim(callExpr.substr(receiverStart, dotPos - receiverStart));
             std::string argsText = callExpr.substr(open + 1, close - open - 1);
@@ -4833,7 +5025,7 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
             std::string finalName = resolveFunctionTargetName(receiver, ctx.currentStruct);
             if (const FunctionInfo* fn = findFunctionInfo(finalName)) {
                 ++functionObjectCalls_;
-                out.push_back("call " + fn->finalName + "(" + argsText + ")");
+                out.push_back("call " + fn->finalName + "(" + lowerCallArgs(argsText) + ")");
                 return out;
             }
         }
@@ -4859,7 +5051,7 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
             std::string finalName = resolveFunctionTargetName(receiver, ctx.currentStruct);
             if (const FunctionInfo* fn = findFunctionInfo(finalName)) {
                 ++functionObjectCalls_;
-                out.push_back("call " + fn->finalName + "(" + argsText + ")");
+                out.push_back("call " + fn->finalName + "(" + lowerCallArgs(argsText) + ")");
                 return out;
             }
         }

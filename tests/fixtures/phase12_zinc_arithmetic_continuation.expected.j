@@ -5,7 +5,7 @@ globals
 endglobals
 
 
-function Phase12ArithmeticContinuation_Test takes nothing returns real
+function Test takes nothing returns real
     local real value
     set value = 10.0 * 2.0 / 4.0
     return value

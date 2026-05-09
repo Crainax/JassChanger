@@ -2,13 +2,13 @@
 
 globals
     constant boolean LIBRARY_Demo=true
-    string Demo___text = "/* not a comment */"
-    integer Demo___raw = 'A000'
+    string Demo__text = "/* not a comment */"
+    integer Demo__raw = 'A000'
 endglobals
 
 
-function Demo_Use takes nothing returns nothing
-    call BJDebugMsg(Demo___text + I2S(Demo___raw))
+function Use takes nothing returns nothing
+    call BJDebugMsg(Demo__text + I2S(Demo__raw))
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing
@@ -16,3 +16,4 @@ endfunction
 
 function vjassc__init_libraries takes nothing returns nothing
 endfunction
+

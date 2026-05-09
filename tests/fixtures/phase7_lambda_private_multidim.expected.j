@@ -2,15 +2,15 @@
 
 globals
     constant boolean LIBRARY_Demo=true
-    integer array Demo___grid
+    integer array Demo__grid
 endglobals
 
 
 function vjlambda__1 takes nothing returns nothing
-    set Demo___grid[((1) * 3 + (2))] = 7
+    set Demo__grid[((1) * 3 + (2))] = 7
 endfunction
 
-function Demo_Register takes trigger t returns nothing
+function Register takes trigger t returns nothing
     call TriggerAddAction(t, function vjlambda__1)
 endfunction
 
@@ -20,3 +20,4 @@ endfunction
 
 function vjassc__init_libraries takes nothing returns nothing
 endfunction
+

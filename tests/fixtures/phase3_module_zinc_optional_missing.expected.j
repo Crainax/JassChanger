@@ -2,34 +2,35 @@
 
 globals
     constant boolean LIBRARY_Demo=true
-    integer array si__A_F
-    integer si__A_I=0
-    integer array si__A_V
-    integer array s__A_x
+    integer si__Demo___A_F=0
+    integer si__Demo___A_I=0
+    integer array si__Demo___A_V
+    integer array s__Demo___A_x
 endglobals
 
 
-function s__A__allocate takes nothing returns integer
-    local integer this
-    if si__A_F[0] == 0 then
-        set si__A_I=si__A_I+1
-        set this=si__A_I
+function s__Demo___A__allocate takes nothing returns integer
+    local integer this=si__Demo___A_F
+    if (this!=0) then
+        set si__Demo___A_F=si__Demo___A_V[this]
     else
-        set this=si__A_F[0]
-        set si__A_F[0]=si__A_F[this]
+        set si__Demo___A_I=si__Demo___A_I+1
+        set this=si__Demo___A_I
     endif
-    set si__A_V[this]=-1
+    if (this>8190) then
+        return 0
+    endif
+    set si__Demo___A_V[this]=-1
     return this
 endfunction
 
-function s__A_create takes nothing returns integer
-    return s__A__allocate()
+function s__Demo___A_create takes nothing returns integer
+    return s__Demo___A__allocate()
 endfunction
 
-function s__A_destroy takes integer this returns nothing
-    set si__A_V[this]=0
-    set si__A_F[this]=si__A_F[0]
-    set si__A_F[0]=this
+function s__Demo___A_destroy takes integer this returns nothing
+    set si__Demo___A_V[this]=si__Demo___A_F
+    set si__Demo___A_F=this
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing

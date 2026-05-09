@@ -5,7 +5,7 @@ globals
 endglobals
 
 
-function Accept takes code first, code second returns nothing
+function L___Accept takes code first, code second returns nothing
 endfunction
 
 function vjlambda__1 takes nothing returns nothing
@@ -16,8 +16,8 @@ function vjlambda__2 takes nothing returns nothing
     call BJDebugMsg("second")
 endfunction
 
-function Test takes nothing returns nothing
-    call Accept(function vjlambda__1, function vjlambda__2)
+function L___Test takes nothing returns nothing
+    call L___Accept(function vjlambda__1, function vjlambda__2)
 endfunction
 
 
@@ -26,3 +26,4 @@ endfunction
 
 function vjassc__init_libraries takes nothing returns nothing
 endfunction
+

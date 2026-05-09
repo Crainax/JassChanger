@@ -5,7 +5,7 @@ globals
 endglobals
 
 
-function Phase12ElseIfTailReturn_Pick takes integer value returns integer
+function Pick takes integer value returns integer
     if (value == 1) then
     return 10
     elseif (value == 2) then

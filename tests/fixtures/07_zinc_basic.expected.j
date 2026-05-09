@@ -2,17 +2,17 @@
 
 globals
     constant boolean LIBRARY_Demo=true
-    integer Demo___X = 0
+    integer Demo__X = 0
 endglobals
 
 
-function Add takes integer a, integer b returns integer
+function Demo___Add takes integer a, integer b returns integer
     local integer c
     set c = a + b
     return c
 endfunction
 
-function Run takes nothing returns nothing
+function Demo___Run takes nothing returns nothing
     local integer i
     set i = 0
     loop

@@ -6,7 +6,7 @@ globals
 endglobals
 
 
-function Test takes nothing returns nothing
+function ZB___Test takes nothing returns nothing
     call BJDebugMsg("zinc")
     call BJDebugMsg("fallback")
 endfunction

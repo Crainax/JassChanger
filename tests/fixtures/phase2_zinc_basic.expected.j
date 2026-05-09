@@ -2,38 +2,39 @@
 
 globals
     constant boolean LIBRARY_Demo=true
-    integer array si__Demo_Foo_F
-    integer si__Demo_Foo_I=0
-    integer array si__Demo_Foo_V
-    integer array s__Demo_Foo_value
+    integer si__Foo_F=0
+    integer si__Foo_I=0
+    integer array si__Foo_V
+    integer array s__Foo_value
 endglobals
 
 
-function s__Demo_Foo__allocate takes nothing returns integer
-    local integer this
-    if si__Demo_Foo_F[0] == 0 then
-        set si__Demo_Foo_I=si__Demo_Foo_I+1
-        set this=si__Demo_Foo_I
+function s__Foo__allocate takes nothing returns integer
+    local integer this=si__Foo_F
+    if (this!=0) then
+        set si__Foo_F=si__Foo_V[this]
     else
-        set this=si__Demo_Foo_F[0]
-        set si__Demo_Foo_F[0]=si__Demo_Foo_F[this]
+        set si__Foo_I=si__Foo_I+1
+        set this=si__Foo_I
     endif
-    set si__Demo_Foo_V[this]=-1
+    if (this>8190) then
+        return 0
+    endif
+    set si__Foo_V[this]=-1
     return this
 endfunction
 
-function s__Demo_Foo_create takes nothing returns integer
-    return s__Demo_Foo__allocate()
+function s__Foo_create takes nothing returns integer
+    return s__Foo__allocate()
 endfunction
 
-function s__Demo_Foo_destroy takes integer this returns nothing
-    set si__Demo_Foo_V[this]=0
-    set si__Demo_Foo_F[this]=si__Demo_Foo_F[0]
-    set si__Demo_Foo_F[0]=this
+function s__Foo_destroy takes integer this returns nothing
+    set si__Foo_V[this]=si__Foo_F
+    set si__Foo_F=this
 endfunction
 
-function s__Demo_Foo_add takes integer this, integer x returns nothing
-    set s__Demo_Foo_value[this] = s__Demo_Foo_value[this] + x
+function s__Foo_add takes integer this, integer x returns nothing
+    set s__Foo_value[this] = s__Foo_value[this] + x
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing
@@ -41,3 +42,4 @@ endfunction
 
 function vjassc__init_libraries takes nothing returns nothing
 endfunction
+

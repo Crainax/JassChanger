@@ -45,6 +45,8 @@ CliParseResult parseCli(int argc, char** argv) {
             opt.debugMode = true;
         } else if (arg == "--release") {
             opt.debugMode = false;
+        } else if (arg == "-warn" || arg == "--warn") {
+            opt.warnMode = true;
         } else if (arg == "--scan-only") {
             opt.scanOnly = true;
         } else if (arg == "--allow-unsupported") {
@@ -191,6 +193,7 @@ void printHelp(std::ostream& out) {
         << "  -o <path>                    Write generated JASS\n"
         << "  --debug                      Keep debug lines and strip the debug prefix\n"
         << "  --release                    Drop debug lines (default)\n"
+        << "  -warn, --warn                Emit runtime struct allocation/destroy warnings\n"
         << "  --scan-only                  Read, preprocess, lex, parse, and emit diagnostics/stats only\n"
         << "  --emit-preprocessed <path>   Write preprocessed logical source\n"
         << "  --emit-tokens <path>         Write token stream\n"

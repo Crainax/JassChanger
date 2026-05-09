@@ -10,7 +10,7 @@ function vjlambda__1 takes integer value returns nothing
     call BJDebugMsg(I2S(value))
 endfunction
 
-function Phase11CodeParam_Test takes nothing returns nothing
+function Test takes nothing returns nothing
     call TakesCode(function vjlambda__1)
 endfunction
 
@@ -20,3 +20,4 @@ endfunction
 
 function vjassc__init_libraries takes nothing returns nothing
 endfunction
+

@@ -2,15 +2,15 @@
 
 globals
     constant boolean LIBRARY_Phase12ArrayStructReceiver=true
-    integer array s__Phase12ArrayStructReceiver_Row_value
+    integer array s__Row_value
 endglobals
 
 
-function Phase12ArrayStructReceiver_Test takes integer pos returns integer
+function Test takes integer pos returns integer
     local integer row
     set row = (pos)
-    set s__Phase12ArrayStructReceiver_Row_value[row] = 7
-    return s__Phase12ArrayStructReceiver_Row_value[pos] + s__Phase12ArrayStructReceiver_Row_value[row]
+    set s__Row_value[row] = 7
+    return s__Row_value[pos] + s__Row_value[row]
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing

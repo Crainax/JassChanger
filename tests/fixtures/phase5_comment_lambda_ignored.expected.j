@@ -5,7 +5,7 @@ globals
 endglobals
 
 
-function Test takes nothing returns nothing
+function L___Test takes nothing returns nothing
     call BJDebugMsg("ok")
 endfunction
 
@@ -14,3 +14,4 @@ endfunction
 
 function vjassc__init_libraries takes nothing returns nothing
 endfunction
+

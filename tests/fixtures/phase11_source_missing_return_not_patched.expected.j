@@ -15,3 +15,4 @@ endfunction
 
 function vjassc__init_libraries takes nothing returns nothing
 endfunction
+

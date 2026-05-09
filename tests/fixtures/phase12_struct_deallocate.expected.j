@@ -2,41 +2,42 @@
 
 globals
     constant boolean LIBRARY_Phase12StructDeallocate=true
-    integer array si__Phase12StructDeallocate_Node_F
-    integer si__Phase12StructDeallocate_Node_I=0
-    integer array si__Phase12StructDeallocate_Node_V
+    integer si__Node_F=0
+    integer si__Node_I=0
+    integer array si__Node_V
 endglobals
 
 
-function s__Phase12StructDeallocate_Node__allocate takes nothing returns integer
-    local integer this
-    if si__Phase12StructDeallocate_Node_F[0] == 0 then
-        set si__Phase12StructDeallocate_Node_I=si__Phase12StructDeallocate_Node_I+1
-        set this=si__Phase12StructDeallocate_Node_I
+function s__Node__allocate takes nothing returns integer
+    local integer this=si__Node_F
+    if (this!=0) then
+        set si__Node_F=si__Node_V[this]
     else
-        set this=si__Phase12StructDeallocate_Node_F[0]
-        set si__Phase12StructDeallocate_Node_F[0]=si__Phase12StructDeallocate_Node_F[this]
+        set si__Node_I=si__Node_I+1
+        set this=si__Node_I
     endif
-    set si__Phase12StructDeallocate_Node_V[this]=-1
+    if (this>8190) then
+        return 0
+    endif
+    set si__Node_V[this]=-1
     return this
 endfunction
 
-function s__Phase12StructDeallocate_Node_create takes nothing returns integer
-    return s__Phase12StructDeallocate_Node__allocate()
+function s__Node_create takes nothing returns integer
+    return s__Node__allocate()
 endfunction
 
-function s__Phase12StructDeallocate_Node_deallocate takes integer this returns nothing
-    set si__Phase12StructDeallocate_Node_V[this]=0
-    set si__Phase12StructDeallocate_Node_F[this]=si__Phase12StructDeallocate_Node_F[0]
-    set si__Phase12StructDeallocate_Node_F[0]=this
+function s__Node_deallocate takes integer this returns nothing
+    set si__Node_V[this]=si__Node_F
+    set si__Node_F=this
 endfunction
 
-function s__Phase12StructDeallocate_Node_destroy takes integer this returns nothing
-    call s__Phase12StructDeallocate_Node_deallocate(this)
+function s__Node_destroy takes integer this returns nothing
+    call s__Node_deallocate(this)
 endfunction
 
-function s__Phase12StructDeallocate_Node_release takes integer this returns nothing
-    call s__Phase12StructDeallocate_Node_deallocate(this)
+function s__Node_release takes integer this returns nothing
+    call s__Node_deallocate(this)
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing

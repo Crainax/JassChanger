@@ -2,13 +2,13 @@
 
 globals
     constant boolean LIBRARY_Demo=true
-    unit s__Demo_unitAttrObserver_argsU=null
-    trigger s__Demo_unitAttrObserver_attackIntervalCB=null
+    unit s__unitAttrObserver_argsU=null
+    trigger s__unitAttrObserver_attackIntervalCB=null
 endglobals
 
 
-function s__Demo_unitAttrObserver_registerAttackInterval takes code func returns nothing
-    call TriggerAddCondition(s__Demo_unitAttrObserver_attackIntervalCB, Condition(func))
+function s__unitAttrObserver_registerAttackInterval takes code func returns nothing
+    call TriggerAddCondition(s__unitAttrObserver_attackIntervalCB, Condition(func))
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing
@@ -16,3 +16,4 @@ endfunction
 
 function vjassc__init_libraries takes nothing returns nothing
 endfunction
+

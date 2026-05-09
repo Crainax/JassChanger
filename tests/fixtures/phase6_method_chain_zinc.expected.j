@@ -2,52 +2,53 @@
 
 globals
     constant boolean LIBRARY_Phase6Chain=true
-    integer array si__Phase6Chain_Button_F
-    integer si__Phase6Chain_Button_I=0
-    integer array si__Phase6Chain_Button_V
-    integer array s__Phase6Chain_Button_ui
+    integer si__Button_F=0
+    integer si__Button_I=0
+    integer array si__Button_V
+    integer array s__Button_ui
 endglobals
 
 
-function s__Phase6Chain_Button__allocate takes nothing returns integer
-    local integer this
-    if si__Phase6Chain_Button_F[0] == 0 then
-        set si__Phase6Chain_Button_I=si__Phase6Chain_Button_I+1
-        set this=si__Phase6Chain_Button_I
+function s__Button__allocate takes nothing returns integer
+    local integer this=si__Button_F
+    if (this!=0) then
+        set si__Button_F=si__Button_V[this]
     else
-        set this=si__Phase6Chain_Button_F[0]
-        set si__Phase6Chain_Button_F[0]=si__Phase6Chain_Button_F[this]
+        set si__Button_I=si__Button_I+1
+        set this=si__Button_I
     endif
-    set si__Phase6Chain_Button_V[this]=-1
+    if (this>8190) then
+        return 0
+    endif
+    set si__Button_V[this]=-1
     return this
 endfunction
 
-function s__Phase6Chain_Button_destroy takes integer this returns nothing
-    set si__Phase6Chain_Button_V[this]=0
-    set si__Phase6Chain_Button_F[this]=si__Phase6Chain_Button_F[0]
-    set si__Phase6Chain_Button_F[0]=this
+function s__Button_destroy takes integer this returns nothing
+    set si__Button_V[this]=si__Button_F
+    set si__Button_F=this
 endfunction
 
-function s__Phase6Chain_Button_create takes integer ui returns integer
+function s__Button_create takes integer ui returns integer
     local integer this
-    set this = s__Phase6Chain_Button__allocate()
-    set s__Phase6Chain_Button_ui[this] = ui
+    set this = s__Button__allocate()
+    set s__Button_ui[this] = ui
     return this
 endfunction
 
-function s__Phase6Chain_Button_setText takes integer this, string text returns integer
+function s__Button_setText takes integer this, string text returns integer
     return this
 endfunction
 
-function s__Phase6Chain_Button_show takes integer this, boolean flag returns integer
+function s__Button_show takes integer this, boolean flag returns integer
     return this
 endfunction
 
-function Test takes nothing returns nothing
+function Phase6Chain___Test takes nothing returns nothing
     local integer b
-    set b = s__Phase6Chain_Button_create(1)
-    call s__Phase6Chain_Button_setText(b, "ok")
-    call s__Phase6Chain_Button_show(b, true)
+    set b = s__Button_create(1)
+    call s__Button_setText(b, "ok")
+    call s__Button_show(b, true)
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing
@@ -55,3 +56,4 @@ endfunction
 
 function vjassc__init_libraries takes nothing returns nothing
 endfunction
+

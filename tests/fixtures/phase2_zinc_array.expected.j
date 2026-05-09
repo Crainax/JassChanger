@@ -2,12 +2,12 @@
 
 globals
     constant boolean LIBRARY_Demo=true
-    integer s__Demo_Queue_size=0
+    integer s__Queue_size=0
 endglobals
 
 
-function s__Demo_Queue_clear takes nothing returns nothing
-    set s__Demo_Queue_size = 0
+function s__Queue_clear takes nothing returns nothing
+    set s__Queue_size = 0
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing
@@ -15,3 +15,4 @@ endfunction
 
 function vjassc__init_libraries takes nothing returns nothing
 endfunction
+

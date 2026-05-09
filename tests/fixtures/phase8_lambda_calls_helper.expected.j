@@ -5,15 +5,15 @@ globals
 endglobals
 
 
-function Helper takes nothing returns nothing
+function L___Helper takes nothing returns nothing
     call BJDebugMsg("helper")
 endfunction
 
 function vjlambda__1 takes nothing returns nothing
-    call Helper()
+    call L___Helper()
 endfunction
 
-function Test takes trigger t returns nothing
+function L___Test takes trigger t returns nothing
     call TriggerAddAction(t, function vjlambda__1)
 endfunction
 
@@ -23,3 +23,4 @@ endfunction
 
 function vjassc__init_libraries takes nothing returns nothing
 endfunction
+

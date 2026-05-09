@@ -179,6 +179,12 @@ int main(int argc, char** argv) {
         {"phase13_forward_bridge_noarg", "", fixtures / "phase13_forward_bridge_noarg.expected.j"},
         {"phase13_external_env_symbol", "", fixtures / "phase13_external_env_symbol.expected.j"},
         {"phase13_raw_code_param_lambda_known_context", "", fixtures / "phase13_raw_code_param_lambda_known_context.expected.j"},
+        {"phase14_cycle_prefers_noarg_bridge", "", fixtures / "phase14_cycle_prefers_noarg_bridge.expected.j"},
+        {"phase14_function_object_evaluate_args", "", fixtures / "phase14_function_object_evaluate_args.expected.j"},
+        {"phase14_library_default_oninit", "", fixtures / "phase14_library_default_oninit.expected.j"},
+        {"phase14_missing_init_trigger_call", "", fixtures / "phase14_missing_init_trigger_call.expected.j"},
+        {"phase14_struct_oninit_dependency_order", "", fixtures / "phase14_struct_oninit_dependency_order.expected.j"},
+        {"phase14_struct_warn", "-warn", fixtures / "phase14_struct_warn.expected.j"},
     };
 
     bool ok = true;
