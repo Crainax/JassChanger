@@ -21,7 +21,17 @@ std::string firstWord(const std::string& text) {
 
 bool isCommentOrEmpty(const std::string& text) {
     std::string t = trim(text);
-    return t.empty() || t.rfind("//", 0) == 0;
+    return t.empty() || t.rfind("//", 0) == 0 || t.rfind("/*", 0) == 0 ||
+           t.rfind("*", 0) == 0 || t.rfind("*/", 0) == 0;
+}
+
+std::string diagnosticSnippet(const std::string& text) {
+    std::string snippet = trim(text);
+    constexpr size_t maxLen = 96;
+    if (snippet.size() > maxLen) {
+        snippet = snippet.substr(0, maxLen) + "...";
+    }
+    return snippet;
 }
 
 bool isIdentStart(char c) {
@@ -73,6 +83,36 @@ std::string stripStringRawcodeAndComment(const std::string& text) {
         out.push_back(c);
     }
     return out;
+}
+
+bool isStandaloneNumericLiteral(const std::string& text) {
+    std::string t = trim(stripStringRawcodeAndComment(text));
+    if (!t.empty() && t.back() == ';') {
+        t.pop_back();
+        t = trim(t);
+    }
+    if (t.empty()) {
+        return false;
+    }
+    bool sawDigit = false;
+    bool sawDot = false;
+    size_t i = 0;
+    if (t[i] == '+' || t[i] == '-') {
+        ++i;
+    }
+    for (; i < t.size(); ++i) {
+        unsigned char c = static_cast<unsigned char>(t[i]);
+        if (std::isdigit(c)) {
+            sawDigit = true;
+            continue;
+        }
+        if (t[i] == '.' && !sawDot) {
+            sawDot = true;
+            continue;
+        }
+        return false;
+    }
+    return sawDigit;
 }
 
 std::string previousWordBefore(const std::string& text, size_t pos) {
@@ -240,14 +280,31 @@ void parseRequirementsAndInitializer(const std::string& tail, Decl& decl) {
 }
 
 int braceDelta(const std::string& text) {
+    std::string trimmed = trim(text);
+    if (trimmed.rfind("/*", 0) == 0 || trimmed.rfind("*", 0) == 0 || trimmed.rfind("*/", 0) == 0) {
+        return 0;
+    }
     int delta = 0;
     bool inString = false;
     bool inRaw = false;
+    bool inBlockComment = false;
     bool escaped = false;
     for (size_t i = 0; i < text.size(); ++i) {
         char c = text[i];
         if (!inString && !inRaw && i + 1 < text.size() && c == '/' && text[i + 1] == '/') {
             break;
+        }
+        if (!inString && !inRaw && !inBlockComment && i + 1 < text.size() && c == '/' && text[i + 1] == '*') {
+            inBlockComment = true;
+            ++i;
+            continue;
+        }
+        if (inBlockComment) {
+            if (i + 1 < text.size() && c == '*' && text[i + 1] == '/') {
+                inBlockComment = false;
+                ++i;
+            }
+            continue;
         }
         if (inString) {
             if (escaped) {
@@ -852,6 +909,7 @@ std::vector<Decl> Parser::parseJassRange(const std::vector<LogicalLine>& lines, 
                 ++index;
                 continue;
             }
+            diagnostics_.error(logical.loc, "unexpected Zinc declaration/member: " + diagnosticSnippet(logical.text));
             ++index;
             continue;
         }
@@ -907,6 +965,9 @@ std::vector<Decl> Parser::parseJassRange(const std::vector<LogicalLine>& lines, 
                 decls.push_back(std::move(decl));
                 ++index;
             } else {
+                if (isStandaloneNumericLiteral(logical.text)) {
+                    diagnostics_.error(logical.loc, "unexpected top-level numeric literal: " + diagnosticSnippet(logical.text));
+                }
                 ++index;
             }
         }
@@ -1485,6 +1546,7 @@ std::vector<Decl> Parser::parseZincMembers(const std::vector<LogicalLine>& lines
             ++stats_.globalsBlocks;
             decls.push_back(std::move(globals));
         } else {
+            diagnostics_.error(lines[index].loc, "unexpected Zinc declaration/member: " + diagnosticSnippet(lines[index].text));
             ++index;
         }
     }
@@ -1644,6 +1706,10 @@ Decl Parser::parseZincStruct(const std::vector<LogicalLine>& lines, size_t& inde
         }
         std::string memberText = t;
         (void)parseAccessPrefix(memberText);
+        if (!memberText.empty() && memberText.front() == '{') {
+            ++bodyIndex;
+            continue;
+        }
         if (startsWithWord(memberText, "static method") || startsWithWord(memberText, "method")) {
             decl.methods.push_back(parseZincMethod(body, bodyIndex));
             continue;
@@ -1672,6 +1738,11 @@ Decl Parser::parseZincStruct(const std::vector<LogicalLine>& lines, size_t& inde
             continue;
         }
         auto fields = parseFieldDecls(body[bodyIndex]);
+        if (fields.empty()) {
+            diagnostics_.error(body[bodyIndex].loc, "unexpected Zinc module member: " + diagnosticSnippet(body[bodyIndex].text));
+            ++bodyIndex;
+            continue;
+        }
         decl.fields.insert(decl.fields.end(), fields.begin(), fields.end());
         ++bodyIndex;
     }
@@ -1787,6 +1858,10 @@ Decl Parser::parseZincModule(const std::vector<LogicalLine>& lines, size_t& inde
         }
         std::string memberText = t;
         (void)parseAccessPrefix(memberText);
+        if (!memberText.empty() && memberText.front() == '{') {
+            ++bodyIndex;
+            continue;
+        }
         if (startsWithWord(memberText, "static method") || startsWithWord(memberText, "method")) {
             decl.methods.push_back(parseZincMethod(body, bodyIndex));
             continue;
@@ -1811,6 +1886,11 @@ Decl Parser::parseZincModule(const std::vector<LogicalLine>& lines, size_t& inde
             continue;
         }
         auto fields = parseFieldDecls(body[bodyIndex]);
+        if (fields.empty()) {
+            diagnostics_.error(body[bodyIndex].loc, "unexpected Zinc struct member: " + diagnosticSnippet(body[bodyIndex].text));
+            ++bodyIndex;
+            continue;
+        }
         decl.fields.insert(decl.fields.end(), fields.begin(), fields.end());
         ++bodyIndex;
     }

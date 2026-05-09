@@ -78,6 +78,7 @@ struct ComparisonReport {
 };
 
 OutputSyntaxReport analyzeOutputSyntaxLite(std::string_view output);
+std::vector<ValidationIssue> findInvalidJassStatementShapes(std::string_view output);
 InitValidationReport analyzeInitIntegrity(std::string_view output);
 OutputMetrics collectOutputMetrics(std::string_view output);
 ComparisonReport compareWithReference(std::string_view generated, const std::filesystem::path& referencePath);

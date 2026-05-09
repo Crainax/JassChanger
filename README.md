@@ -1,6 +1,6 @@
 # vjassc
 
-`vjassc` is a C++20 phase-15 compiler prototype for lowering a supported subset of vJASS/Zinc to plain Warcraft III JASS.
+`vjassc` is a C++20 phase-17 compiler prototype for lowering a supported subset of vJASS/Zinc to plain Warcraft III JASS.
 
 Phase 1 built the compiler foundation: file loading, preprocessing, lexing, top-level parsing, library sorting, minimal public/private rewriting, basic Zinc function lowering, diagnostics, stats, and golden fixture tests.
 
@@ -30,10 +30,14 @@ Phase 13 reaches PJASS pass for the real `samples/input.j` generated output by a
 
 Phase 15 adds `--mode fast|validate|full-validation`, integrates `WAR3_VJASSC_MODE` into War3Lib, replaces the output writer with a reserved string-backed writer, and adds feature gates around struct/member lowering plus faster syntax-lite forward-reference scanning. The real sample now validates with PJASS in about 23 seconds internally, with fast mode skipping syntax-lite/PJASS/comparison entirely.
 
+Phase 16 keeps PJASS green while splitting struct support timings and reducing several lookup/scan counters. It shows that generated struct helpers are no longer the main cost; source method body lowering remains the dominant hotspot.
+
+Phase 17 adds a second performance pass around array/function/struct lookup paths, function-order dependency scanning, and fast-mode validation accounting. It also tightens fast-mode syntax safety so bare invalid statements such as `123` are rejected. The real sample remains PJASS green; validate/full-validation meet the Phase 17 timing target, while standalone fast and War3Lib fast compare are improved but still not faster than JassHelper.
+
 ## Repository Layout
 
 - `src/`: compiler implementation
-- `tests/fixtures/`: golden cases for the supported phase-1 through phase-15 subset
+- `tests/fixtures/`: golden cases for the supported phase-1 through phase-17 subset
 - `samples/input.j`: large real input used for scan-only validation
 - `samples/output_jasshelper.j`: legacy JassHelper output reference for later phases
 - `jasshelper/`: old compiler package, kept for behavior comparisons when needed
@@ -51,6 +55,8 @@ Phase 15 adds `--mode fast|validate|full-validation`, integrates `WAR3_VJASSC_MO
 - `docs/phase12_status.md`: phase-12 PJASS convergence, triage, and performance status
 - `docs/phase13_status.md`: phase-13 PJASS pass, environment stub policy, bridge/callback adapters, and remaining runtime/performance work
 - `docs/phase15_status.md`: phase-15 compile-mode split, performance pass, and War3Lib mode integration
+- `docs/phase16_status.md`: phase-16 struct-lowering instrumentation and lookup reduction status
+- `docs/phase17_status.md`: phase-17 optimization, War3Lib compare, and remaining hotspot status
 
 ## Build
 
@@ -125,6 +131,6 @@ build/vjassc tests/fixtures/phase4_function_interface_execute.in.j -o build/phas
 
 ## Phase Boundary
 
-Phase 15 can generate a complete plain-JASS candidate for the real `samples/input.j`, run syntax-lite validation, write grouped validation/provenance reports, run PJASS with explicit validation-only external symbols, validate main/init helper wiring, compare coarse output structure with `samples/output_jasshelper.j`, and emit codegen pass timings plus performance counters.
+Phase 17 can generate a complete plain-JASS candidate for the real `samples/input.j`, run syntax-lite validation, write grouped validation/provenance reports, run PJASS with explicit validation-only external symbols, validate main/init helper wiring, compare coarse output structure with `samples/output_jasshelper.j`, and emit codegen pass timings plus performance counters.
 
-The current output is not yet a JassHelper replacement. PJASS passes for the real sample when `InitTrig_japi` is supplied through the explicit validation-only external symbol policy, but runtime/map-load validation and behavior matching remain future work. Phase 15 full validation is about 23 seconds internally, and fast mode is about 20 seconds because it skips validation-only work. `--allow-unsupported` is only for scan-only validation and statistics; it does not make partial code generation safe.
+The current output is not yet a JassHelper replacement. PJASS passes for the real sample when `InitTrig_japi` is supplied through the explicit validation-only external symbol policy, but runtime/map-load validation and behavior matching remain future work. Phase 17 full validation is about 17-18 seconds in the representative standalone run, and fast mode is about 17.5 seconds because it skips validation-only work. War3Lib ALPHA validate passes, but War3Lib fast compare is still slower than JassHelper. `--allow-unsupported` is only for scan-only validation and statistics; it does not make partial code generation safe.

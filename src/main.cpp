@@ -1340,7 +1340,10 @@ int main(int argc, char** argv) {
     PjassResult pjassResult;
     if (!options.scanOnly && !options.outputPath.empty()) {
         auto codegenStart = std::chrono::steady_clock::now();
-        Phase1Codegen generator(diagnostics, CodegenOptions{options.scanOnly, options.allowUnsupported, options.warnMode});
+        Phase1Codegen generator(diagnostics, CodegenOptions{options.scanOnly,
+                                                            options.allowUnsupported,
+                                                            options.warnMode,
+                                                            options.mode == CompileMode::Fast});
         codegen = generator.generate(expandedProgram);
         auto codegenEnd = std::chrono::steady_clock::now();
         timings.codegen = elapsedMs(codegenStart, codegenEnd);
@@ -1367,7 +1370,27 @@ int main(int argc, char** argv) {
         expandedProgram.stats.functionInterfaceEvaluateTempLimit = codegen.functionInterfaceEvaluateTempLimit;
         ok = codegen.ok && ok;
         if (codegen.ok) {
-            ok = writeTextFile(options.outputPath, codegen.output) && ok;
+            bool outputReady = false;
+            std::vector<ValidationIssue> statementShapeIssues;
+            if (!runSyntaxLite) {
+                statementShapeIssues = findInvalidJassStatementShapes(codegen.output);
+            }
+            if (!statementShapeIssues.empty()) {
+                size_t shown = 0;
+                for (const auto& issue : statementShapeIssues) {
+                    if (shown++ >= 20) {
+                        break;
+                    }
+                    diagnostics.error(SourceLocation{}, "output statement shape check failed: " +
+                                                          issue.message +
+                                                          (issue.line == 0 ? "" : " at line " + std::to_string(issue.line)) +
+                                                          (issue.snippet.empty() ? "" : ": " + issue.snippet));
+                }
+                ok = false;
+            } else {
+                outputReady = writeTextFile(options.outputPath, codegen.output);
+                ok = outputReady && ok;
+            }
             if (runSyntaxLite) {
                 auto syntaxStart = std::chrono::steady_clock::now();
                 auto syntaxLiteStart = syntaxStart;
@@ -1392,7 +1415,7 @@ int main(int argc, char** argv) {
                     ok = false;
                 }
             }
-            if (runComparison) {
+            if (outputReady && runComparison) {
                 auto comparisonStart = std::chrono::steady_clock::now();
                 std::filesystem::path reference = options.compareJasshelperPath.empty()
                     ? std::filesystem::path("samples/output_jasshelper.j")
@@ -1401,7 +1424,7 @@ int main(int argc, char** argv) {
                 auto comparisonEnd = std::chrono::steady_clock::now();
                 timings.comparison = elapsedMs(comparisonStart, comparisonEnd);
             }
-            if (runPjassValidation) {
+            if (outputReady && runPjassValidation) {
                 pjassResult.requested = true;
                 PjassResolvedPaths paths = resolvePjassPaths(std::filesystem::current_path(),
                                                              options.pjassPath,

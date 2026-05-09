@@ -18,6 +18,7 @@ struct CodegenOptions {
     bool scanOnly = false;
     bool allowUnsupported = false;
     bool warnMode = false;
+    bool fastMode = false;
 };
 
 struct CodegenPerformanceCounters {
@@ -264,6 +265,8 @@ private:
                                                   std::vector<std::string>& extraLines) const;
     std::string rewriteArrayAccesses(const std::string& line,
                                      const std::unordered_map<std::string, ArrayShape>* localArrayShapes) const;
+    bool hasKnownArrayReceiver(const std::string& line,
+                               const std::unordered_map<std::string, ArrayShape>* localArrayShapes) const;
     std::vector<std::string> lowerStatementLine(const std::string& line, LoweringContext& ctx) const;
     std::string lowerExpression(std::string expression,
                                 const std::string& expectedInterfaceType,
@@ -337,6 +340,7 @@ private:
     std::vector<FunctionInfo> functions_;
     std::unordered_map<std::string, size_t> functionIndexByName_;
     std::unordered_map<std::string, std::vector<std::string>> functionInterfaceParamTypesByFunction_;
+    std::unordered_set<std::string> functionArgumentLoweringCandidates_;
     std::vector<size_t> arrayStructIndexes_;
     std::vector<LambdaInfo> lambdas_;
     std::unordered_map<const Decl*, std::vector<std::string>> processedZincFunctionBodies_;
@@ -362,6 +366,11 @@ private:
     mutable std::unordered_map<std::string, const FunctionInfo*> functionLookupCache_;
     mutable std::unordered_map<std::string, bool> arrayStructReceiverCache_;
     mutable std::unordered_map<std::string, bool> structDeallocateCache_;
+    mutable bool lineFeatureCacheValid_ = false;
+    mutable std::string lineFeatureCacheLine_;
+    mutable const StructInfo* lineFeatureCacheStruct_ = nullptr;
+    mutable const std::unordered_map<std::string, std::string>* lineFeatureCacheLocalTypes_ = nullptr;
+    mutable LineFeatures lineFeatureCacheValue_;
     const Decl* mainFunction_ = nullptr;
     const Decl* mainContainer_ = nullptr;
 };

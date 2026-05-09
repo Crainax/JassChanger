@@ -219,6 +219,26 @@ std::string callbackTargetInLine(const std::string& text) {
     return {};
 }
 
+bool isValidJassFunctionStatementShape(std::string_view statement) {
+    std::string t = trim(statement);
+    while (startsWithWord(t, "debug")) {
+        t = trim(std::string_view(t).substr(5));
+    }
+    if (t.empty()) {
+        return true;
+    }
+    if (startsWithWord(t, "local") ||
+        startsWithWord(t, "set") ||
+        startsWithWord(t, "call") ||
+        startsWithWord(t, "return") ||
+        startsWithWord(t, "if") ||
+        startsWithWord(t, "elseif") ||
+        startsWithWord(t, "exitwhen")) {
+        return true;
+    }
+    return t == "else" || t == "endif" || t == "loop" || t == "endloop";
+}
+
 bool hasInlineZincControlResidue(const std::string& text) {
     std::string t = trim(text);
     if (!startsWithWord(t, "if")) {
@@ -778,6 +798,9 @@ OutputSyntaxReport analyzeOutputSyntaxLite(std::string_view output) {
             continue;
         }
         if (inFunction) {
+            if (!isValidJassFunctionStatementShape(t)) {
+                addIssue(report, "statementShape", lineNo, "invalid JASS statement shape", line);
+            }
             if (startsWithWord(t, "local")) {
                 if (hasTopLevelComma(trim(std::string_view(t).substr(5)))) {
                     ValidationIssue issue{"commaSeparatedLocal", lineNo, "comma-separated local declaration remains", trim(line)};
@@ -835,6 +858,38 @@ OutputSyntaxReport analyzeOutputSyntaxLite(std::string_view output) {
         });
     }
     return report;
+}
+
+std::vector<ValidationIssue> findInvalidJassStatementShapes(std::string_view output) {
+    std::vector<ValidationIssue> issues;
+    std::istringstream in{std::string(output)};
+    std::string line;
+    bool inFunction = false;
+    size_t functionDepth = 0;
+    size_t lineNo = 0;
+    while (std::getline(in, line)) {
+        ++lineNo;
+        std::string t = trim(stripProtected(line));
+        if (t.empty()) {
+            continue;
+        }
+        if (startsWithWord(t, "function")) {
+            inFunction = true;
+            ++functionDepth;
+            continue;
+        }
+        if (startsWithWord(t, "endfunction")) {
+            if (functionDepth > 0) {
+                --functionDepth;
+            }
+            inFunction = functionDepth > 0;
+            continue;
+        }
+        if (inFunction && !isValidJassFunctionStatementShape(t)) {
+            issues.push_back(ValidationIssue{"statementShape", lineNo, "invalid JASS statement shape", trim(line)});
+        }
+    }
+    return issues;
 }
 
 InitValidationReport analyzeInitIntegrity(std::string_view output) {

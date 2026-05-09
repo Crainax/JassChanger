@@ -219,6 +219,8 @@ int main(int argc, char** argv) {
     ok = runExpectFail(exe, fixtures, outDir, "phase4_negative_signature_mismatch", "") && ok;
     ok = runExpectFail(exe, fixtures, outDir, "phase4_negative_evaluate_on_nothing", "") && ok;
     ok = runExpectFail(exe, fixtures, outDir, "phase4_negative_capturing_lambda", "") && ok;
+    ok = runExpectFail(exe, fixtures, outDir, "phase17_negative_bare_expression_statement", "--mode fast") && ok;
+    ok = runExpectFail(exe, fixtures, outDir, "phase17_negative_zinc_member_literal", "--mode fast") && ok;
 
     fs::path stats = outDir / "09.stats.json";
     std::string scan = exe.string() + " " + quote(fixtures / "09_unsupported_struct.in.j") +
