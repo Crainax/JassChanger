@@ -614,11 +614,11 @@ Step 11: 写 docs/phase17_status.md。
 [x] ctest pass
 [x] standalone validate PJASS pass groupedCount == 0
 [x] standalone full-validation PJASS pass groupedCount == 0
-[ ] standalone fast total <= 17000 ms
+[x] standalone fast total <= 17000 ms (`7323 ms`)
 [x] standalone validate total <= 22000 ms
-[ ] emitStructSupport.sourceMethods <= 8000 ms
+[x] emitStructSupport.sourceMethods <= 8000 ms (`2070-2171 ms` standalone, `2308 ms` ALPHA validate)
 [x] arrayAccessRewriteAttempts <= 60000
-[ ] War3Lib ALPHA validate totalCompileMs <= 30000 ms
+[x] War3Lib ALPHA validate totalCompileMs <= 30000 ms (`19633 ms`)
 [x] War3Lib ALPHA fast compare 能真实记录 vjassc fast vs jasshelper
 [x] docs/phase17_status.md 已提交
 ```

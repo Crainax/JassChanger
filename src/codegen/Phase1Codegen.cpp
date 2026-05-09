@@ -5093,7 +5093,17 @@ std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
             const bool textHasThis = text.find("this") != std::string::npos;
             const bool textHasThistype = text.find("thistype") != std::string::npos;
             const bool textHasDot = text.find('.') != std::string::npos;
-            for (const auto& field : currentStruct->fields) {
+            std::vector<const FieldInfo*> fieldsToRewrite;
+            if (initialFeatures.hasGeneratedStructPrefix) {
+                fieldsToRewrite.reserve(currentStruct->fields.size());
+                for (const auto& field : currentStruct->fields) {
+                    fieldsToRewrite.push_back(&field);
+                }
+            } else {
+                fieldsToRewrite = initialFeatures.currentStructFields;
+            }
+            for (const FieldInfo* fieldPtr : fieldsToRewrite) {
+                const auto& field = *fieldPtr;
                 if (text.find(field.name) == std::string::npos) {
                     if (text.find(field.generatedName) == std::string::npos) {
                         continue;
@@ -5169,7 +5179,17 @@ std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
                     text = replaceRegex(text, R"((^|[^A-Za-z0-9_$)\]])\.\s*)" + regexEscape(field.name) + R"(\b)", "$1" + access);
                 }
             }
-            for (const auto& method : currentStruct->methods) {
+            std::vector<const MethodInfo*> methodsToRewrite;
+            if (initialFeatures.hasGeneratedStructPrefix) {
+                methodsToRewrite.reserve(currentStruct->methods.size());
+                for (const auto& method : currentStruct->methods) {
+                    methodsToRewrite.push_back(&method);
+                }
+            } else {
+                methodsToRewrite = initialFeatures.currentStructMethods;
+            }
+            for (const MethodInfo* methodPtr : methodsToRewrite) {
+                const auto& method = *methodPtr;
                 if (text.find(method.name) == std::string::npos &&
                     text.find(method.generatedName) == std::string::npos &&
                     text.find("thistype") == std::string::npos) {
@@ -5716,6 +5736,30 @@ Phase1Codegen::LineFeatures Phase1Codegen::scanLineFeatures(
     features.hasGeneratedStructPrefix = line.find("s__") != std::string::npos ||
                                         line.find("sc__") != std::string::npos ||
                                         line.find("si__") != std::string::npos;
+    auto addCurrentStructMember = [&](std::string_view name) {
+        if (!currentStruct) {
+            return false;
+        }
+        std::string key(name);
+        bool matched = false;
+        if (auto fieldIt = currentStruct->fieldIndex.find(key); fieldIt != currentStruct->fieldIndex.end()) {
+            const FieldInfo* field = &currentStruct->fields[fieldIt->second];
+            if (std::find(features.currentStructFields.begin(), features.currentStructFields.end(), field) ==
+                features.currentStructFields.end()) {
+                features.currentStructFields.push_back(field);
+            }
+            matched = true;
+        }
+        if (auto methodIt = currentStruct->methodIndex.find(key); methodIt != currentStruct->methodIndex.end()) {
+            const MethodInfo* method = &currentStruct->methods[methodIt->second];
+            if (std::find(features.currentStructMethods.begin(), features.currentStructMethods.end(), method) ==
+                features.currentStructMethods.end()) {
+                features.currentStructMethods.push_back(method);
+            }
+            matched = true;
+        }
+        return matched;
+    };
     bool inString = false;
     bool inRaw = false;
     bool escaped = false;
@@ -5776,9 +5820,7 @@ Phase1Codegen::LineFeatures Phase1Codegen::scanLineFeatures(
             } else if (member == "execute" || member == "evaluate") {
                 features.hasExecuteEvaluate = true;
             }
-            if (currentStruct &&
-                (currentStruct->fieldIndex.find(std::string(member)) != currentStruct->fieldIndex.end() ||
-                 currentStruct->methodIndex.find(std::string(member)) != currentStruct->methodIndex.end())) {
+            if (addCurrentStructMember(member)) {
                 features.hasPossibleStructMember = true;
             }
             i = std::max(i + 1, nameEnd);
@@ -5828,8 +5870,7 @@ Phase1Codegen::LineFeatures Phase1Codegen::scanLineFeatures(
                 features.hasPossibleStructMember = true;
             } else if (localTypes && localTypes->find(std::string(word)) != localTypes->end()) {
                 continue;
-            } else if (currentStruct->fieldIndex.find(std::string(word)) != currentStruct->fieldIndex.end() ||
-                       currentStruct->methodIndex.find(std::string(word)) != currentStruct->methodIndex.end()) {
+            } else if (addCurrentStructMember(word)) {
                 features.hasPossibleStructMember = true;
             }
         }
@@ -5991,12 +6032,7 @@ std::string Phase1Codegen::lowerFunctionValue(std::string expression,
         };
         return rewriteOutsideProtected(text, rewriteNormal);
     };
-    std::string structLowered = rewriteStructExpression(expression,
-                                                        ctx.currentStruct,
-                                                        ctx.localTypes ? *ctx.localTypes : std::unordered_map<std::string, std::string>{});
-    std::string lowered = rewriteFunctionNames(std::move(structLowered), ctx.currentStruct);
-    lowered = rewriteExplicitInterfaceReferences(std::move(lowered));
-    return rewriteCallArguments(std::move(lowered), ctx, prelude);
+    return rewriteExplicitInterfaceReferences(std::move(expression));
 }
 
 std::string Phase1Codegen::rewriteFunctionNames(std::string expression, const StructInfo* currentStruct) const {
@@ -6323,9 +6359,23 @@ std::string Phase1Codegen::lowerExpression(std::string expression,
         break;
     }
     expression = rewriteFunctionNames(expression, ctx.currentStruct);
+    std::string beforeStructExpression = expression;
     expression = rewriteStructExpression(expression, ctx.currentStruct, ctx.localTypes ? *ctx.localTypes : std::unordered_map<std::string, std::string>{});
     expression = rewriteArrayAccesses(expression, ctx.localArrayShapes);
+    if (expression != beforeStructExpression && expression.find('.') != std::string::npos) {
+        expression = rewriteStructExpression(expression,
+                                             ctx.currentStruct,
+                                             ctx.localTypes ? *ctx.localTypes : std::unordered_map<std::string, std::string>{});
+        expression = rewriteArrayAccesses(expression, ctx.localArrayShapes);
+    }
+    std::string beforeCallArguments = expression;
     expression = rewriteCallArguments(expression, ctx, prelude);
+    if (expression != beforeCallArguments && expression.find('.') != std::string::npos) {
+        expression = rewriteStructExpression(expression,
+                                             ctx.currentStruct,
+                                             ctx.localTypes ? *ctx.localTypes : std::unordered_map<std::string, std::string>{});
+        expression = rewriteArrayAccesses(expression, ctx.localArrayShapes);
+    }
     return trim(expression);
 }
 

@@ -202,6 +202,8 @@ private:
         bool hasPossibleStructMember = false;
         bool hasGeneratedStructPrefix = false;
         bool hasStringOrRawcode = false;
+        std::vector<const FieldInfo*> currentStructFields;
+        std::vector<const MethodInfo*> currentStructMethods;
     };
 
     void emitGlobals(const Program& program, const LibraryGraphResult& graph);
