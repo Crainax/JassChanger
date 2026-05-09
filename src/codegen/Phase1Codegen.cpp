@@ -31,6 +31,16 @@ bool isIdentPart(char c);
 bool containsIdentifierWord(std::string_view text, std::string_view word);
 std::string commentMissingInitTriggerCalls(std::string output);
 
+bool mayContainAnonymousFunction(const std::vector<std::string>& lines) {
+    for (const auto& line : lines) {
+        if (line.find("function") != std::string::npos &&
+            line.find('(') != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
 std::string removeSemicolon(std::string text) {
     text = trim(text);
     if (!text.empty() && text.back() == ';') {
@@ -96,7 +106,11 @@ std::string normalizeOperatorsOutsideProtected(const std::string& line) {
 }
 
 std::string sanitizeGeneratedLine(const std::string& line) {
-    std::string text = removeSemicolonsOutsideProtected(line);
+    if (line.find_first_of(";&|!") == std::string::npos &&
+        line.find("not") == std::string::npos) {
+        return line;
+    }
+    std::string text = line.find(';') == std::string::npos ? line : removeSemicolonsOutsideProtected(line);
     if (text.find('&') == std::string::npos &&
         text.find('|') == std::string::npos &&
         text.find('!') == std::string::npos &&
@@ -322,17 +336,21 @@ std::string blankStringRawcodeAndComment(const std::string& line) {
 void addFunctionDependency(std::set<std::string>& deps,
                            const std::unordered_map<std::string, size_t>& functionIndex,
                            const std::string& current,
-                           const std::string& candidate) {
+                           const std::string& candidate,
+                           CodegenPerformanceCounters* counters) {
     if (candidate.empty() || candidate == current) {
         return;
     }
     if (functionIndex.find(candidate) != functionIndex.end()) {
-        deps.insert(candidate);
+        if (deps.insert(candidate).second && counters) {
+            ++counters->functionOrderEdges;
+        }
     }
 }
 
 std::set<std::string> extractFunctionDependencies(const FunctionBlock& block,
-                                                  const std::unordered_map<std::string, size_t>& functionIndex) {
+                                                  const std::unordered_map<std::string, size_t>& functionIndex,
+                                                  CodegenPerformanceCounters* counters) {
     std::set<std::string> deps;
     auto identStart = [](char c) {
         return std::isalpha(static_cast<unsigned char>(c)) || c == '_' || c == '$';
@@ -344,6 +362,9 @@ std::set<std::string> extractFunctionDependencies(const FunctionBlock& block,
         "function", "if", "call", "set", "return", "loop", "exitwhen",
     };
     for (size_t i = 1; i < block.lines.size(); ++i) {
+        if (counters) {
+            ++counters->functionOrderTokenScans;
+        }
         std::string code = blankStringRawcodeAndComment(block.lines[i]);
         for (size_t pos = 0; pos < code.size();) {
             if (!identStart(code[pos])) {
@@ -365,7 +386,7 @@ std::set<std::string> extractFunctionDependencies(const FunctionBlock& block,
                     while (targetEnd < code.size() && identPart(code[targetEnd])) {
                         ++targetEnd;
                     }
-                    addFunctionDependency(deps, functionIndex, block.name, code.substr(targetStart, targetEnd - targetStart));
+                    addFunctionDependency(deps, functionIndex, block.name, code.substr(targetStart, targetEnd - targetStart), counters);
                     pos = targetEnd;
                 }
                 continue;
@@ -378,7 +399,7 @@ std::set<std::string> extractFunctionDependencies(const FunctionBlock& block,
                 pos = open;
                 continue;
             }
-            addFunctionDependency(deps, functionIndex, block.name, name);
+            addFunctionDependency(deps, functionIndex, block.name, name, counters);
         }
     }
     return deps;
@@ -1230,7 +1251,7 @@ void ensureFunctionInterfaceInitCall(std::vector<FunctionBlock>& blocks) {
     }
 }
 
-std::string orderFunctionBlocksForPjass(const std::string& output) {
+std::string orderFunctionBlocksForPjass(const std::string& output, CodegenPerformanceCounters* counters) {
     std::vector<std::string> lines;
     std::istringstream in(output);
     std::string line;
@@ -1284,7 +1305,7 @@ std::string orderFunctionBlocksForPjass(const std::string& output) {
         }
     }
     for (auto& block : blocks) {
-        block.dependencies = extractFunctionDependencies(block, functionIndex);
+        block.dependencies = extractFunctionDependencies(block, functionIndex, counters);
     }
 
     std::set<std::pair<size_t, size_t>> cyclicEdges;
@@ -1312,6 +1333,34 @@ std::string orderFunctionBlocksForPjass(const std::string& output) {
     };
     for (size_t i = 0; i < blocks.size(); ++i) {
         findCycles(i);
+    }
+    if (counters && !cyclicEdges.empty()) {
+        std::unordered_map<size_t, std::vector<size_t>> cycleGraph;
+        for (const auto& [from, to] : cyclicEdges) {
+            cycleGraph[from].push_back(to);
+            cycleGraph[to].push_back(from);
+        }
+        std::unordered_set<size_t> visitedCycleNodes;
+        for (const auto& [node, _] : cycleGraph) {
+            if (!visitedCycleNodes.insert(node).second) {
+                continue;
+            }
+            ++counters->functionOrderSccCount;
+            std::vector<size_t> stack{node};
+            while (!stack.empty()) {
+                size_t current = stack.back();
+                stack.pop_back();
+                auto it = cycleGraph.find(current);
+                if (it == cycleGraph.end()) {
+                    continue;
+                }
+                for (size_t next : it->second) {
+                    if (visitedCycleNodes.insert(next).second) {
+                        stack.push_back(next);
+                    }
+                }
+            }
+        }
     }
 
     std::set<std::pair<size_t, size_t>> rewriteEdges;
@@ -1410,7 +1459,7 @@ std::string orderFunctionBlocksForPjass(const std::string& output) {
             }
         }
         for (auto& block : blocks) {
-            block.dependencies = extractFunctionDependencies(block, functionIndex);
+            block.dependencies = extractFunctionDependencies(block, functionIndex, counters);
         }
     } else if (runtimeBridgeChanged || !methodCallerRequests.empty()) {
         insertMethodCallerGlobals(prefix, methodCallerRequests);
@@ -1423,11 +1472,11 @@ std::string orderFunctionBlocksForPjass(const std::string& output) {
             }
         }
         for (auto& block : blocks) {
-            block.dependencies = extractFunctionDependencies(block, functionIndex);
+            block.dependencies = extractFunctionDependencies(block, functionIndex, counters);
         }
     } else if (cycleRewriteChanged) {
         for (auto& block : blocks) {
-            block.dependencies = extractFunctionDependencies(block, functionIndex);
+            block.dependencies = extractFunctionDependencies(block, functionIndex, counters);
         }
     }
 
@@ -2858,9 +2907,32 @@ CodegenResult Phase1Codegen::generate(const Program& program) {
              "functionOrdering",
              "emitGlobals",
              "emitFunctions",
+             "emitFunctions.total",
+             "emitFunctions.jassFunctions",
+             "emitFunctions.zincFunctions",
+             "emitFunctions.lambdaEmit",
+             "emitFunctions.functionInterfaceRuntime",
+             "emitFunctions.bodyLowering",
              "emitStructSupport",
+             "emitStructSupport.total",
+             "emitStructSupport.generatedHelpers",
+             "emitStructSupport.sourceMethods",
+             "emitStructSupport.methodBodyLowering",
+             "emitStructSupport.generatedBodyLowering",
+             "emitStructSupport.fixedArraySupport",
+             "emitStructSupport.lifecycleSupport",
              "emitFunctionInterfaceRuntime",
+             "lowering.rewriteReceiverChains",
+             "lowering.rewriteStructExpression",
+             "lowering.rewriteArrayAccesses",
+             "lowering.rewriteCallArguments",
+             "lowering.lowerExpression",
+             "lowering.rewriteFunctionNames",
+             "lowering.rewriteForContainer",
              "finalOutputValidationPrep",
+             "validation.syntaxLiteForwardScan",
+             "validation.syntaxLiteResidueScan",
+             "validation.finalOutputValidationPrep",
          }) {
         passTimings_[name] = 0;
     }
@@ -2941,6 +3013,7 @@ CodegenResult Phase1Codegen::generate(const Program& program) {
     recordPass("emitTypesAndNatives", [&]() { emitTypesAndNatives(program, graphResult); });
     writer_.writeln();
     recordPass("emitFunctions", [&]() { emitFunctions(program, graphResult); });
+    passTimings_["emitFunctions.total"] = passTimings_["emitFunctions"];
 
     return makeResult(!diagnostics_.hasErrors());
 }
@@ -2961,7 +3034,7 @@ CodegenResult Phase1Codegen::makeResult(bool ok) {
         result.output = commentMissingInitTriggerCalls(std::move(result.output));
         auto sanitized = std::chrono::steady_clock::now();
         result.output = adaptFunctionInterfaceCallbacksBySignature(result.output);
-        result.output = orderFunctionBlocksForPjass(result.output);
+        result.output = orderFunctionBlocksForPjass(result.output, &performanceCounters_);
         auto ordered = std::chrono::steady_clock::now();
         long long sanitizeMs = std::chrono::duration_cast<std::chrono::milliseconds>(sanitized - start).count();
         long long orderingMs = std::chrono::duration_cast<std::chrono::milliseconds>(ordered - sanitized).count();
@@ -3133,7 +3206,9 @@ void Phase1Codegen::emitFunctions(const Program& program, const LibraryGraphResu
         }
     }
     recordPass("lowerLambdas", [&]() { emitGeneratedLambdas(); });
+    passTimings_["emitFunctions.lambdaEmit"] += passTimings_["lowerLambdas"];
     recordPass("emitFunctionInterfaceRuntime", [&]() { emitFunctionInterfaceRuntime(); });
+    passTimings_["emitFunctions.functionInterfaceRuntime"] += passTimings_["emitFunctionInterfaceRuntime"];
     recordPass("emitInitHelper", [&]() { emitInitHelper(graph, program); });
     if (mainFunction_) {
         emitJassFunction(*mainFunction_, mainContainer_, true);
@@ -3186,7 +3261,9 @@ void Phase1Codegen::emitJassFunction(const Decl& decl, const Decl* container, bo
     const Decl* prevLambdaContainer = lambdaContextContainer_;
     lambdaContextStruct_ = nullptr;
     lambdaContextContainer_ = container;
-    rawLines = extractZincLambdas(rawLines, decl.loc);
+    if (mayContainAnonymousFunction(rawLines)) {
+        rawLines = extractZincLambdas(rawLines, decl.loc);
+    }
     lambdaContextStruct_ = prevLambdaStruct;
     lambdaContextContainer_ = prevLambdaContainer;
     for (const auto& rawLine : rawLines) {
@@ -3304,7 +3381,9 @@ void Phase1Codegen::emitZincFunction(const Decl& decl, const Decl* container) {
     const Decl* prevLambdaContainer = lambdaContextContainer_;
     lambdaContextStruct_ = nullptr;
     lambdaContextContainer_ = container;
-    std::vector<std::string> bodyLines = extractZincLambdas(rawBodyLines, decl.loc);
+    std::vector<std::string> bodyLines = mayContainAnonymousFunction(rawBodyLines)
+        ? extractZincLambdas(rawBodyLines, decl.loc)
+        : rawBodyLines;
     lambdaContextStruct_ = prevLambdaStruct;
     lambdaContextContainer_ = prevLambdaContainer;
     std::vector<std::string> tempLocals;
@@ -3456,34 +3535,40 @@ void Phase1Codegen::emitStructFunctions() {
 }
 
 void Phase1Codegen::emitStructSupportFunctions(const StructInfo& info) {
+    auto recordPass = [this](const std::string& name, auto&& fn) {
+        auto start = std::chrono::steady_clock::now();
+        fn();
+        auto end = std::chrono::steady_clock::now();
+        passTimings_[name] += std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+    };
+    auto totalStart = std::chrono::steady_clock::now();
     const MethodInfo* customCreate = findMethod(info, "create");
     bool needsDeallocate = structUsesDeallocate(info);
     std::unordered_set<const MethodDecl*> emittedBeforeDestroy;
+    recordPass("emitStructSupport.generatedHelpers", [&]() { emitStructGeneratedSupport(info, customCreate); });
+    long long sourceBefore = passTimings_["emitStructSupport.sourceMethods"];
+    recordPass("emitStructSupport.sourceMethods", [&]() { emitStructSourceMethods(info, emittedBeforeDestroy, true); });
+    passTimings_["emitStructSupport.methodBodyLowering"] += passTimings_["emitStructSupport.sourceMethods"] - sourceBefore;
+    recordPass("emitStructSupport.lifecycleSupport", [&]() {
+        emitStructLifecycleSupport(info, emittedBeforeDestroy, needsDeallocate);
+    });
+    sourceBefore = passTimings_["emitStructSupport.sourceMethods"];
+    recordPass("emitStructSupport.sourceMethods", [&]() { emitStructSourceMethods(info, emittedBeforeDestroy, false); });
+    passTimings_["emitStructSupport.methodBodyLowering"] += passTimings_["emitStructSupport.sourceMethods"] - sourceBefore;
+    auto totalEnd = std::chrono::steady_clock::now();
+    passTimings_["emitStructSupport.total"] += std::chrono::duration_cast<std::chrono::milliseconds>(totalEnd - totalStart).count();
+}
+
+void Phase1Codegen::emitStructGeneratedSupport(const StructInfo& info, const MethodInfo* customCreate) {
+    if (info.isArrayStruct) {
+        return;
+    }
+    size_t beforeLines = writer_.lineCount();
+    auto emitStructWarning = [&](const std::string& message) {
+        writer_.writeln("call DisplayTimedTextToPlayer(GetLocalPlayer(),0,0,1000.,\"" + message + "\")");
+    };
     if (!info.isArrayStruct) {
         const int instanceLimit = structInstanceLimit(info);
-        auto emitStructWarning = [&](const std::string& message) {
-            writer_.writeln("call DisplayTimedTextToPlayer(GetLocalPlayer(),0,0,1000.,\"" + message + "\")");
-        };
-        auto emitDestroyGuard = [&]() {
-            if (!options_.warnMode) {
-                return;
-            }
-            writer_.writeln("if this==null then");
-            writer_.indent();
-            emitStructWarning("Attempt to destroy a null struct of type: " + info.generatedName);
-            writer_.writeln("return");
-            writer_.dedent();
-            writer_.writeln("elseif (si__" + info.generatedName + "_V[this]!=-1) then");
-            writer_.indent();
-            emitStructWarning("Double free of type: " + info.generatedName);
-            writer_.writeln("return");
-            writer_.dedent();
-            writer_.writeln("endif");
-        };
-        auto emitRecycle = [&]() {
-            writer_.writeln("set si__" + info.generatedName + "_V[this]=si__" + info.generatedName + "_F");
-            writer_.writeln("set si__" + info.generatedName + "_F=this");
-        };
         writer_.writeln("function " + info.prefix + "__allocate takes nothing returns integer");
         writer_.indent();
         writer_.writeln("local integer this=si__" + info.generatedName + "_F");
@@ -3524,49 +3609,87 @@ void Phase1Codegen::emitStructSupportFunctions(const StructInfo& info) {
             writer_.writeln("endfunction");
             writer_.writeln();
         }
+    }
+    performanceCounters_.generatedSupportLinesEmitted += writer_.lineCount() - beforeLines;
+    performanceCounters_.linesSkippedGeneratedSupport += writer_.lineCount() - beforeLines;
+}
 
-        for (const auto& method : info.methods) {
-            if (method.isOnDestroy) {
-                emitStructMethod(info, method);
-                writer_.writeln();
-                emittedBeforeDestroy.insert(method.decl);
-            }
+void Phase1Codegen::emitStructLifecycleSupport(const StructInfo& info,
+                                               const std::unordered_set<const MethodDecl*>&,
+                                               bool needsDeallocate) {
+    if (info.isArrayStruct) {
+        return;
+    }
+    auto emitStructWarning = [&](const std::string& message) {
+        writer_.writeln("call DisplayTimedTextToPlayer(GetLocalPlayer(),0,0,1000.,\"" + message + "\")");
+    };
+    auto emitDestroyGuard = [&]() {
+        if (!options_.warnMode) {
+            return;
         }
+        writer_.writeln("if this==null then");
+        writer_.indent();
+        emitStructWarning("Attempt to destroy a null struct of type: " + info.generatedName);
+        writer_.writeln("return");
+        writer_.dedent();
+        writer_.writeln("elseif (si__" + info.generatedName + "_V[this]!=-1) then");
+        writer_.indent();
+        emitStructWarning("Double free of type: " + info.generatedName);
+        writer_.writeln("return");
+        writer_.dedent();
+        writer_.writeln("endif");
+    };
+    auto emitRecycle = [&]() {
+        writer_.writeln("set si__" + info.generatedName + "_V[this]=si__" + info.generatedName + "_F");
+        writer_.writeln("set si__" + info.generatedName + "_F=this");
+    };
+    size_t beforeLines = writer_.lineCount();
 
-        if (needsDeallocate) {
-            writer_.writeln("function " + info.prefix + "_deallocate takes integer this returns nothing");
-            writer_.indent();
-            emitDestroyGuard();
-            emitRecycle();
-            writer_.dedent();
-            writer_.writeln("endfunction");
-            writer_.writeln();
-        }
-
-        writer_.writeln("function " + info.prefix + "_destroy takes integer this returns nothing");
+    if (needsDeallocate) {
+        writer_.writeln("function " + info.prefix + "_deallocate takes integer this returns nothing");
         writer_.indent();
         emitDestroyGuard();
-        for (const auto& method : info.methods) {
-            if (method.isOnDestroy) {
-                writer_.writeln("call " + method.generatedName + "(this)");
-            }
-        }
-        if (needsDeallocate) {
-            writer_.writeln("call " + info.prefix + "_deallocate(this)");
-        } else {
-            emitRecycle();
-        }
+        emitRecycle();
         writer_.dedent();
         writer_.writeln("endfunction");
         writer_.writeln();
     }
 
+    writer_.writeln("function " + info.prefix + "_destroy takes integer this returns nothing");
+    writer_.indent();
+    emitDestroyGuard();
     for (const auto& method : info.methods) {
-        if (emittedBeforeDestroy.contains(method.decl)) {
+        if (method.isOnDestroy) {
+            writer_.writeln("call " + method.generatedName + "(this)");
+        }
+    }
+    if (needsDeallocate) {
+        writer_.writeln("call " + info.prefix + "_deallocate(this)");
+    } else {
+        emitRecycle();
+    }
+    writer_.dedent();
+    writer_.writeln("endfunction");
+    writer_.writeln();
+    performanceCounters_.generatedSupportLinesEmitted += writer_.lineCount() - beforeLines;
+    performanceCounters_.linesSkippedGeneratedSupport += writer_.lineCount() - beforeLines;
+}
+
+void Phase1Codegen::emitStructSourceMethods(const StructInfo& info,
+                                            std::unordered_set<const MethodDecl*>& emittedBeforeDestroy,
+                                            bool onDestroyOnly) {
+    for (const auto& method : info.methods) {
+        if (onDestroyOnly != method.isOnDestroy) {
+            continue;
+        }
+        if (!onDestroyOnly && emittedBeforeDestroy.contains(method.decl)) {
             continue;
         }
         emitStructMethod(info, method);
         writer_.writeln();
+        if (method.isOnDestroy) {
+            emittedBeforeDestroy.insert(method.decl);
+        }
         if (method.isOnInit) {
             structInitializers_.push_back({method.generatedName, info.libraryContainer});
         }
@@ -3596,7 +3719,9 @@ void Phase1Codegen::emitStructMethod(const StructInfo& info, const MethodInfo& m
     const Decl* prevLambdaContainer = lambdaContextContainer_;
     lambdaContextStruct_ = &info;
     lambdaContextContainer_ = info.container;
-    rawLines = extractZincLambdas(rawLines, method.decl->loc);
+    if (mayContainAnonymousFunction(rawLines)) {
+        rawLines = extractZincLambdas(rawLines, method.decl->loc);
+    }
     lambdaContextStruct_ = prevLambdaStruct;
     lambdaContextContainer_ = prevLambdaContainer;
     std::vector<std::string> lines = method.decl->mode == SyntaxMode::Zinc ? lowerZincBody(rawLines) : rawLines;
@@ -4025,7 +4150,8 @@ void Phase1Codegen::collectFunctions(const std::vector<Decl>& decls, const Decl*
                     auto registerSupportFunction = [&](std::string sourceName,
                                                        std::string finalName,
                                                        std::vector<std::string> paramTypes,
-                                                       std::string returnType) {
+                                                       std::string returnType,
+                                                       GeneratedKind generatedKind) {
                         if (functionIndexByName_.contains(finalName)) {
                             return;
                         }
@@ -4034,20 +4160,37 @@ void Phase1Codegen::collectFunctions(const std::vector<Decl>& decls, const Decl*
                         fn.finalName = std::move(finalName);
                         fn.signature.paramTypes = std::move(paramTypes);
                         fn.signature.returnType = std::move(returnType);
+                        fn.generatedKind = generatedKind;
                         size_t index = functions_.size();
                         functions_.push_back(std::move(fn));
                         functionIndexByName_[functions_[index].sourceName] = index;
                         functionIndexByName_[functions_[index].finalName] = index;
                     };
                     const MethodInfo* customCreate = findMethod(*info, "create");
-                    registerSupportFunction(info->originalName + ".allocate", info->prefix + "__allocate", {}, info->originalName);
+                    registerSupportFunction(info->originalName + ".allocate",
+                                            info->prefix + "__allocate",
+                                            {},
+                                            info->originalName,
+                                            GeneratedKind::StructAllocate);
                     if (!customCreate || !customCreate->isStatic) {
-                        registerSupportFunction(info->originalName + ".create", info->prefix + "_create", {}, info->originalName);
+                        registerSupportFunction(info->originalName + ".create",
+                                                info->prefix + "_create",
+                                                {},
+                                                info->originalName,
+                                                GeneratedKind::StructCreate);
                     }
                     if (structUsesDeallocate(*info)) {
-                        registerSupportFunction(info->originalName + ".deallocate", info->prefix + "_deallocate", {info->originalName}, "nothing");
+                        registerSupportFunction(info->originalName + ".deallocate",
+                                                info->prefix + "_deallocate",
+                                                {info->originalName},
+                                                "nothing",
+                                                GeneratedKind::StructDeallocate);
                     }
-                    registerSupportFunction(info->originalName + ".destroy", info->prefix + "_destroy", {info->originalName}, "nothing");
+                    registerSupportFunction(info->originalName + ".destroy",
+                                            info->prefix + "_destroy",
+                                            {info->originalName},
+                                            "nothing",
+                                            GeneratedKind::StructDestroy);
                 }
             }
             continue;
@@ -4200,6 +4343,10 @@ int Phase1Codegen::structInstanceLimit(const StructInfo& info) const {
 std::string Phase1Codegen::rewriteArrayAccesses(
     const std::string& line,
     const std::unordered_map<std::string, ArrayShape>* localArrayShapes) const {
+    if (line.find('[') == std::string::npos) {
+        return line;
+    }
+    ++performanceCounters_.arrayAccessRewriteAttempts;
     std::string out;
     out.reserve(line.size());
     bool inString = false;
@@ -4314,6 +4461,9 @@ std::string Phase1Codegen::rewriteArrayAccesses(
             out += "[" + stripRedundantOuterParens(indexes[extra]) + "]";
         }
         i = cursor;
+    }
+    if (out != line) {
+        ++performanceCounters_.arrayAccessRewriteChanged;
     }
     return out;
 }
@@ -4471,41 +4621,17 @@ std::vector<std::string> Phase1Codegen::rewriteLocalDeclLine(const std::string& 
 std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
                                                    const StructInfo* currentStruct,
                                                    const std::unordered_map<std::string, std::string>& localTypes) const {
-    auto hasCurrentStructMemberCandidate = [&]() {
-        if (!currentStruct) {
-            return false;
-        }
-        for (size_t pos = 0; pos < line.size();) {
-            if (!isIdentStart(line[pos])) {
-                ++pos;
-                continue;
-            }
-            size_t start = pos++;
-            while (pos < line.size() && isIdentPart(line[pos])) {
-                ++pos;
-            }
-            std::string_view name(line.data() + start, pos - start);
-            if (name == "thistype" || name == "allocate" || name == "destroy" || name == "deallocate") {
-                return true;
-            }
-            if (localTypes.find(std::string(name)) != localTypes.end()) {
-                continue;
-            }
-            if (currentStruct->fieldIndex.find(std::string(name)) != currentStruct->fieldIndex.end() ||
-                currentStruct->methodIndex.find(std::string(name)) != currentStruct->methodIndex.end()) {
-                return true;
-            }
-        }
-        return false;
-    };
-    const bool hasMemberAccess = line.find('.') != std::string::npos;
-    const bool hasArrayReceiver = line.find('[') != std::string::npos;
-    const bool hasGeneratedStructPrefix = line.find("s__") != std::string::npos ||
-                                          line.find("sc__") != std::string::npos ||
-                                          line.find("si__") != std::string::npos;
-    const bool hasThistype = line.find("thistype") != std::string::npos;
+    LineFeatures initialFeatures = scanLineFeatures(line, currentStruct, &localTypes);
+    const bool hasMemberAccess = initialFeatures.hasDot;
+    const bool hasArrayReceiver = initialFeatures.hasBracket;
+    const bool hasGeneratedStructPrefix = initialFeatures.hasGeneratedStructPrefix;
+    const bool hasThistype = initialFeatures.hasThistype;
     if (!hasMemberAccess && !hasArrayReceiver && !hasGeneratedStructPrefix && !hasThistype &&
-        !hasCurrentStructMemberCandidate()) {
+        !initialFeatures.hasPossibleStructMember) {
+        ++performanceCounters_.linesSkippedNoDotBracketCall;
+        if (!currentStruct) {
+            ++performanceCounters_.linesSkippedNoCurrentStruct;
+        }
         return line;
     }
 
@@ -4539,11 +4665,99 @@ std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
             }
         }
         if (hasMemberAccess || hasGeneratedStructPrefix || hasArrayStructReceiver) {
-            for (size_t structIndex = 0; structIndex < structs_.size(); ++structIndex) {
-                const auto& info = structs_[structIndex];
-                if (hasArrayStructReceiver && !hasMemberAccess && !hasGeneratedStructPrefix && !info.isArrayStruct) {
-                    continue;
+            std::vector<const StructInfo*> structRewriteInfos;
+            std::unordered_set<const StructInfo*> seenStructRewriteInfos;
+            auto addStructRewriteInfo = [&](const StructInfo* info) {
+                if (info && seenStructRewriteInfos.insert(info).second) {
+                    structRewriteInfos.push_back(info);
                 }
+            };
+            if (hasGeneratedStructPrefix) {
+                for (const auto& info : structs_) {
+                    addStructRewriteInfo(&info);
+                }
+            } else {
+                if (currentStruct && text.find("thistype") != std::string::npos) {
+                    addStructRewriteInfo(currentStruct);
+                }
+                bool inString = false;
+                bool inRaw = false;
+                bool escaped = false;
+                for (size_t pos = 0; pos < text.size();) {
+                    if (!inString && !inRaw && pos + 1 < text.size() && text[pos] == '/' && text[pos + 1] == '/') {
+                        break;
+                    }
+                    char c = text[pos];
+                    if (inString) {
+                        if (escaped) {
+                            escaped = false;
+                        } else if (c == '\\') {
+                            escaped = true;
+                        } else if (c == '"') {
+                            inString = false;
+                        }
+                        ++pos;
+                        continue;
+                    }
+                    if (inRaw) {
+                        if (c == '\'') {
+                            inRaw = false;
+                        }
+                        ++pos;
+                        continue;
+                    }
+                    if (c == '"') {
+                        inString = true;
+                        ++pos;
+                        continue;
+                    }
+                    if (c == '\'') {
+                        inRaw = true;
+                        ++pos;
+                        continue;
+                    }
+                    if (!isIdentStart(c)) {
+                        ++pos;
+                        continue;
+                    }
+                    size_t nameStart = pos++;
+                    while (pos < text.size() && isIdentPart(text[pos])) {
+                        ++pos;
+                    }
+                    std::string receiverName = text.substr(nameStart, pos - nameStart);
+                    size_t cursor = pos;
+                    while (cursor < text.size() && std::isspace(static_cast<unsigned char>(text[cursor]))) {
+                        ++cursor;
+                    }
+                    bool sawReceiverIndex = false;
+                    while (cursor < text.size() && text[cursor] == '[') {
+                        size_t close = findMatchingBracketOutsideProtected(text, cursor);
+                        if (close == std::string::npos) {
+                            break;
+                        }
+                        sawReceiverIndex = true;
+                        cursor = close + 1;
+                        while (cursor < text.size() && std::isspace(static_cast<unsigned char>(text[cursor]))) {
+                            ++cursor;
+                        }
+                    }
+                    if (sawReceiverIndex || (cursor < text.size() && text[cursor] == '.')) {
+                        if (receiverName == "this" || receiverName == "thistype" ||
+                            receiverName == "function" || receiverName == "call" ||
+                            receiverName == "set" || receiverName == "return" ||
+                            localTypes.find(receiverName) != localTypes.end() ||
+                            globalStructTypes_.find(receiverName) != globalStructTypes_.end()) {
+                            continue;
+                        }
+                        auto structIt = structIndexByName_.find(receiverName);
+                        if (structIt != structIndexByName_.end()) {
+                            addStructRewriteInfo(&structs_[structIt->second]);
+                        }
+                    }
+                }
+            }
+            for (const StructInfo* infoPtr : structRewriteInfos) {
+                const auto& info = *infoPtr;
                 auto legacyStructPrefixPattern = [&](std::string_view prefix) {
                     std::string pattern = "\\b" + std::string(prefix) + regexEscape(info.originalName) + "_";
                     std::string scopedPrefix = info.originalName + "_";
@@ -4920,6 +5134,7 @@ std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
 }
 
 std::string Phase1Codegen::rewriteReceiverChains(const std::string& line, const StructInfo* currentStruct) const {
+    ++performanceCounters_.receiverChainAttempts;
     auto structForType = [&](const std::string& typeName, const StructInfo* activeStruct) -> const StructInfo* {
         if (typeName == "thistype") {
             return activeStruct;
@@ -5096,6 +5311,9 @@ std::string Phase1Codegen::rewriteReceiverChains(const std::string& line, const 
                 pos = open + 1;
             }
         }
+    }
+    if (text != line) {
+        ++performanceCounters_.receiverChainChanged;
     }
     return text;
 }
@@ -5323,6 +5541,156 @@ const Phase1Codegen::FunctionInterfaceInfo* Phase1Codegen::resolveReceiverInterf
 
 std::string Phase1Codegen::rewriteReceiverExpression(const std::string& receiver, const LoweringContext& ctx) const {
     return rewriteStructExpression(receiver, ctx.currentStruct, ctx.localTypes ? *ctx.localTypes : std::unordered_map<std::string, std::string>{});
+}
+
+Phase1Codegen::LineFeatures Phase1Codegen::scanLineFeatures(
+    const std::string& line,
+    const StructInfo* currentStruct,
+    const std::unordered_map<std::string, std::string>* localTypes) const {
+    ++performanceCounters_.lineFeatureScans;
+    LineFeatures features;
+    features.hasGeneratedStructPrefix = line.find("s__") != std::string::npos ||
+                                        line.find("sc__") != std::string::npos ||
+                                        line.find("si__") != std::string::npos;
+    bool inString = false;
+    bool inRaw = false;
+    bool escaped = false;
+    for (size_t i = 0; i < line.size();) {
+        if (!inString && !inRaw && i + 1 < line.size() && line[i] == '/' && line[i + 1] == '/') {
+            break;
+        }
+        char c = line[i];
+        if (inString) {
+            features.hasStringOrRawcode = true;
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                inString = false;
+            }
+            ++i;
+            continue;
+        }
+        if (inRaw) {
+            features.hasStringOrRawcode = true;
+            if (c == '\'') {
+                inRaw = false;
+            }
+            ++i;
+            continue;
+        }
+        if (c == '"') {
+            features.hasStringOrRawcode = true;
+            inString = true;
+            ++i;
+            continue;
+        }
+        if (c == '\'') {
+            features.hasStringOrRawcode = true;
+            inRaw = true;
+            ++i;
+            continue;
+        }
+        if (c == '.') {
+            size_t nameStart = i + 1;
+            while (nameStart < line.size() && std::isspace(static_cast<unsigned char>(line[nameStart]))) {
+                ++nameStart;
+            }
+            if (nameStart >= line.size() || !isIdentStart(line[nameStart])) {
+                ++i;
+                continue;
+            }
+            features.hasDot = true;
+            size_t nameEnd = nameStart;
+            while (nameEnd < line.size() && isIdentPart(line[nameEnd])) {
+                ++nameEnd;
+            }
+            std::string_view member(line.data() + nameStart, nameEnd - nameStart);
+            if (member == "name") {
+                features.hasNameToken = true;
+            } else if (member == "execute" || member == "evaluate") {
+                features.hasExecuteEvaluate = true;
+            }
+            i = std::max(i + 1, nameEnd);
+            continue;
+        }
+        if (c == '[') {
+            features.hasBracket = true;
+        } else if (c == '(') {
+            features.hasParen = true;
+        } else if (c == '&' || c == '|' || c == '!') {
+            features.hasBooleanOperators = true;
+        }
+        if (!isIdentStart(c)) {
+            ++i;
+            continue;
+        }
+        size_t start = i++;
+        while (i < line.size() && isIdentPart(line[i])) {
+            ++i;
+        }
+        std::string_view word(line.data() + start, i - start);
+        if (word == "call") {
+            features.hasCall = true;
+        } else if (word == "set") {
+            features.hasSet = true;
+        } else if (word == "local") {
+            features.hasLocal = true;
+        } else if (word == "return") {
+            features.hasReturn = true;
+        } else if (word == "function") {
+            features.hasFunctionKeyword = true;
+            size_t next = i;
+            while (next < line.size() && std::isspace(static_cast<unsigned char>(line[next]))) {
+                ++next;
+            }
+            if (next < line.size() && line[next] == '(') {
+                features.hasLambdaStart = true;
+            }
+        } else if (word == "this") {
+            features.hasThis = true;
+        } else if (word == "thistype") {
+            features.hasThistype = true;
+            features.hasPossibleStructMember = currentStruct != nullptr;
+        }
+        if (currentStruct) {
+            if (word == "allocate" || word == "destroy" || word == "deallocate") {
+                features.hasPossibleStructMember = true;
+            } else if (localTypes && localTypes->find(std::string(word)) != localTypes->end()) {
+                continue;
+            } else if (currentStruct->fieldIndex.find(std::string(word)) != currentStruct->fieldIndex.end() ||
+                       currentStruct->methodIndex.find(std::string(word)) != currentStruct->methodIndex.end()) {
+                features.hasPossibleStructMember = true;
+            }
+        }
+    }
+    return features;
+}
+
+bool Phase1Codegen::lineNeedsStructRewrite(const LineFeatures& features, const StructInfo* currentStruct) const {
+    return features.hasDot ||
+           features.hasBracket ||
+           features.hasThis ||
+           features.hasThistype ||
+           features.hasGeneratedStructPrefix ||
+           (currentStruct != nullptr && features.hasPossibleStructMember);
+}
+
+bool Phase1Codegen::lineNeedsExpressionLowering(const LineFeatures& features,
+                                                const std::string& expectedInterfaceType,
+                                                const LoweringContext& ctx) const {
+    if (!expectedInterfaceType.empty()) {
+        return true;
+    }
+    if (features.hasFunctionKeyword || features.hasLambdaStart || features.hasNameToken ||
+        features.hasExecuteEvaluate || features.hasBooleanOperators) {
+        return true;
+    }
+    if (features.hasParen) {
+        return true;
+    }
+    return lineNeedsStructRewrite(features, ctx.currentStruct);
 }
 
 std::string Phase1Codegen::inferUniqueFunctionInterfaceTypeForFunctionValue(const std::string& expression,
@@ -5662,7 +6030,18 @@ std::string Phase1Codegen::lowerExpression(std::string expression,
     if (expectedInterfaceType.empty() && ctx.currentStruct == nullptr &&
         expression.find_first_of(".[(") == std::string::npos &&
         !containsIdentifierWord(expression, "function")) {
+        ++performanceCounters_.linesSkippedNoDotBracketCall;
+        ++performanceCounters_.linesSkippedNoCurrentStruct;
         return expression;
+    }
+    if (expectedInterfaceType.empty() && ctx.currentStruct != nullptr &&
+        expression.find_first_of(".[(") == std::string::npos &&
+        !containsIdentifierWord(expression, "function")) {
+        LineFeatures features = scanLineFeatures(expression, ctx.currentStruct, ctx.localTypes);
+        if (!lineNeedsStructRewrite(features, ctx.currentStruct)) {
+            ++performanceCounters_.linesSkippedNoDotBracketCall;
+            return expression;
+        }
     }
     expression = lowerFunctionValue(expression, expectedInterfaceType, ctx, prelude);
     while (true) {
@@ -5768,6 +6147,9 @@ std::string Phase1Codegen::lowerExpression(std::string expression,
 std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& rawLine, LoweringContext& ctx) const {
     ++performanceCounters_.linesVisited;
     std::string line = trim(rawLine);
+    if (ctx.currentStruct) {
+        ++performanceCounters_.structMethodLinesLowered;
+    }
     std::string originalTrim = line;
     std::string leading;
     size_t firstNonSpace = rawLine.find_first_not_of(" \t");
@@ -5877,7 +6259,8 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
                            !std::isspace(static_cast<unsigned char>(rest[*eq + 1]));
             std::string op = compact ? "=" : " = ";
             std::string lhsOut = lhs;
-            if (ctx.currentStruct != nullptr || lhs.find_first_of(".[") != std::string::npos) {
+            LineFeatures lhsFeatures = scanLineFeatures(lhs, ctx.currentStruct, ctx.localTypes);
+            if (lineNeedsStructRewrite(lhsFeatures, ctx.currentStruct)) {
                 lhsOut = rewriteStructExpression(lhs, ctx.currentStruct, ctx.localTypes ? *ctx.localTypes : std::unordered_map<std::string, std::string>{});
                 lhsOut = rewriteArrayAccesses(lhsOut, ctx.localArrayShapes);
             }

@@ -198,6 +198,10 @@ int main(int argc, char** argv) {
         {"phase15_bare_field_fastpath", "", fixtures / "phase15_bare_field_fastpath.expected.j"},
         {"phase15_static_method_fastpath", "", fixtures / "phase15_static_method_fastpath.expected.j"},
         {"phase15_local_shadow_fastpath", "", fixtures / "phase15_local_shadow_fastpath.expected.j"},
+        {"phase16_struct_generated_support", "", fixtures / "phase16_struct_generated_support.expected.j"},
+        {"phase16_struct_source_method_lowering", "", fixtures / "phase16_struct_source_method_lowering.expected.j"},
+        {"phase16_struct_on_destroy", "", fixtures / "phase16_struct_on_destroy.expected.j"},
+        {"phase16_struct_deallocate_direct", "", fixtures / "phase16_struct_deallocate_direct.expected.j"},
     };
 
     bool ok = true;

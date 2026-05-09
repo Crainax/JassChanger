@@ -385,14 +385,7 @@ struct ForwardReferenceReports {
     std::vector<ValidationIssue> lambdas;
 };
 
-ForwardReferenceReports findForwardFunctionReferences(std::string_view output) {
-    std::vector<std::string> lines;
-    std::istringstream in{std::string(output)};
-    std::string line;
-    while (std::getline(in, line)) {
-        lines.push_back(line);
-    }
-
+ForwardReferenceReports findForwardFunctionReferences(const std::vector<std::string>& lines) {
     std::unordered_map<std::string, size_t> definitions;
     for (size_t i = 0; i < lines.size(); ++i) {
         std::string t = trim(stripProtected(lines[i]));
@@ -579,9 +572,12 @@ OutputMetrics collectOutputMetrics(std::string_view output) {
 OutputSyntaxReport analyzeOutputSyntaxLite(std::string_view output) {
     OutputSyntaxReport report;
     report.ran = true;
-    report.metrics = collectOutputMetrics(output);
+    report.metrics.bytes = output.size();
     std::istringstream in{std::string(output)};
     std::string line;
+    std::vector<std::string> lines;
+    lines.reserve(output.size() / 32);
+    bool inGlobals = false;
     bool inFunction = false;
     bool sawExecutableInFunction = false;
     bool sawReturnInFunction = false;
@@ -590,18 +586,78 @@ OutputSyntaxReport analyzeOutputSyntaxLite(std::string_view output) {
     size_t currentFunctionLine = 0;
     size_t functionDepth = 0;
     size_t lineNo = 0;
+    std::unordered_set<std::string> functions;
+    std::unordered_set<std::string> globals;
+    std::unordered_set<std::string> natives;
     const std::vector<std::string> forbiddenWords = {
         "library", "endlibrary", "scope", "endscope", "struct", "endstruct",
         "method", "endmethod", "module", "endmodule", "implement", "delegate",
         "stub", "super", "operator", "interface"
     };
     while (std::getline(in, line)) {
+        lines.push_back(line);
         ++lineNo;
+        ++report.metrics.lines;
         std::string rawTrim = trim(line);
         std::string code = stripProtected(line);
         std::string t = trim(code);
         if (t.empty()) {
             continue;
+        }
+        if (t == "globals") {
+            ++report.metrics.globalsBlocks;
+            inGlobals = true;
+            continue;
+        }
+        if (t == "endglobals") {
+            ++report.metrics.endglobals;
+            inGlobals = false;
+            continue;
+        }
+        if (startsWithWord(t, "native")) {
+            ++report.metrics.natives;
+            std::string name = functionNameFromHeader(t);
+            if (!name.empty() && !natives.insert(name).second) {
+                ++report.metrics.duplicateNativeNames;
+            }
+            continue;
+        }
+        if (startsWithWord(t, "type")) {
+            ++report.metrics.types;
+            continue;
+        }
+        if (startsWithWord(t, "function")) {
+            ++report.metrics.functions;
+            std::string name = functionNameFromHeader(t);
+            if (name == "main") {
+                report.metrics.hasMain = true;
+            } else if (name == "config") {
+                report.metrics.hasConfig = true;
+            }
+            if (name.rfind("vjlambda__", 0) == 0) {
+                ++report.metrics.generatedLambdaFunctions;
+            }
+            if (name.rfind("s__", 0) == 0 || name.rfind("sc__", 0) == 0 || name.rfind("si__", 0) == 0) {
+                ++report.metrics.structSupportFunctions;
+            }
+            if (name.rfind("vjfi__", 0) == 0 &&
+                (name.find("__wrapper") != std::string::npos ||
+                 name.find("__condition_wrapper") != std::string::npos ||
+                 name.find("__action_wrapper") != std::string::npos)) {
+                ++report.metrics.functionInterfaceWrappers;
+            }
+            if (name.rfind("vjassc__init_", 0) == 0) {
+                report.metrics.initHelperNames.push_back(name);
+            }
+            if (!name.empty() && !functions.insert(name).second) {
+                ++report.metrics.duplicateFunctionNames;
+            }
+        } else if (inGlobals) {
+            ++report.metrics.globalsDeclarations;
+            std::string name = declarationNameInGlobals(t);
+            if (!name.empty() && !globals.insert(name).second) {
+                ++report.metrics.duplicateGlobalNames;
+            }
         }
         if (rawTrim.rfind("//!", 0) == 0) {
             addResidue(report, "//! directive");
@@ -767,7 +823,7 @@ OutputSyntaxReport analyzeOutputSyntaxLite(std::string_view output) {
     if (report.metrics.duplicateGlobalNames != 0) {
         addIssue(report, "duplicateGlobalNames", 0, "duplicate global declarations remain", "");
     }
-    ForwardReferenceReports forwardReferences = findForwardFunctionReferences(output);
+    ForwardReferenceReports forwardReferences = findForwardFunctionReferences(lines);
     report.forwardFunctionReferences = std::move(forwardReferences.functions);
     report.forwardLambdaReferences = std::move(forwardReferences.lambdas);
     for (const auto& issue : report.forwardFunctionReferences) {

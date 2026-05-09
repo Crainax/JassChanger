@@ -28,6 +28,20 @@ struct CodegenPerformanceCounters {
     size_t functionLookupCalls = 0;
     size_t cachedRewriteHits = 0;
     size_t cachedRewriteMisses = 0;
+    size_t lineFeatureScans = 0;
+    size_t linesSkippedNoDotBracketCall = 0;
+    size_t linesSkippedNoCurrentStruct = 0;
+    size_t linesSkippedGeneratedSupport = 0;
+    size_t structMethodLinesLowered = 0;
+    size_t generatedSupportLinesEmitted = 0;
+    size_t generatedSupportLinesLowered = 0;
+    size_t receiverChainAttempts = 0;
+    size_t receiverChainChanged = 0;
+    size_t arrayAccessRewriteAttempts = 0;
+    size_t arrayAccessRewriteChanged = 0;
+    size_t functionOrderTokenScans = 0;
+    size_t functionOrderEdges = 0;
+    size_t functionOrderSccCount = 0;
 };
 
 struct CodegenResult {
@@ -109,11 +123,25 @@ private:
         std::string returnType = "nothing";
     };
 
+    enum class GeneratedKind {
+        None,
+        StructAllocate,
+        StructCreate,
+        StructDestroy,
+        StructDeallocate,
+        StructOnDestroyWrapper,
+        StructOnInitWrapper,
+        FunctionInterfaceWrapper,
+        LambdaWrapper,
+        CycleBridge,
+    };
+
     struct FunctionInfo {
         std::string sourceName;
         std::string finalName;
         FunctionSignature signature;
         bool isStaticMethod = false;
+        GeneratedKind generatedKind = GeneratedKind::None;
     };
 
     struct InterfaceTarget {
@@ -155,6 +183,26 @@ private:
         int tempCounter = 0;
     };
 
+    struct LineFeatures {
+        bool hasDot = false;
+        bool hasBracket = false;
+        bool hasParen = false;
+        bool hasCall = false;
+        bool hasSet = false;
+        bool hasLocal = false;
+        bool hasReturn = false;
+        bool hasFunctionKeyword = false;
+        bool hasLambdaStart = false;
+        bool hasThis = false;
+        bool hasThistype = false;
+        bool hasNameToken = false;
+        bool hasExecuteEvaluate = false;
+        bool hasBooleanOperators = false;
+        bool hasPossibleStructMember = false;
+        bool hasGeneratedStructPrefix = false;
+        bool hasStringOrRawcode = false;
+    };
+
     void emitGlobals(const Program& program, const LibraryGraphResult& graph);
     void emitDeclGlobals(const Decl& decl, const Decl* container);
     void emitStructGlobals();
@@ -170,6 +218,13 @@ private:
     void emitFunctionInterfaceRuntime();
     void emitStructFunctions();
     void emitStructSupportFunctions(const StructInfo& info);
+    void emitStructGeneratedSupport(const StructInfo& info, const MethodInfo* customCreate);
+    void emitStructLifecycleSupport(const StructInfo& info,
+                                    const std::unordered_set<const MethodDecl*>& emittedBeforeDestroy,
+                                    bool needsDeallocate);
+    void emitStructSourceMethods(const StructInfo& info,
+                                 std::unordered_set<const MethodDecl*>& emittedBeforeDestroy,
+                                 bool onDestroyOnly);
     void emitStructMethod(const StructInfo& info, const MethodInfo& method);
     void emitInitHelper(const LibraryGraphResult& graph, const Program& program);
     void collectInitializers(const Decl& decl, const Decl* container);
@@ -222,6 +277,14 @@ private:
                                    std::vector<std::string>& prelude) const;
     std::string rewriteCallArguments(std::string expression, LoweringContext& ctx, std::vector<std::string>& prelude) const;
     std::string rewriteFunctionNames(std::string expression, const StructInfo* currentStruct) const;
+    LineFeatures scanLineFeatures(const std::string& line,
+                                  const StructInfo* currentStruct,
+                                  const std::unordered_map<std::string, std::string>* localTypes) const;
+    bool lineNeedsExpressionLowering(const LineFeatures& features,
+                                     const std::string& expectedInterfaceType,
+                                     const LoweringContext& ctx) const;
+    bool lineNeedsStructRewrite(const LineFeatures& features,
+                                const StructInfo* currentStruct) const;
     const FunctionInterfaceInfo* resolveReceiverInterface(const std::string& receiver, const LoweringContext& ctx) const;
     std::string rewriteReceiverExpression(const std::string& receiver, const LoweringContext& ctx) const;
     int registerInterfaceTarget(const FunctionInterfaceInfo& iface, const std::string& targetName, SourceLocation loc) const;

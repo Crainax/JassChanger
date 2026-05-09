@@ -337,7 +337,21 @@ void writePerformanceCountersJson(std::ostream& out, const CodegenPerformanceCou
         << pad << "  \"structLookupCalls\": " << counters.structLookupCalls << ",\n"
         << pad << "  \"functionLookupCalls\": " << counters.functionLookupCalls << ",\n"
         << pad << "  \"cachedRewriteHits\": " << counters.cachedRewriteHits << ",\n"
-        << pad << "  \"cachedRewriteMisses\": " << counters.cachedRewriteMisses << "\n"
+        << pad << "  \"cachedRewriteMisses\": " << counters.cachedRewriteMisses << ",\n"
+        << pad << "  \"lineFeatureScans\": " << counters.lineFeatureScans << ",\n"
+        << pad << "  \"linesSkippedNoDotBracketCall\": " << counters.linesSkippedNoDotBracketCall << ",\n"
+        << pad << "  \"linesSkippedNoCurrentStruct\": " << counters.linesSkippedNoCurrentStruct << ",\n"
+        << pad << "  \"linesSkippedGeneratedSupport\": " << counters.linesSkippedGeneratedSupport << ",\n"
+        << pad << "  \"structMethodLinesLowered\": " << counters.structMethodLinesLowered << ",\n"
+        << pad << "  \"generatedSupportLinesEmitted\": " << counters.generatedSupportLinesEmitted << ",\n"
+        << pad << "  \"generatedSupportLinesLowered\": " << counters.generatedSupportLinesLowered << ",\n"
+        << pad << "  \"receiverChainAttempts\": " << counters.receiverChainAttempts << ",\n"
+        << pad << "  \"receiverChainChanged\": " << counters.receiverChainChanged << ",\n"
+        << pad << "  \"arrayAccessRewriteAttempts\": " << counters.arrayAccessRewriteAttempts << ",\n"
+        << pad << "  \"arrayAccessRewriteChanged\": " << counters.arrayAccessRewriteChanged << ",\n"
+        << pad << "  \"functionOrderTokenScans\": " << counters.functionOrderTokenScans << ",\n"
+        << pad << "  \"functionOrderEdges\": " << counters.functionOrderEdges << ",\n"
+        << pad << "  \"functionOrderSccCount\": " << counters.functionOrderSccCount << "\n"
         << pad << "}";
 }
 
@@ -992,7 +1006,7 @@ std::string emitValidationReportJson(const CliOptions& options,
                                      const Timings& timings) {
     std::ostringstream out;
     out << "{\n"
-        << "  \"phase\": 15,\n"
+        << "  \"phase\": 16,\n"
         << "  \"mode\": ";
     writeJsonString(out, compileModeName(options.mode));
     out << ",\n"
@@ -1356,10 +1370,15 @@ int main(int argc, char** argv) {
             ok = writeTextFile(options.outputPath, codegen.output) && ok;
             if (runSyntaxLite) {
                 auto syntaxStart = std::chrono::steady_clock::now();
+                auto syntaxLiteStart = syntaxStart;
                 syntaxReport = analyzeOutputSyntaxLite(codegen.output);
+                auto syntaxLiteEnd = std::chrono::steady_clock::now();
                 initReport = analyzeInitIntegrity(codegen.output);
                 auto syntaxEnd = std::chrono::steady_clock::now();
                 timings.syntaxLite = elapsedMs(syntaxStart, syntaxEnd);
+                timings.codegenPasses["validation.syntaxLiteResidueScan"] += elapsedMs(syntaxLiteStart, syntaxLiteEnd);
+                timings.codegenPasses["validation.syntaxLiteForwardScan"] += 0;
+                timings.codegenPasses["validation.finalOutputValidationPrep"] += 0;
                 if (failOnSyntaxLite && !syntaxReport.ok) {
                     size_t shown = 0;
                     for (const auto& issue : syntaxReport.issues) {

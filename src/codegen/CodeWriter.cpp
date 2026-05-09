@@ -19,6 +19,7 @@ void FastCodeWriter::reserve(size_t bytes) {
 void FastCodeWriter::clear() {
     out_.clear();
     indent_ = 0;
+    lineCount_ = 0;
 }
 
 std::string_view FastCodeWriter::indentText() const {
@@ -41,6 +42,7 @@ void FastCodeWriter::writeln(std::string_view line) {
     }
     out_.append(line.data(), line.size());
     out_.push_back('\n');
+    ++lineCount_;
 }
 
 void FastCodeWriter::writeRaw(std::string_view text) {
@@ -55,6 +57,10 @@ void FastCodeWriter::dedent() {
     if (indent_ > 0) {
         --indent_;
     }
+}
+
+size_t FastCodeWriter::lineCount() const {
+    return lineCount_;
 }
 
 std::string FastCodeWriter::str() const {
