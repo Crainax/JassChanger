@@ -44,19 +44,13 @@ function s__S_Test takes nothing returns nothing
     call TriggerExecute(vjfi__Printer_trigger[p])
 endfunction
 
-function vjfi__Printer__s__S_Print__condition_wrapper takes nothing returns boolean
-    call s__S_Print(vjfi__Printer_arg0)
-    return true
-endfunction
-
-function vjfi__Printer__s__S_Print__action_wrapper takes nothing returns nothing
+function vjfi__Printer__s__S_Print_wrapper takes nothing returns nothing
     call s__S_Print(vjfi__Printer_arg0)
 endfunction
 
 function vjassc__init_function_interfaces takes nothing returns nothing
     set vjfi__Printer_trigger[1]=CreateTrigger()
-    call TriggerAddCondition(vjfi__Printer_trigger[1], Condition(function vjfi__Printer__s__S_Print__condition_wrapper))
-    call TriggerAddAction(vjfi__Printer_trigger[1], function vjfi__Printer__s__S_Print__action_wrapper)
+    call TriggerAddAction(vjfi__Printer_trigger[1], function vjfi__Printer__s__S_Print_wrapper)
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing

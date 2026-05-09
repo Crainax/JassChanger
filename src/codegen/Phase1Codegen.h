@@ -119,6 +119,7 @@ private:
     struct InterfaceTarget {
         std::string finalName;
         int id = 0;
+        bool needsCondition = false;
         bool needsAction = false;
     };
 
@@ -130,6 +131,7 @@ private:
         FunctionSignature signature;
         std::vector<InterfaceTarget> targets;
         std::unordered_map<std::string, size_t> targetIndexByFinalName;
+        bool allTargetsNeedCondition = false;
         bool allTargetsNeedAction = false;
         bool syntheticFunctionObject = false;
     };
@@ -223,6 +225,9 @@ private:
     const FunctionInterfaceInfo* resolveReceiverInterface(const std::string& receiver, const LoweringContext& ctx) const;
     std::string rewriteReceiverExpression(const std::string& receiver, const LoweringContext& ctx) const;
     int registerInterfaceTarget(const FunctionInterfaceInfo& iface, const std::string& targetName, SourceLocation loc) const;
+    void markInterfaceTargetNeedsCondition(const FunctionInterfaceInfo& iface,
+                                           const std::string& rewrittenReceiverExpression,
+                                           SourceLocation loc) const;
     void markInterfaceTargetNeedsAction(const FunctionInterfaceInfo& iface,
                                         const std::string& rewrittenReceiverExpression,
                                         SourceLocation loc) const;

@@ -25,14 +25,14 @@ function Test takes nothing returns integer
     return vjfi__IntProvider_result
 endfunction
 
-function vjfi__IntProvider__FortyTwo__condition_wrapper takes nothing returns boolean
+function vjfi__IntProvider__FortyTwo_wrapper takes nothing returns boolean
     set vjfi__IntProvider_result=FortyTwo()
     return true
 endfunction
 
 function vjassc__init_function_interfaces takes nothing returns nothing
     set vjfi__IntProvider_trigger[1]=CreateTrigger()
-    call TriggerAddCondition(vjfi__IntProvider_trigger[1], Condition(function vjfi__IntProvider__FortyTwo__condition_wrapper))
+    call TriggerAddCondition(vjfi__IntProvider_trigger[1], Condition(function vjfi__IntProvider__FortyTwo_wrapper))
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing

@@ -56,19 +56,14 @@ function vjlambda__1 takes player p2, integer value, integer picker returns noth
     call BJDebugMsg(I2S(value))
 endfunction
 
-function vjfi__OnPick__vjlambda__1__condition_wrapper takes nothing returns boolean
-    call vjlambda__1(vjfi__OnPick_arg0, vjfi__OnPick_arg1, vjfi__OnPick_arg2)
-    return true
-endfunction
-
-function vjfi__OnPick__vjlambda__1__action_wrapper takes nothing returns nothing
+function vjfi__OnPick__vjlambda__1_wrapper takes nothing returns nothing
     call vjlambda__1(vjfi__OnPick_arg0, vjfi__OnPick_arg1, vjfi__OnPick_arg2)
 endfunction
 
 function vjassc__init_function_interfaces takes nothing returns nothing
     set vjfi__OnPick_trigger[1]=CreateTrigger()
-    call TriggerAddCondition(vjfi__OnPick_trigger[1], Condition(function vjfi__OnPick__vjlambda__1__condition_wrapper))
-    call TriggerAddAction(vjfi__OnPick_trigger[1], function vjfi__OnPick__vjlambda__1__action_wrapper)
+    call TriggerAddCondition(vjfi__OnPick_trigger[1], Condition(function vjfi__OnPick__vjlambda__1_wrapper))
+    call TriggerAddAction(vjfi__OnPick_trigger[1], function vjfi__OnPick__vjlambda__1_wrapper)
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing

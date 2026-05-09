@@ -27,14 +27,14 @@ function Test takes real x returns real
     return vjfi__RealFunc_result
 endfunction
 
-function vjfi__RealFunc__Double__condition_wrapper takes nothing returns boolean
+function vjfi__RealFunc__Double_wrapper takes nothing returns boolean
     set vjfi__RealFunc_result=Double(vjfi__RealFunc_arg0)
     return true
 endfunction
 
 function vjassc__init_function_interfaces takes nothing returns nothing
     set vjfi__RealFunc_trigger[1]=CreateTrigger()
-    call TriggerAddCondition(vjfi__RealFunc_trigger[1], Condition(function vjfi__RealFunc__Double__condition_wrapper))
+    call TriggerAddCondition(vjfi__RealFunc_trigger[1], Condition(function vjfi__RealFunc__Double_wrapper))
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing

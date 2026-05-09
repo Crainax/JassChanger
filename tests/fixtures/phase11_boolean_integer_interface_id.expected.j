@@ -27,14 +27,14 @@ function Test takes integer x returns boolean
     return vjfi__BoolCheck_result
 endfunction
 
-function vjfi__BoolCheck__IsPositive__condition_wrapper takes nothing returns boolean
+function vjfi__BoolCheck__IsPositive_wrapper takes nothing returns boolean
     set vjfi__BoolCheck_result=IsPositive(vjfi__BoolCheck_arg0)
     return true
 endfunction
 
 function vjassc__init_function_interfaces takes nothing returns nothing
     set vjfi__BoolCheck_trigger[1]=CreateTrigger()
-    call TriggerAddCondition(vjfi__BoolCheck_trigger[1], Condition(function vjfi__BoolCheck__IsPositive__condition_wrapper))
+    call TriggerAddCondition(vjfi__BoolCheck_trigger[1], Condition(function vjfi__BoolCheck__IsPositive_wrapper))
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing

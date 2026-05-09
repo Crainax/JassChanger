@@ -26,13 +26,13 @@ function TE takes player p, unit u, integer a, real b returns nothing
     call TD(p, u, a, b)
 endfunction
 
-function vjfi__vjfo__prototype1__TD__action_wrapper takes nothing returns nothing
+function vjfi__vjfo__prototype1__TD_wrapper takes nothing returns nothing
     call TD(vjfi__vjfo__prototype1_arg0, vjfi__vjfo__prototype1_arg1, vjfi__vjfo__prototype1_arg2, vjfi__vjfo__prototype1_arg3)
 endfunction
 
 function vjassc__init_function_interfaces takes nothing returns nothing
     set vjfi__vjfo__prototype1_trigger[1]=CreateTrigger()
-    call TriggerAddAction(vjfi__vjfo__prototype1_trigger[1], function vjfi__vjfo__prototype1__TD__action_wrapper)
+    call TriggerAddAction(vjfi__vjfo__prototype1_trigger[1], function vjfi__vjfo__prototype1__TD_wrapper)
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing

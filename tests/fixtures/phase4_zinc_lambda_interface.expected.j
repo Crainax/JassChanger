@@ -26,14 +26,7 @@ function vjlambda__1 takes integer x returns boolean
     return x > 0
 endfunction
 
-function vjfi__L___Pred__vjlambda__1__condition_wrapper takes nothing returns boolean
-    set vjfi__L___Pred_result=vjlambda__1(vjfi__L___Pred_arg0)
-    return true
-endfunction
-
 function vjassc__init_function_interfaces takes nothing returns nothing
-    set vjfi__L___Pred_trigger[1]=CreateTrigger()
-    call TriggerAddCondition(vjfi__L___Pred_trigger[1], Condition(function vjfi__L___Pred__vjlambda__1__condition_wrapper))
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing

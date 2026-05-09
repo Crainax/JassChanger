@@ -27,14 +27,13 @@ function vjlambda__1 takes timer t, unit u2 returns nothing
     call BJDebugMsg("ok")
 endfunction
 
-function vjfi__AfterBuffTime__vjlambda__1__condition_wrapper takes nothing returns boolean
+function vjfi__AfterBuffTime__vjlambda__1_wrapper takes nothing returns nothing
     call vjlambda__1(vjfi__AfterBuffTime_arg0, vjfi__AfterBuffTime_arg1)
-    return true
 endfunction
 
 function vjassc__init_function_interfaces takes nothing returns nothing
     set vjfi__AfterBuffTime_trigger[1]=CreateTrigger()
-    call TriggerAddCondition(vjfi__AfterBuffTime_trigger[1], Condition(function vjfi__AfterBuffTime__vjlambda__1__condition_wrapper))
+    call TriggerAddCondition(vjfi__AfterBuffTime_trigger[1], Condition(function vjfi__AfterBuffTime__vjlambda__1_wrapper))
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing

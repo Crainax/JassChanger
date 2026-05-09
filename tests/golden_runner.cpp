@@ -180,16 +180,20 @@ int main(int argc, char** argv) {
         {"phase13_external_env_symbol", "", fixtures / "phase13_external_env_symbol.expected.j"},
         {"phase13_raw_code_param_lambda_known_context", "", fixtures / "phase13_raw_code_param_lambda_known_context.expected.j"},
         {"phase14_cycle_prefers_noarg_bridge", "", fixtures / "phase14_cycle_prefers_noarg_bridge.expected.j"},
+        {"phase14_cycle_method_caller_args", "", fixtures / "phase14_cycle_method_caller_args.expected.j"},
+        {"phase14_array_index_parentheses_idempotent", "", fixtures / "phase14_array_index_parentheses_idempotent.expected.j"},
         {"phase14_function_object_evaluate_args", "", fixtures / "phase14_function_object_evaluate_args.expected.j"},
         {"phase14_function_object_evaluate_cycle", "", fixtures / "phase14_function_object_evaluate_cycle.expected.j"},
         {"phase14_function_object_execute_cycle_args", "", fixtures / "phase14_function_object_execute_cycle_args.expected.j"},
         {"phase14_function_object_evaluate_cycle_args", "", fixtures / "phase14_function_object_evaluate_cycle_args.expected.j"},
+        {"phase14_function_interface_usage_modes", "", fixtures / "phase14_function_interface_usage_modes.expected.j"},
         {"phase14_library_default_oninit", "", fixtures / "phase14_library_default_oninit.expected.j"},
         {"phase14_missing_init_trigger_call", "", fixtures / "phase14_missing_init_trigger_call.expected.j"},
         {"phase14_struct_oninit_dependency_order", "", fixtures / "phase14_struct_oninit_dependency_order.expected.j"},
         {"phase14_struct_warn", "-warn", fixtures / "phase14_struct_warn.expected.j"},
         {"phase14_zinc_chain_comments_static_field", "", fixtures / "phase14_zinc_chain_comments_static_field.expected.j"},
         {"phase14_zinc_call_result_destroy", "", fixtures / "phase14_zinc_call_result_destroy.expected.j"},
+        {"phase14_zinc_standalone_leading_dot_chain", "", fixtures / "phase14_zinc_standalone_leading_dot_chain.expected.j"},
     };
 
     bool ok = true;

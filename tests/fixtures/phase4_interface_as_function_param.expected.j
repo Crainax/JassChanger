@@ -29,14 +29,14 @@ function Test takes nothing returns integer
     return Apply(1, 1)
 endfunction
 
-function vjfi__F__Inc__condition_wrapper takes nothing returns boolean
+function vjfi__F__Inc_wrapper takes nothing returns boolean
     set vjfi__F_result=Inc(vjfi__F_arg0)
     return true
 endfunction
 
 function vjassc__init_function_interfaces takes nothing returns nothing
     set vjfi__F_trigger[1]=CreateTrigger()
-    call TriggerAddCondition(vjfi__F_trigger[1], Condition(function vjfi__F__Inc__condition_wrapper))
+    call TriggerAddCondition(vjfi__F_trigger[1], Condition(function vjfi__F__Inc_wrapper))
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing

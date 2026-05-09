@@ -773,6 +773,13 @@ Phase 14 完成时，应至少交付：
 - function-object 参数 lowering：补齐 .execute/.evaluate 中 receiver-field 参数改写。
 - function interface OOS 风险：默认注册 TriggerAddCondition 并用 TriggerEvaluate 调用；仅显式 .execute() 的目标额外注册 TriggerAddAction 并保留 TriggerExecute。
 - Zinc 前导点链：修复链式调用中间穿插纯注释行时 receiver 丢失的问题，避免 itemBtns.icons[i] 初始化漏掉 setTopRightPadding/setPoint/setTexture。
+- function name .evaluate：兼容函数名直接 `.evaluate()` 的 JassHelper 式 method caller，避免无参循环调用退回 ExecuteFunc。
+- function name .execute：对函数名 `.execute()` 使用 TriggerAddAction caller；只有同一目标也被 `.evaluate()` 时才同时注册 condition/action。
+- function interface 注册裁剪：只对实际使用到 execute/evaluate 的目标注册 trigger；没有被调用的 function interface target 不再生成冗余 wrapper。
+- function interface wrapper 命名：统一为 `vjfi__...__Target_wrapper`，condition/action 可共用同一个 wrapper，减少冗余函数。
+- 循环断环 caller：所有需要打断循环依赖的普通函数调用改为 `TriggerEvaluate + TriggerAddCondition`，不再生成 `vjassc__bridge__...` + `ExecuteFunc`。
+- 数组下标括号膨胀：数组下标 rewrite 已做幂等化，避免 `IFubenDiffCache[(2)]` 在多轮改写后膨胀成 `IFubenDiffCache[((((2))))]`。
+- 裸 Zinc 链式调用：修复 `uiText.create(...).setAllPoint(...).setText(...)` 被拆成多次 `uiText.create` 的问题，AbilityLock footer 按钮文字恢复。
 ```
 
 ### 14.3 当前保留的三类任务语义
@@ -797,11 +804,149 @@ Phase 14 完成时，应至少交付：
   both 编译，最终选择 jasshelper，用于大图输出对比。
 ```
 
-### 14.4 下一步
+### 14.4 最新性能检测
+
+检测时间：2026-05-09。
+检测对象：`D:/War3/Maps/Xlimon/edit/ability/pool/AbilityLock_Test.j` 单元测试链路，输入为 `Output/4_luaexecute.j`。
+
+#### 14.4.1 War3Lib both 编译链路
+
+来自 `D:/War3/Maps/Xlimon/Output/compiler_backend_report.json`：
+
+```text
+buildVersion: 单元测试
+backend: both
+selectedOutput: vjassc
+totalCompileMs: 33295
+jassCompilerMs: 29480
+
+jasshelper elapsedMs: 4432
+vjassc elapsedMs:    24917
+pjassOk:             true
+
+wave1Ms:             494
+injectCodeBlockMs:   565
+wave2Ms:             755
+compileLuaMs:        1478
+dzApiMapConfigMs:    38
+copyBackMs:          3
+```
+
+结构规模：
+
+```text
+4_luaexecute.j: 1.40 MB / 33247 lines
+5_jasshelper.j: 1.93 MB / 39052 lines / 2631 functions
+5_vjassc.j:     1.39 MB / 36580 lines / 2503 functions
+```
+
+结论：
+
+```text
+- 当前单元测试链路总耗时约 33.3s。
+- 最终 JASS 编译段约 29.5s，是 War3Lib 链路主瓶颈。
+- vjassc validation 模式约 24.9s，明显慢于 jasshelper 的约 4.4s。
+- Wave / 注入 / Lua / DzAPI 合计约 3.8s，不是 Phase 15 首要瓶颈。
+```
+
+#### 14.4.2 vjassc 内部耗时
+
+来自 `Output/vjassc.stats.json`：
+
+```text
+total:        24844 ms
+read:         13 ms
+preprocess:   34 ms
+staticIf:     57 ms
+lex:          49 ms
+parse:        54 ms
+moduleExpand: 4 ms
+codegen:      22120 ms
+syntaxLite:   2372 ms
+pjass:        109 ms
+comparison:   39 ms
+```
+
+codegen pass 细分：
+
+```text
+emitFunctions:               21254 ms
+emitStructSupport:           18481 ms
+lowerLambdas:                1825 ms
+finalOutputValidationPrep:   767 ms
+sanitizeOutput:              587 ms
+functionOrdering:            180 ms
+```
+
+性能计数器：
+
+```text
+linesVisited:        23525
+memberAccessScans:   6139
+structLookupCalls:   45383
+functionLookupCalls: 65807
+cachedRewriteHits:   106875
+cachedRewriteMisses: 4315
+```
+
+注意：`emitFunctions` 与 `emitStructSupport` 统计有包含/嵌套关系，二者不能简单相加。但它们共同指向同一类问题：函数输出阶段在 struct/method 支持逻辑上做了大量重复扫描、查找和字符串改写。
+
+#### 14.4.3 vjassc fast 生成下限
+
+命令：
+
+```bat
+build\vjassc.exe D:\War3\Maps\Xlimon\Output\4_luaexecute.j ^
+  -o build\phase14_abilitylock_fast.out.j ^
+  --emit-stats build\phase14_abilitylock_fast.stats.json
+```
+
+结果：
+
+```text
+外部 stopwatch: 22295 ms
+stats total:    22099 ms
+codegen:        21886 ms
+syntaxLite:     0 ms
+pjass:          0 ms
+comparison:     0 ms
+```
+
+结论：
+
+```text
+- 即使关闭 syntax-lite / PJASS / comparison，vjassc 仍约 22.1s。
+- validation 额外成本约 2.7s，其中 syntax-lite 约 2.4s，PJASS 约 0.1s。
+- Phase 15 若要把编译压到 10s 内，不能只关验证；必须优化 codegen。
+```
+
+### 14.5 阶段 15 准备建议
+
+```text
+优先级 P0:
+  优化 emitFunctions / emitStructSupport 路径。
+  重点排查每个函数体 lowering 时是否重复遍历所有 structs / methods / fields。
+  将热路径从“全量扫描 + regex/string rewrite”改为“按 token/候选名索引命中后再改写”。
+
+优先级 P1:
+  拆分 fast / validate / full-validation 模式。
+  fast 模式默认跳过 syntax-lite / PJASS / comparison，但这只能节省约 2.7s。
+
+优先级 P2:
+  降低 sanitizeOutput / finalOutputValidationPrep 的整文件二次扫描成本。
+  对 functionOrdering 的循环断环 caller 继续保持正确性优先，后续再做微优化。
+
+阶段 15 性能目标建议:
+  第一目标：AbilityLock 单测 fast 从 22s 降到 10s 以内。
+  第二目标：AbilityLock validation 从 25s 降到 12s 以内。
+  第三目标：内测大图 vjassc 输出进入游戏后，再用同样指标测完整 ALPHA。
+```
+
+### 14.6 下一步
 
 ```text
 - 继续以 Xlimon 单元测试作为小样本，逐个定位 JassHelper / vjassc 行为差异。
 - 每次差异优先对比 5_jasshelper.j 与 5_vjassc.j，确认是编译器差异还是源代码依赖了 JassHelper 特性。
 - 小样本稳定后，再回到内测-vjassc测试完整 ALPHA 地图。
-- 性能优化暂缓，先保证兼容性。
+- 阶段 15 可正式启动性能专项：先优化 codegen 热路径，再做 full validation 的开关与降本。
 ```

@@ -14,14 +14,13 @@ function TA takes nothing returns nothing
     call TB()
 endfunction
 
-function vjfi__vjfo__prototype1__TA__condition_wrapper takes nothing returns boolean
+function vjfi__vjfo__prototype1__TA_wrapper takes nothing returns nothing
     call TA()
-    return true
 endfunction
 
 function vjassc__init_function_interfaces takes nothing returns nothing
     set vjfi__vjfo__prototype1_trigger[1]=CreateTrigger()
-    call TriggerAddCondition(vjfi__vjfo__prototype1_trigger[1], Condition(function vjfi__vjfo__prototype1__TA__condition_wrapper))
+    call TriggerAddCondition(vjfi__vjfo__prototype1_trigger[1], Condition(function vjfi__vjfo__prototype1__TA_wrapper))
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing

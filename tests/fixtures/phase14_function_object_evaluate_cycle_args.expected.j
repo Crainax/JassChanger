@@ -26,14 +26,13 @@ function TA takes player p, unit u, integer a, real b returns nothing
     call TB(p, u, a, b)
 endfunction
 
-function vjfi__vjfo__prototype1__TA__condition_wrapper takes nothing returns boolean
+function vjfi__vjfo__prototype1__TA_wrapper takes nothing returns nothing
     call TA(vjfi__vjfo__prototype1_arg0, vjfi__vjfo__prototype1_arg1, vjfi__vjfo__prototype1_arg2, vjfi__vjfo__prototype1_arg3)
-    return true
 endfunction
 
 function vjassc__init_function_interfaces takes nothing returns nothing
     set vjfi__vjfo__prototype1_trigger[1]=CreateTrigger()
-    call TriggerAddCondition(vjfi__vjfo__prototype1_trigger[1], Condition(function vjfi__vjfo__prototype1__TA__condition_wrapper))
+    call TriggerAddCondition(vjfi__vjfo__prototype1_trigger[1], Condition(function vjfi__vjfo__prototype1__TA_wrapper))
 endfunction
 
 function vjassc__init_structs takes nothing returns nothing
