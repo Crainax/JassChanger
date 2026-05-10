@@ -311,5 +311,69 @@ int main(int argc, char** argv) {
         ok = false;
     }
 
+    fs::path phase21Single = outDir / "phase21.single.out.j";
+    fs::path phase21Recorded = outDir / "phase21.recorded.out.j";
+    fs::path phase21Parallel = outDir / "phase21.parallel.out.j";
+    fs::path phase21Deps = outDir / "phase21.dependency.json";
+    fs::path phase21ParallelPerf = outDir / "phase21.parallel.performance.json";
+    fs::path phase21Bench = outDir / "phase21.benchmark.json";
+    std::string phase21BaseCommand = exe.string() + " " + quote(fixtures / "phase18_body_mode_zinc_function.in.j") +
+                                     " -o " + quote(phase21Single) +
+                                     " --mode fast --emit-benchmark-report " + quote(phase21Bench);
+    ok = runCommand(phase21BaseCommand) && ok;
+    std::string phase21RecordedCommand = exe.string() + " " + quote(fixtures / "phase18_body_mode_zinc_function.in.j") +
+                                         " -o " + quote(phase21Recorded) +
+                                         " --mode fast --experimental-recorded-order --emit-dependency-report " + quote(phase21Deps);
+    ok = runCommand(phase21RecordedCommand) && ok;
+    std::string phase21ParallelCommand = exe.string() + " " + quote(fixtures / "phase18_body_mode_zinc_function.in.j") +
+                                         " -o " + quote(phase21Parallel) +
+                                         " --mode fast --experimental-parallel-lowering --parallel-workers 2" +
+                                         " --emit-performance-report " + quote(phase21ParallelPerf);
+    ok = runCommand(phase21ParallelCommand) && ok;
+    if (readFile(phase21Single) != readFile(phase21Recorded) ||
+        readFile(phase21Single) != readFile(phase21Parallel)) {
+        std::cerr << "phase21 experimental output was not stable against default output\n";
+        ok = false;
+    }
+    std::string depsText = readFile(phase21Deps);
+    std::string parallelPerfText = readFile(phase21ParallelPerf);
+    std::string benchText = readFile(phase21Bench);
+    if (depsText.find("\"kind\": \"dependency-report\"") == std::string::npos ||
+        depsText.find("\"experimentalRecordedOrder\": true") == std::string::npos ||
+        depsText.find("\"functionOrderTokenScans\": 0") == std::string::npos) {
+        std::cerr << "phase21 recorded-order dependency report was missing expected fields\n";
+        ok = false;
+    }
+    if (parallelPerfText.find("\"parallel\"") == std::string::npos ||
+        parallelPerfText.find("\"workers\": 2") == std::string::npos ||
+        benchText.find("\"kind\": \"benchmark-report\"") == std::string::npos) {
+        std::cerr << "phase21 parallel/benchmark reports were missing expected fields\n";
+        ok = false;
+    }
+
+    fs::path phase21CacheDir = outDir / "phase21-cache";
+    fs::path phase21IncCold = outDir / "phase21.incremental.cold.out.j";
+    fs::path phase21IncNoChange = outDir / "phase21.incremental.nochange.out.j";
+    fs::path phase21IncState = outDir / "phase21.incremental.state.json";
+    fs::path phase21IncReport = outDir / "phase21.incremental.report.json";
+    std::string phase21IncColdCommand = exe.string() + " " + quote(fixtures / "phase18_body_mode_zinc_function.in.j") +
+                                        " -o " + quote(phase21IncCold) +
+                                        " --mode fast --experimental-incremental-cache " + quote(phase21CacheDir) +
+                                        " --incremental-mode reuse --emit-incremental-state " + quote(phase21IncState);
+    ok = runCommand(phase21IncColdCommand) && ok;
+    std::string phase21IncNoChangeCommand = exe.string() + " " + quote(fixtures / "phase18_body_mode_zinc_function.in.j") +
+                                            " -o " + quote(phase21IncNoChange) +
+                                            " --mode fast --experimental-incremental-cache " + quote(phase21CacheDir) +
+                                            " --incremental-mode reuse --compare-incremental-state " + quote(phase21IncState) +
+                                            " --emit-incremental-report " + quote(phase21IncReport);
+    ok = runCommand(phase21IncNoChangeCommand) && ok;
+    std::string phase21IncReportText = readFile(phase21IncReport);
+    if (readFile(phase21IncCold) != readFile(phase21IncNoChange) ||
+        phase21IncReportText.find("\"cacheHit\": true") == std::string::npos ||
+        phase21IncReportText.find("\"reusePercent\": 100") == std::string::npos) {
+        std::cerr << "phase21 incremental cache no-change run did not reuse stable output\n";
+        ok = false;
+    }
+
     return ok ? 0 : 1;
 }

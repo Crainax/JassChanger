@@ -1528,7 +1528,8 @@ void ensureFunctionInterfaceInitCall(std::vector<FunctionBlock>& blocks) {
 
 std::string orderFunctionBlocksForPjass(const std::string& output,
                                         CodegenPerformanceCounters* counters,
-                                        std::unordered_set<std::string>* recordedEdges) {
+                                        std::unordered_set<std::string>* recordedEdges,
+                                        bool useRecordedOrder) {
     std::vector<std::string> lines;
     std::istringstream in(output);
     std::string line;
@@ -1581,8 +1582,45 @@ std::string orderFunctionBlocksForPjass(const std::string& output,
             signatures[blocks[i].name] = parseFunctionBlockSignature(blocks[i].lines.empty() ? "" : blocks[i].lines.front());
         }
     }
-    for (auto& block : blocks) {
-        block.dependencies = extractFunctionDependencies(block, functionIndex, counters, recordedEdges);
+    auto assignRecordedDependencies = [&]() {
+        if (!recordedEdges) {
+            return false;
+        }
+        size_t used = 0;
+        for (const auto& edge : *recordedEdges) {
+            size_t split = edge.find('\n');
+            if (split == std::string::npos) {
+                continue;
+            }
+            std::string_view from(edge.data(), split);
+            std::string_view to(edge.data() + split + 1, edge.size() - split - 1);
+            auto fromIt = functionIndex.find(from);
+            auto toIt = functionIndex.find(to);
+            if (fromIt == functionIndex.end() || toIt == functionIndex.end() || fromIt->second == toIt->second) {
+                continue;
+            }
+            auto& deps = blocks[fromIt->second].dependencies;
+            if (std::find(deps.begin(), deps.end(), std::string(to)) == deps.end()) {
+                deps.emplace_back(to);
+                ++used;
+            }
+        }
+        for (auto& block : blocks) {
+            std::sort(block.dependencies.begin(), block.dependencies.end());
+        }
+        if (counters) {
+            counters->functionDependencyRecordedOrderEdgesUsed += used;
+            counters->functionOrderEdges += used;
+        }
+        return true;
+    };
+    if (useRecordedOrder && assignRecordedDependencies()) {
+        // The experimental path consumes edges recorded while lowering bodies,
+        // avoiding the full final-output token scan used by the conservative path.
+    } else {
+        for (auto& block : blocks) {
+            block.dependencies = extractFunctionDependencies(block, functionIndex, counters, recordedEdges);
+        }
     }
     auto rebuildFunctionIndexAndSignatures = [&]() {
         functionIndex.clear();
@@ -1613,7 +1651,10 @@ std::string orderFunctionBlocksForPjass(const std::string& output,
         rebuildFunctionIndexAndSignatures();
         for (size_t index : dirty) {
             if (index < blocks.size()) {
-                blocks[index].dependencies = extractFunctionDependencies(blocks[index], functionIndex, counters, recordedEdges);
+                blocks[index].dependencies = extractFunctionDependencies(blocks[index],
+                                                                         functionIndex,
+                                                                         counters,
+                                                                         useRecordedOrder ? nullptr : recordedEdges);
             }
         }
     };
@@ -3514,7 +3555,10 @@ CodegenResult Phase1Codegen::makeResult(bool ok) {
         result.output = commentMissingInitTriggerCalls(std::move(result.output));
         auto sanitized = std::chrono::steady_clock::now();
         result.output = adaptFunctionInterfaceCallbacksBySignature(result.output);
-        result.output = orderFunctionBlocksForPjass(result.output, &performanceCounters_, &recordedFunctionDependencyEdges_);
+        result.output = orderFunctionBlocksForPjass(result.output,
+                                                    &performanceCounters_,
+                                                    &recordedFunctionDependencyEdges_,
+                                                    options_.experimentalRecordedOrder);
         auto ordered = std::chrono::steady_clock::now();
         long long sanitizeMs = std::chrono::duration_cast<std::chrono::milliseconds>(sanitized - start).count();
         long long orderingMs = std::chrono::duration_cast<std::chrono::milliseconds>(ordered - sanitized).count();
@@ -3542,6 +3586,15 @@ CodegenResult Phase1Codegen::makeResult(bool ok) {
     result.functionInterfaceMaxEvaluateDepth = functionInterfaceMaxEvaluateDepth_;
     result.functionInterfaceEvaluateTempLimit = functionInterfaceEvaluateTempLimit_;
     result.passTimings = passTimings_;
+    if (options_.experimentalParallelLowering) {
+        performanceCounters_.experimentalParallelWorkers = options_.parallelWorkers <= 1 ? 1 : options_.parallelWorkers;
+        performanceCounters_.experimentalParallelJobs =
+            performanceCounters_.bodyModeZincFunctions +
+            performanceCounters_.bodyModeJassLikeFunctions +
+            performanceCounters_.bodyModeZincMethods +
+            performanceCounters_.bodyModeJassLikeMethods +
+            performanceCounters_.bodyModeGeneratedBodies;
+    }
     result.performanceCounters = performanceCounters_;
     if (options_.emitGeneratedEntityPlan) {
         result.generatedEntityPlanJson = emitGeneratedEntityPlanJson();
@@ -3552,14 +3605,23 @@ CodegenResult Phase1Codegen::makeResult(bool ok) {
 std::string Phase1Codegen::emitGeneratedEntityPlanJson() const {
     std::ostringstream out;
     out << "{\n"
-        << "  \"phase\": 20,\n"
+        << "  \"phase\": 21,\n"
         << "  \"kind\": \"generated-entity-plan\",\n"
+        << "  \"bodyJobModel\": \"single-thread deterministic\",\n"
         << "  \"lambdas\": [\n";
     for (size_t i = 0; i < lambdas_.size(); ++i) {
         const auto& lambda = lambdas_[i];
         out << "    {\"id\": " << (i + 1)
             << ", \"name\": ";
         writeJsonString(out, lambda.name);
+        out << ", \"stableKey\": ";
+        writeJsonString(out,
+                        std::string("lambda:") +
+                            (lambda.container ? lambda.container->name : "") + ":" +
+                            (lambda.currentStruct ? lambda.currentStruct->generatedName : "") + ":" +
+                            std::to_string(lambda.loc.line) + ":" +
+                            std::to_string(lambda.loc.column) + ":" +
+                            lambda.name);
         out << ", \"line\": " << lambda.loc.line
             << ", \"column\": " << lambda.loc.column
             << ", \"container\": ";
@@ -3568,7 +3630,7 @@ std::string Phase1Codegen::emitGeneratedEntityPlanJson() const {
         writeJsonString(out, lambda.currentStruct ? lambda.currentStruct->generatedName : "");
         out << "}" << (i + 1 == lambdas_.size() ? "\n" : ",\n");
     }
-    out << "  ],\n"
+        out << "  ],\n"
         << "  \"functionInterfaceTargets\": [\n";
     struct TargetRow {
         std::string interfaceName;
@@ -3591,13 +3653,18 @@ std::string Phase1Codegen::emitGeneratedEntityPlanJson() const {
         out << "    {\"interface\": ";
         writeJsonString(out, target.interfaceName);
         out << ", \"id\": " << target.id
+            << ", \"stableKey\": ";
+        writeJsonString(out, "interface-target:" + target.interfaceName + ":" + target.targetName);
+        out
             << ", \"target\": ";
         writeJsonString(out, target.targetName);
         out << ", \"needsCondition\": " << (target.needsCondition ? "true" : "false")
             << ", \"needsAction\": " << (target.needsAction ? "true" : "false")
             << "}" << (i + 1 == targets.size() ? "\n" : ",\n");
     }
-    out << "  ]\n"
+    out << "  ],\n"
+        << "  \"wrappers\": [],\n"
+        << "  \"bridges\": []\n"
         << "}\n";
     return out.str();
 }

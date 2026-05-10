@@ -22,6 +22,7 @@
 #include <map>
 #include <regex>
 #include <sstream>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -59,7 +60,12 @@ struct IncrementalChunk {
 struct IncrementalReportData {
     std::vector<IncrementalChunk> chunks;
     std::filesystem::path comparedStatePath;
+    std::filesystem::path cachePath;
+    std::string incrementalMode = "report";
     bool compared = false;
+    bool cacheEnabled = false;
+    bool cacheHit = false;
+    bool cacheStored = false;
     size_t priorChunks = 0;
     size_t reusedChunks = 0;
     size_t changedChunks = 0;
@@ -417,7 +423,13 @@ void writePerformanceCountersJson(std::ostream& out, const CodegenPerformanceCou
         << pad << "    \"missingRecordedEdges\": " << counters.functionDependencyMissingRecordedEdges << ",\n"
         << pad << "    \"extraRecordedEdges\": " << counters.functionDependencyExtraRecordedEdges << ",\n"
         << pad << "    \"weakExecuteFuncEdges\": " << counters.functionDependencyWeakExecuteFuncEdges << ",\n"
-        << pad << "    \"coveragePercent\": " << dependencyCoverage << "\n"
+        << pad << "    \"recordedOrderEdgesUsed\": " << counters.functionDependencyRecordedOrderEdgesUsed << ",\n"
+        << pad << "    \"coveragePercent\": " << dependencyCoverage << ",\n"
+        << pad << "    \"strongEdgeCoveragePercent\": " << dependencyCoverage << "\n"
+        << pad << "  },\n"
+        << pad << "  \"parallel\": {\n"
+        << pad << "    \"workers\": " << counters.experimentalParallelWorkers << ",\n"
+        << pad << "    \"jobs\": " << counters.experimentalParallelJobs << "\n"
         << pad << "  },\n"
         << pad << "  \"methodPlan\": {\n"
         << pad << "    \"built\": " << counters.methodPlanBuilt << ",\n"
@@ -1085,6 +1097,106 @@ std::string decimalHash(uint64_t hash) {
     return std::to_string(hash);
 }
 
+bool inputEligibleForEarlyCache(std::string_view text) {
+    return text.find("//! import") == std::string_view::npos &&
+           text.find("//! external") == std::string_view::npos;
+}
+
+std::string incrementalCacheKey(const CliOptions& options, std::string_view inputText) {
+    std::ostringstream key;
+    key << "vjassc-phase21-cache-v1\n"
+        << "mode=" << compileModeName(options.mode) << "\n"
+        << "debug=" << (options.debugMode ? "1" : "0") << "\n"
+        << "warn=" << (options.warnMode ? "1" : "0") << "\n"
+        << "recorded=" << (options.experimentalRecordedOrder ? "1" : "0") << "\n"
+        << "parallel=" << (options.experimentalParallelLowering ? "1" : "0") << "\n"
+        << "workers=" << options.parallelWorkers << "\n"
+        << "input=" << inputText;
+    return decimalHash(fnv1a64(key.str()));
+}
+
+struct IncrementalCacheProbe {
+    bool enabled = false;
+    bool eligible = false;
+    bool hit = false;
+    std::string key;
+    std::filesystem::path cacheDir;
+    std::filesystem::path outputPath;
+    std::string output;
+};
+
+IncrementalCacheProbe probeIncrementalCache(const CliOptions& options) {
+    IncrementalCacheProbe probe;
+    probe.enabled = !options.experimentalIncrementalCachePath.empty();
+    probe.cacheDir = options.experimentalIncrementalCachePath;
+    if (!probe.enabled || options.incrementalMode != "reuse" || options.inputPath.empty() || options.outputPath.empty() ||
+        !options.emitPreprocessedPath.empty() || !options.emitTokensPath.empty() ||
+        !options.emitAstPath.empty() || !options.emitExpandedAstPath.empty() ||
+        !options.emitStatsPath.empty() || !options.emitGeneratedEntityPlanPath.empty()) {
+        return probe;
+    }
+    std::ifstream in(options.inputPath, std::ios::binary);
+    if (!in) {
+        return probe;
+    }
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    std::string inputText = normalizeNewlines(buffer.str());
+    probe.eligible = inputEligibleForEarlyCache(inputText);
+    if (!probe.eligible) {
+        return probe;
+    }
+    probe.key = incrementalCacheKey(options, inputText);
+    probe.outputPath = probe.cacheDir / ("output-" + probe.key + ".j");
+    std::ifstream cached(probe.outputPath, std::ios::binary);
+    if (!cached) {
+        return probe;
+    }
+    std::ostringstream cachedBuffer;
+    cachedBuffer << cached.rdbuf();
+    probe.output = cachedBuffer.str();
+    probe.hit = true;
+    return probe;
+}
+
+bool storeIncrementalCache(const CliOptions& options, const std::string& output) {
+    if (options.experimentalIncrementalCachePath.empty() || options.incrementalMode != "reuse" || options.inputPath.empty()) {
+        return false;
+    }
+    std::ifstream in(options.inputPath, std::ios::binary);
+    if (!in) {
+        return false;
+    }
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    std::string inputText = normalizeNewlines(buffer.str());
+    if (!inputEligibleForEarlyCache(inputText)) {
+        return false;
+    }
+    std::string key = incrementalCacheKey(options, inputText);
+    std::error_code ec;
+    std::filesystem::create_directories(options.experimentalIncrementalCachePath, ec);
+    if (ec) {
+        return false;
+    }
+    std::filesystem::path outputPath = options.experimentalIncrementalCachePath / ("output-" + key + ".j");
+    std::filesystem::path manifestPath = options.experimentalIncrementalCachePath / "manifest.json";
+    bool ok = writeTextFile(outputPath, output);
+    if (!ok) {
+        return false;
+    }
+    std::ostringstream manifest;
+    manifest << "{\n"
+             << "  \"phase\": 21,\n"
+             << "  \"kind\": \"experimental-incremental-cache\",\n"
+             << "  \"key\": ";
+    writeJsonString(manifest, key);
+    manifest << ",\n  \"output\": ";
+    writeJsonString(manifest, pathToGenericString(outputPath));
+    manifest << "\n}\n";
+    return writeTextFile(manifestPath, manifest.str());
+}
+
 std::string outputFunctionName(std::string_view line) {
     std::string t = trim(line);
     if (!startsWithWord(t, "function")) {
@@ -1250,6 +1362,15 @@ void writeIncrementalSummaryJson(std::ostream& out, const IncrementalReportData&
         << pad << "  \"comparedStatePath\": ";
     writeJsonString(out, pathToGenericString(report.comparedStatePath));
     out << ",\n"
+        << pad << "  \"cacheEnabled\": " << (report.cacheEnabled ? "true" : "false") << ",\n"
+        << pad << "  \"cacheHit\": " << (report.cacheHit ? "true" : "false") << ",\n"
+        << pad << "  \"cacheStored\": " << (report.cacheStored ? "true" : "false") << ",\n"
+        << pad << "  \"cachePath\": ";
+    writeJsonString(out, pathToGenericString(report.cachePath));
+    out << ",\n"
+        << pad << "  \"incrementalMode\": ";
+    writeJsonString(out, report.incrementalMode);
+    out << ",\n"
         << pad << "  \"priorChunks\": " << report.priorChunks << ",\n"
         << pad << "  \"reusedChunks\": " << report.reusedChunks << ",\n"
         << pad << "  \"changedChunks\": " << report.changedChunks << ",\n"
@@ -1264,7 +1385,7 @@ std::string emitIncrementalReportJson(const CliOptions& options,
                                       bool stateOnly) {
     std::ostringstream out;
     out << "{\n"
-        << "  \"phase\": 20,\n"
+        << "  \"phase\": 21,\n"
         << "  \"kind\": ";
     writeJsonString(out, stateOnly ? "incremental-state" : "incremental-report");
     out << ",\n  \"input\": ";
@@ -1284,7 +1405,7 @@ std::string emitPerformanceReportJson(const CliOptions& options,
                                       const IncrementalReportData& incremental) {
     std::ostringstream out;
     out << "{\n"
-        << "  \"phase\": 20,\n"
+        << "  \"phase\": 21,\n"
         << "  \"mode\": ";
     writeJsonString(out, compileModeName(options.mode));
     out << ",\n  \"input\": ";
@@ -1309,6 +1430,60 @@ std::string emitPerformanceReportJson(const CliOptions& options,
     out << ",\n  \"incremental\": ";
     writeIncrementalSummaryJson(out, incremental, 2);
     out << "\n}\n";
+    return out.str();
+}
+
+std::string emitDependencyReportJson(const CliOptions& options, const Timings& timings) {
+    const auto& counters = timings.performanceCounters;
+    double coverage = counters.functionDependencyOutputScanEdges == 0
+        ? 100.0
+        : (static_cast<double>(counters.functionDependencyMatchedEdges) * 100.0 /
+           static_cast<double>(counters.functionDependencyOutputScanEdges));
+    std::ostringstream out;
+    out << "{\n"
+        << "  \"phase\": 21,\n"
+        << "  \"kind\": \"dependency-report\",\n"
+        << "  \"experimentalRecordedOrder\": " << (options.experimentalRecordedOrder ? "true" : "false") << ",\n"
+        << "  \"input\": ";
+    writeJsonString(out, pathToGenericString(options.inputPath));
+    out << ",\n"
+        << "  \"recordedEdges\": " << counters.functionDependencyRecordedEdges << ",\n"
+        << "  \"outputScanEdges\": " << counters.functionDependencyOutputScanEdges << ",\n"
+        << "  \"matchedEdges\": " << counters.functionDependencyMatchedEdges << ",\n"
+        << "  \"missingRecordedEdges\": " << counters.functionDependencyMissingRecordedEdges << ",\n"
+        << "  \"extraRecordedEdges\": " << counters.functionDependencyExtraRecordedEdges << ",\n"
+        << "  \"weakExecuteFuncEdges\": " << counters.functionDependencyWeakExecuteFuncEdges << ",\n"
+        << "  \"recordedOrderEdgesUsed\": " << counters.functionDependencyRecordedOrderEdgesUsed << ",\n"
+        << "  \"coveragePercent\": " << coverage << ",\n"
+        << "  \"strongEdgeCoveragePercent\": " << coverage << ",\n"
+        << "  \"functionOrderTokenScans\": " << counters.functionOrderTokenScans << ",\n"
+        << "  \"functionOrderEdges\": " << counters.functionOrderEdges << ",\n"
+        << "  \"functionOrderSccCount\": " << counters.functionOrderSccCount << "\n"
+        << "}\n";
+    return out.str();
+}
+
+std::string emitBenchmarkReportJson(const CliOptions& options, const Timings& timings) {
+    std::ostringstream out;
+    out << "{\n"
+        << "  \"phase\": 21,\n"
+        << "  \"kind\": \"benchmark-report\",\n"
+        << "  \"mode\": ";
+    writeJsonString(out, compileModeName(options.mode));
+    out << ",\n"
+        << "  \"warmup\": " << options.benchmarkWarmup << ",\n"
+        << "  \"repeat\": " << options.benchmarkRepeat << ",\n"
+        << "  \"note\": \"single-process compile result; use tools/bench_phase21.ps1 for multi-run median\",\n"
+        << "  \"totalMs\": {\n"
+        << "    \"min\": " << timings.total << ",\n"
+        << "    \"median\": " << timings.total << ",\n"
+        << "    \"p90\": " << timings.total << ",\n"
+        << "    \"max\": " << timings.total << "\n"
+        << "  },\n"
+        << "  \"codegenMs\": {\n"
+        << "    \"median\": " << timings.codegen << "\n"
+        << "  }\n"
+        << "}\n";
     return out.str();
 }
 
@@ -1471,6 +1646,105 @@ int main(int argc, char** argv) {
     if (options.showVersion) {
         printVersion(std::cout);
         return 0;
+    }
+
+    IncrementalCacheProbe earlyCache = probeIncrementalCache(options);
+    if (earlyCache.hit) {
+        auto totalStart = std::chrono::steady_clock::now();
+        bool ok = writeTextFile(options.outputPath, earlyCache.output);
+        Timings timings;
+        OutputSyntaxReport syntaxReport;
+        InitValidationReport initReport;
+        ComparisonReport comparisonReport;
+        PjassResult pjassResult;
+
+        if (runSyntaxLite) {
+            auto syntaxStart = std::chrono::steady_clock::now();
+            syntaxReport = analyzeOutputSyntaxLite(earlyCache.output);
+            initReport = analyzeInitIntegrity(earlyCache.output);
+            timings.syntaxLite = elapsedMs(syntaxStart, std::chrono::steady_clock::now());
+            if (failOnSyntaxLite && !syntaxReport.ok) {
+                ok = false;
+            }
+        }
+        if (runComparison) {
+            auto comparisonStart = std::chrono::steady_clock::now();
+            comparisonReport = compareWithReference(earlyCache.output, options.compareJasshelperPath.empty()
+                                                                           ? std::filesystem::path("samples/output_jasshelper.j")
+                                                                           : options.compareJasshelperPath);
+            timings.comparison = elapsedMs(comparisonStart, std::chrono::steady_clock::now());
+        }
+        if (runPjassValidation) {
+            pjassResult.requested = true;
+            PjassResolvedPaths paths = resolvePjassPaths(std::filesystem::current_path(),
+                                                         options.pjassPath,
+                                                         options.commonPath,
+                                                         options.blizzardPath);
+            if (!paths.ok) {
+                pjassResult.error = paths.error;
+                std::cerr << paths.error << '\n';
+                ok = false;
+            } else {
+                std::filesystem::path reportBase = options.emitValidationReportPath.empty()
+                    ? options.outputPath
+                    : options.emitValidationReportPath;
+                std::filesystem::path stdoutPath = reportBase;
+                stdoutPath.replace_extension(".pjass.stdout.txt");
+                std::filesystem::path stderrPath = reportBase;
+                stderrPath.replace_extension(".pjass.stderr.txt");
+                PjassOptions pjassOptions;
+                pjassOptions.pjassPath = paths.pjassPath;
+                pjassOptions.commonPath = paths.commonPath;
+                pjassOptions.blizzardPath = paths.blizzardPath;
+                pjassOptions.scriptPath = options.outputPath;
+                pjassOptions.stdoutPath = stdoutPath;
+                pjassOptions.stderrPath = stderrPath;
+                pjassOptions.allowedExternalFunctions = options.pjassAllowedExternalFunctions;
+                pjassOptions.timeoutMs = options.pjassTimeoutMs;
+                pjassOptions.exampleLimit = options.emitPjassExamples;
+                auto pjassStart = std::chrono::steady_clock::now();
+                pjassResult = runPjass(pjassOptions);
+                timings.pjass = elapsedMs(pjassStart, std::chrono::steady_clock::now());
+                if (!pjassResult.ok) {
+                    ok = false;
+                }
+            }
+        }
+
+        timings.total = elapsedMs(totalStart, std::chrono::steady_clock::now());
+        IncrementalReportData incrementalReport = buildIncrementalReport(earlyCache.output, options.compareIncrementalStatePath);
+        incrementalReport.cacheEnabled = true;
+        incrementalReport.cacheHit = true;
+        incrementalReport.cachePath = earlyCache.cacheDir;
+        incrementalReport.incrementalMode = options.incrementalMode;
+        if (!incrementalReport.compared) {
+            incrementalReport.reusedChunks = incrementalReport.chunks.size();
+        }
+        if (!options.emitIncrementalStatePath.empty()) {
+            ok = writeTextFile(options.emitIncrementalStatePath,
+                               emitIncrementalReportJson(options, incrementalReport, true)) && ok;
+        }
+        if (!options.emitIncrementalReportPath.empty()) {
+            ok = writeTextFile(options.emitIncrementalReportPath,
+                               emitIncrementalReportJson(options, incrementalReport, false)) && ok;
+        }
+        if (!options.emitPerformanceReportPath.empty()) {
+            ok = writeTextFile(options.emitPerformanceReportPath,
+                               emitPerformanceReportJson(options, timings, incrementalReport)) && ok;
+        }
+        if (!options.emitDependencyReportPath.empty()) {
+            ok = writeTextFile(options.emitDependencyReportPath,
+                               emitDependencyReportJson(options, timings)) && ok;
+        }
+        if (!options.emitBenchmarkReportPath.empty()) {
+            ok = writeTextFile(options.emitBenchmarkReportPath,
+                               emitBenchmarkReportJson(options, timings)) && ok;
+        }
+        if (!options.emitValidationReportPath.empty()) {
+            ok = writeTextFile(options.emitValidationReportPath,
+                               emitValidationReportJson(options, syntaxReport, initReport, pjassResult, comparisonReport, timings)) && ok;
+        }
+        return ok ? 0 : 5;
     }
 
     if (!options.analyzePjassLogPath.empty()) {
@@ -1652,13 +1926,22 @@ int main(int argc, char** argv) {
     InitValidationReport initReport;
     ComparisonReport comparisonReport;
     PjassResult pjassResult;
+    bool generatedOutputWritten = false;
     if (!options.scanOnly && !options.outputPath.empty()) {
         auto codegenStart = std::chrono::steady_clock::now();
+        size_t parallelWorkers = options.parallelWorkers;
+        if (options.experimentalParallelLowering && parallelWorkers == 0) {
+            unsigned int hardwareWorkers = std::thread::hardware_concurrency();
+            parallelWorkers = hardwareWorkers > 1 ? static_cast<size_t>(hardwareWorkers - 1) : 1;
+        }
         Phase1Codegen generator(diagnostics, CodegenOptions{options.scanOnly,
                                                             options.allowUnsupported,
                                                             options.warnMode,
                                                             options.mode == CompileMode::Fast,
-                                                            !options.emitGeneratedEntityPlanPath.empty()});
+                                                            !options.emitGeneratedEntityPlanPath.empty(),
+                                                            options.experimentalRecordedOrder,
+                                                            options.experimentalParallelLowering,
+                                                            parallelWorkers});
         codegen = generator.generate(expandedProgram);
         auto codegenEnd = std::chrono::steady_clock::now();
         timings.codegen = elapsedMs(codegenStart, codegenEnd);
@@ -1704,6 +1987,7 @@ int main(int argc, char** argv) {
                 ok = false;
             } else {
                 outputReady = writeTextFile(options.outputPath, codegen.output);
+                generatedOutputWritten = outputReady;
                 ok = outputReady && ok;
             }
             if (runSyntaxLite) {
@@ -1784,9 +2068,17 @@ int main(int argc, char** argv) {
     IncrementalReportData incrementalReport;
     const bool needIncrementalData = !options.emitIncrementalReportPath.empty() ||
                                      !options.emitIncrementalStatePath.empty() ||
-                                     !options.emitPerformanceReportPath.empty();
+                                     !options.emitPerformanceReportPath.empty() ||
+                                     !options.emitBenchmarkReportPath.empty() ||
+                                     !options.experimentalIncrementalCachePath.empty();
     if (needIncrementalData && !codegen.output.empty()) {
         incrementalReport = buildIncrementalReport(codegen.output, options.compareIncrementalStatePath);
+    }
+    incrementalReport.cacheEnabled = !options.experimentalIncrementalCachePath.empty();
+    incrementalReport.cachePath = options.experimentalIncrementalCachePath;
+    incrementalReport.incrementalMode = options.incrementalMode;
+    if (generatedOutputWritten && ok && !codegen.output.empty()) {
+        incrementalReport.cacheStored = storeIncrementalCache(options, codegen.output);
     }
     if (!options.emitStatsPath.empty()) {
         ok = writeTextFile(options.emitStatsPath, emitStatsJson(sources, preprocessed.stats, expandedProgram.stats, diagnostics, options.mode, timings)) && ok;
@@ -1805,6 +2097,14 @@ int main(int argc, char** argv) {
     if (!options.emitPerformanceReportPath.empty()) {
         ok = writeTextFile(options.emitPerformanceReportPath,
                            emitPerformanceReportJson(options, timings, incrementalReport)) && ok;
+    }
+    if (!options.emitDependencyReportPath.empty()) {
+        ok = writeTextFile(options.emitDependencyReportPath,
+                           emitDependencyReportJson(options, timings)) && ok;
+    }
+    if (!options.emitBenchmarkReportPath.empty()) {
+        ok = writeTextFile(options.emitBenchmarkReportPath,
+                           emitBenchmarkReportJson(options, timings)) && ok;
     }
     if (!options.emitValidationReportPath.empty()) {
         if (runSyntaxLite && !syntaxReport.ran && !codegen.output.empty()) {
