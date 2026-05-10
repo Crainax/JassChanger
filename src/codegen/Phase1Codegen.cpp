@@ -1,6 +1,7 @@
 #include "codegen/Phase1Codegen.h"
 
 #include "codegen/CodeWriter.h"
+#include "util/JsonWriter.h"
 #include "util/PathUtil.h"
 
 #include <algorithm>
@@ -12,6 +13,7 @@
 #include <set>
 #include <regex>
 #include <sstream>
+#include <tuple>
 #include <unordered_set>
 
 namespace vjassc {
@@ -234,7 +236,7 @@ std::string sanitizeGeneratedLine(const std::string& line) {
 struct FunctionBlock {
     std::string name;
     std::vector<std::string> lines;
-    std::set<std::string> dependencies;
+    std::vector<std::string> dependencies;
     size_t originalIndex = 0;
 };
 
@@ -491,7 +493,7 @@ std::string blankStringRawcodeAndComment(const std::string& line) {
     return out;
 }
 
-void addFunctionDependency(std::set<std::string>& deps,
+void addFunctionDependency(std::vector<std::string>& deps,
                            const std::unordered_map<std::string, size_t, TransparentStringHash, TransparentStringEqual>& functionIndex,
                            const std::string& current,
                            std::string_view candidate,
@@ -500,17 +502,27 @@ void addFunctionDependency(std::set<std::string>& deps,
         return;
     }
     if (functionIndex.find(candidate) != functionIndex.end()) {
-        std::string key(candidate);
-        if (deps.insert(std::move(key)).second && counters) {
-            ++counters->functionOrderEdges;
+        bool seen = false;
+        for (const auto& dep : deps) {
+            if (dep == candidate) {
+                seen = true;
+                break;
+            }
+        }
+        if (!seen) {
+            deps.emplace_back(candidate);
+            if (counters) {
+                ++counters->functionOrderEdges;
+            }
         }
     }
 }
 
-std::set<std::string> extractFunctionDependencies(const FunctionBlock& block,
-                                                  const std::unordered_map<std::string, size_t, TransparentStringHash, TransparentStringEqual>& functionIndex,
-                                                  CodegenPerformanceCounters* counters) {
-    std::set<std::string> deps;
+std::vector<std::string> extractFunctionDependencies(const FunctionBlock& block,
+                                                     const std::unordered_map<std::string, size_t, TransparentStringHash, TransparentStringEqual>& functionIndex,
+                                                     CodegenPerformanceCounters* counters,
+                                                     std::unordered_set<std::string>* recordedEdges) {
+    std::vector<std::string> deps;
     auto identStart = [](char c) {
         return std::isalpha(static_cast<unsigned char>(c)) || c == '_' || c == '$';
     };
@@ -627,6 +639,14 @@ std::set<std::string> extractFunctionDependencies(const FunctionBlock& block,
                 continue;
             }
             addFunctionDependency(deps, functionIndex, block.name, name, counters);
+        }
+    }
+    std::sort(deps.begin(), deps.end());
+    if (recordedEdges) {
+        for (const auto& dep : deps) {
+            if (recordedEdges->insert(block.name + "\n" + dep).second && counters) {
+                ++counters->functionDependencyRecordedEdges;
+            }
         }
     }
     return deps;
@@ -1508,7 +1528,7 @@ void ensureFunctionInterfaceInitCall(std::vector<FunctionBlock>& blocks) {
 
 std::string orderFunctionBlocksForPjass(const std::string& output,
                                         CodegenPerformanceCounters* counters,
-                                        const std::unordered_set<std::string>* recordedEdges) {
+                                        std::unordered_set<std::string>* recordedEdges) {
     std::vector<std::string> lines;
     std::istringstream in(output);
     std::string line;
@@ -1562,7 +1582,7 @@ std::string orderFunctionBlocksForPjass(const std::string& output,
         }
     }
     for (auto& block : blocks) {
-        block.dependencies = extractFunctionDependencies(block, functionIndex, counters);
+        block.dependencies = extractFunctionDependencies(block, functionIndex, counters, recordedEdges);
     }
     auto rebuildFunctionIndexAndSignatures = [&]() {
         functionIndex.clear();
@@ -1593,7 +1613,7 @@ std::string orderFunctionBlocksForPjass(const std::string& output,
         rebuildFunctionIndexAndSignatures();
         for (size_t index : dirty) {
             if (index < blocks.size()) {
-                blocks[index].dependencies = extractFunctionDependencies(blocks[index], functionIndex, counters);
+                blocks[index].dependencies = extractFunctionDependencies(blocks[index], functionIndex, counters, recordedEdges);
             }
         }
     };
@@ -1665,11 +1685,11 @@ std::string orderFunctionBlocksForPjass(const std::string& output,
             targetSigIt->second.returnsNothing() &&
             !targetSigIt->second.paramTypes.empty() &&
             callerSigIt->second.takesNothingReturnsNothing() &&
-            blocks[targetIndex].dependencies.contains(caller)) {
+            std::binary_search(blocks[targetIndex].dependencies.begin(), blocks[targetIndex].dependencies.end(), caller)) {
             edge = {targetIndex, callerIndex};
         } else if (callerIndex < targetIndex &&
                    directFunctionObjectCallKindForTarget(blocks[callerIndex], target) == FunctionObjectCallKind::Evaluate &&
-                   blocks[targetIndex].dependencies.contains(caller) &&
+                   std::binary_search(blocks[targetIndex].dependencies.begin(), blocks[targetIndex].dependencies.end(), caller) &&
                    directFunctionObjectCallKindForTarget(blocks[targetIndex], caller) == FunctionObjectCallKind::Evaluate) {
             edge = {targetIndex, callerIndex};
         }
@@ -2206,6 +2226,10 @@ std::string regexEscape(const std::string& text) {
 }
 
 std::string rewriteOutsideProtected(const std::string& line, const std::function<std::string(std::string)>& rewrite) {
+    if (line.find_first_of("\"'") == std::string::npos &&
+        line.find("//") == std::string::npos) {
+        return rewrite(line);
+    }
     std::string out;
     std::string normal;
     bool inString = false;
@@ -2266,7 +2290,11 @@ std::string rewriteOutsideProtected(const std::string& line, const std::function
 }
 
 std::string replaceRegex(std::string text, const std::string& pattern, const std::string& replacement) {
-    static std::unordered_map<std::string, std::regex> regexCache;
+    static std::unordered_map<std::string, std::regex> regexCache = [] {
+        std::unordered_map<std::string, std::regex> cache;
+        cache.reserve(20000);
+        return cache;
+    }();
     auto [it, _] = regexCache.try_emplace(pattern, pattern);
     return std::regex_replace(text, it->second, replacement);
 }
@@ -2498,7 +2526,7 @@ struct ParsedLocalDeclList {
     std::vector<ParsedLocalDeclarator> decls;
 };
 
-ParsedLocalDeclList parseLocalDeclList(const std::string& line) {
+ParsedLocalDeclList parseLocalDeclListUncached(const std::string& line) {
     ParsedLocalDeclList result;
     std::string t = trim(stripLineCommentPreservingLiterals(line));
     if (startsWithWord(t, "local")) {
@@ -2562,6 +2590,20 @@ ParsedLocalDeclList parseLocalDeclList(const std::string& line) {
     }
     result.matched = !result.decls.empty();
     return result;
+}
+
+ParsedLocalDeclList parseLocalDeclList(const std::string& line) {
+    static std::unordered_map<std::string, ParsedLocalDeclList, TransparentStringHash, TransparentStringEqual> cache = [] {
+        std::unordered_map<std::string, ParsedLocalDeclList, TransparentStringHash, TransparentStringEqual> entries;
+        entries.reserve(20000);
+        return entries;
+    }();
+    if (auto it = cache.find(line); it != cache.end()) {
+        return it->second;
+    }
+    ParsedLocalDeclList parsed = parseLocalDeclListUncached(line);
+    cache.emplace(line, parsed);
+    return parsed;
 }
 
 std::string receiverFromPossibleAssignment(const std::string& rawLine) {
@@ -3366,6 +3408,7 @@ CodegenResult Phase1Codegen::generate(const Program& program) {
     structIndexByDecl_.clear();
     structIndexByName_.clear();
     globalArrayShapes_.clear();
+    globalArrayShapeFirstChars_.fill(false);
     globalStructTypes_.clear();
     functionInterfaces_.clear();
     functionInterfaceIndexByName_.clear();
@@ -3500,7 +3543,63 @@ CodegenResult Phase1Codegen::makeResult(bool ok) {
     result.functionInterfaceEvaluateTempLimit = functionInterfaceEvaluateTempLimit_;
     result.passTimings = passTimings_;
     result.performanceCounters = performanceCounters_;
+    if (options_.emitGeneratedEntityPlan) {
+        result.generatedEntityPlanJson = emitGeneratedEntityPlanJson();
+    }
     return result;
+}
+
+std::string Phase1Codegen::emitGeneratedEntityPlanJson() const {
+    std::ostringstream out;
+    out << "{\n"
+        << "  \"phase\": 20,\n"
+        << "  \"kind\": \"generated-entity-plan\",\n"
+        << "  \"lambdas\": [\n";
+    for (size_t i = 0; i < lambdas_.size(); ++i) {
+        const auto& lambda = lambdas_[i];
+        out << "    {\"id\": " << (i + 1)
+            << ", \"name\": ";
+        writeJsonString(out, lambda.name);
+        out << ", \"line\": " << lambda.loc.line
+            << ", \"column\": " << lambda.loc.column
+            << ", \"container\": ";
+        writeJsonString(out, lambda.container ? lambda.container->name : "");
+        out << ", \"struct\": ";
+        writeJsonString(out, lambda.currentStruct ? lambda.currentStruct->generatedName : "");
+        out << "}" << (i + 1 == lambdas_.size() ? "\n" : ",\n");
+    }
+    out << "  ],\n"
+        << "  \"functionInterfaceTargets\": [\n";
+    struct TargetRow {
+        std::string interfaceName;
+        std::string targetName;
+        int id = 0;
+        bool needsCondition = false;
+        bool needsAction = false;
+    };
+    std::vector<TargetRow> targets;
+    for (const auto& iface : functionInterfaces_) {
+        for (const auto& target : iface.targets) {
+            targets.push_back({iface.finalName, target.finalName, target.id, target.needsCondition, target.needsAction});
+        }
+    }
+    std::sort(targets.begin(), targets.end(), [](const TargetRow& a, const TargetRow& b) {
+        return std::tie(a.interfaceName, a.id, a.targetName) < std::tie(b.interfaceName, b.id, b.targetName);
+    });
+    for (size_t i = 0; i < targets.size(); ++i) {
+        const auto& target = targets[i];
+        out << "    {\"interface\": ";
+        writeJsonString(out, target.interfaceName);
+        out << ", \"id\": " << target.id
+            << ", \"target\": ";
+        writeJsonString(out, target.targetName);
+        out << ", \"needsCondition\": " << (target.needsCondition ? "true" : "false")
+            << ", \"needsAction\": " << (target.needsAction ? "true" : "false")
+            << "}" << (i + 1 == targets.size() ? "\n" : ",\n");
+    }
+    out << "  ]\n"
+        << "}\n";
+    return out.str();
 }
 
 void Phase1Codegen::emitGlobals(const Program& program, const LibraryGraphResult& graph) {
@@ -4175,14 +4274,6 @@ void Phase1Codegen::emitStructMethod(const StructInfo& info, const MethodInfo& m
     countBodyMode(mode, true);
     std::string params = rewriteParamList(method.decl->params, !method.isStatic, &info);
     std::string returns = rewriteTypeName(method.decl->returnType.name, &info);
-    FunctionSignature declaredSig = signatureFromParams(method.decl->params, method.decl->returnType, &info);
-    if (!method.isStatic) {
-        declaredSig.paramTypes.insert(declaredSig.paramTypes.begin(), info.originalName);
-    }
-    rememberFunctionInterfaceParamTypes(info.originalName + "." + method.name,
-                                        method.generatedName,
-                                        declaredSig.paramTypes,
-                                        info.container);
     writer_.writeln("function " + method.generatedName + " takes " + params + " returns " + returns);
     writer_.indent();
     LocalTypeMap localTypes;
@@ -4223,14 +4314,10 @@ void Phase1Codegen::emitStructMethod(const StructInfo& info, const MethodInfo& m
             lineFeatureCacheValid_ = false;
             locals.insert(locals.end(), localDecls.begin(), localDecls.end());
             for (const auto& extra : extraLines) {
-                for (const auto& lowered : lowerStatementLine(extra, ctx)) {
-                    body.push_back(lowered);
-                }
+                lowerStatementLineInto(extra, ctx, body);
             }
         } else {
-            for (const auto& lowered : lowerStatementLine(line, ctx)) {
-                body.push_back(lowered);
-            }
+            lowerStatementLineInto(line, ctx, body);
         }
     }
     for (const auto& local : locals) {
@@ -4372,6 +4459,9 @@ void Phase1Codegen::collectStruct(const Decl& decl, const Decl* container, const
                                         ? fixedArrayStorageName(info, fieldInfo)
                                         : fieldInfo.generatedName;
             globalArrayShapes_[shapeName] = ArrayShape{fieldInfo.arrayDimensions, false};
+            if (!shapeName.empty()) {
+                globalArrayShapeFirstChars_[static_cast<unsigned char>(shapeName.front())] = true;
+            }
         }
         if (!fieldInfo.isStatic && fieldInfo.isFixedArray && fieldInfo.fixedArraySize > 0) {
             globalStructTypes_[fixedArrayStorageName(info, fieldInfo)] =
@@ -4725,6 +4815,9 @@ std::string Phase1Codegen::rewriteGlobalLine(const std::string& line, const Decl
     ArrayDeclRewrite multi = rewriteMultiDimDeclarationLine(out);
     if (multi.matched) {
         globalArrayShapes_[multi.name] = ArrayShape{multi.dimensions, false};
+        if (!multi.name.empty()) {
+            globalArrayShapeFirstChars_[static_cast<unsigned char>(multi.name.front())] = true;
+        }
         out = multi.line;
     }
     out = replaceRegex(out,
@@ -4910,11 +5003,14 @@ std::string Phase1Codegen::rewriteArrayAccesses(
         }
         std::string_view name(line.data() + nameStart, i - nameStart);
         const ArrayShape* shape = nullptr;
-        auto globalIt = globalArrayShapes_.find(name);
-        if (globalIt != globalArrayShapes_.end()) {
-            shape = &globalIt->second;
+        unsigned char first = static_cast<unsigned char>(name.front());
+        if (globalArrayShapeFirstChars_[first]) {
+            auto globalIt = globalArrayShapes_.find(name);
+            if (globalIt != globalArrayShapes_.end()) {
+                shape = &globalIt->second;
+            }
         }
-        if (localArrayShapes) {
+        if (localArrayShapes && !localArrayShapes->empty()) {
             auto localIt = localArrayShapes->find(name);
             if (localIt != localArrayShapes->end()) {
                 shape = &localIt->second;
@@ -5004,10 +5100,11 @@ bool Phase1Codegen::hasKnownArrayReceiver(
             continue;
         }
         std::string_view tokenText(tokens.line.data() + token.start, token.end - token.start);
-        if (globalArrayShapes_.contains(tokenText)) {
+        unsigned char first = static_cast<unsigned char>(tokenText.front());
+        if (globalArrayShapeFirstChars_[first] && globalArrayShapes_.contains(tokenText)) {
             return true;
         }
-        if (localArrayShapes && localArrayShapes->contains(tokenText)) {
+        if (localArrayShapes && !localArrayShapes->empty() && localArrayShapes->contains(tokenText)) {
             return true;
         }
     }
@@ -5154,7 +5251,7 @@ std::vector<std::string> Phase1Codegen::rewriteLocalDeclLine(const std::string& 
 std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
                                                    const StructInfo* currentStruct,
                                                    const LocalTypeMap& localTypes) const {
-    LineFeatures initialFeatures = scanLineFeatures(line, currentStruct, &localTypes);
+    LineFeatures initialFeatures = scanLineFeatures(line, currentStruct, &localTypes, nullptr);
     const bool hasMemberAccess = initialFeatures.hasDot;
     const bool hasArrayReceiver = initialFeatures.hasBracket;
     const bool hasGeneratedStructPrefix = initialFeatures.hasGeneratedStructPrefix;
@@ -5205,9 +5302,9 @@ std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
         }
         if (hasMemberAccess || hasGeneratedStructPrefix || hasArrayStructReceiver) {
             std::vector<const StructInfo*> structRewriteInfos;
-            std::unordered_set<const StructInfo*> seenStructRewriteInfos;
             auto addStructRewriteInfo = [&](const StructInfo* info) {
-                if (info && seenStructRewriteInfos.insert(info).second) {
+                if (info &&
+                    std::find(structRewriteInfos.begin(), structRewriteInfos.end(), info) == structRewriteInfos.end()) {
                     structRewriteInfos.push_back(info);
                 }
             };
@@ -6346,10 +6443,12 @@ const Phase1Codegen::LineTokenCache& Phase1Codegen::getLineTokenCache(const std:
 Phase1Codegen::LineFeatures Phase1Codegen::scanLineFeatures(
     const std::string& line,
     const StructInfo* currentStruct,
-    const LocalTypeMap* localTypes) const {
+    const LocalTypeMap* localTypes,
+    const ArrayShapeMap* localArrayShapes) const {
     if (lineFeatureCacheValid_ &&
         lineFeatureCacheStruct_ == currentStruct &&
         lineFeatureCacheLocalTypes_ == localTypes &&
+        lineFeatureCacheLocalArrayShapes_ == localArrayShapes &&
         lineFeatureCacheLine_ == line) {
         return lineFeatureCacheValue_;
     }
@@ -6377,6 +6476,29 @@ Phase1Codegen::LineFeatures Phase1Codegen::scanLineFeatures(
     features.hasBooleanOperators = tokens.hasBooleanOperators;
     features.hasGeneratedStructPrefix = tokens.hasGeneratedStructPrefix;
     features.hasStringOrRawcode = tokens.hasStringOrRawcode;
+    if (tokens.hasBracket) {
+        for (const auto& token : tokens.identifiers) {
+            size_t cursor = token.end;
+            while (cursor < line.size() && std::isspace(static_cast<unsigned char>(line[cursor]))) {
+                ++cursor;
+            }
+            if (cursor >= line.size() || line[cursor] != '[') {
+                continue;
+            }
+            std::string_view word(tokens.line.data() + token.start, token.end - token.start);
+            unsigned char first = static_cast<unsigned char>(word.front());
+            if ((globalArrayShapeFirstChars_[first] && globalArrayShapes_.contains(word)) ||
+                (localArrayShapes && !localArrayShapes->empty() && localArrayShapes->contains(word))) {
+                features.hasKnownArrayReceiver = true;
+                break;
+            }
+            if (auto structIt = structIndexByName_.find(word);
+                structIt != structIndexByName_.end() && structs_[structIt->second].isArrayStruct) {
+                features.hasKnownArrayReceiver = true;
+                break;
+            }
+        }
+    }
     auto addCurrentStructMember = [&](std::string_view name) {
         if (!currentStruct || name.empty()) {
             return false;
@@ -6436,8 +6558,107 @@ Phase1Codegen::LineFeatures Phase1Codegen::scanLineFeatures(
         std::string_view receiver(line.data() + receiverStart, beforeDot - receiverStart);
         return receiver == "this" || receiver == "thistype";
     };
+    auto dottedTokenHasKnownStructReceiver = [&](const IdentifierToken& token) {
+        auto receiverNameHasStructType = [&](std::string_view receiver) {
+            if (receiver == "return" || receiver == "set" || receiver == "call" || receiver == "function") {
+                return currentStruct != nullptr;
+            }
+            if (receiver == "this" || receiver == "thistype") {
+                return currentStruct != nullptr;
+            }
+            if (localTypes) {
+                if (auto localIt = localTypes->find(receiver); localIt != localTypes->end()) {
+                    return localIt->second == "thistype" ||
+                           structIndexByName_.find(localIt->second) != structIndexByName_.end();
+                }
+            }
+            if (auto globalIt = globalStructTypes_.find(receiver); globalIt != globalStructTypes_.end()) {
+                return structIndexByName_.find(globalIt->second) != structIndexByName_.end();
+            }
+            return structIndexByName_.find(receiver) != structIndexByName_.end() ||
+                   functionInterfaceIndexByName_.find(receiver) != functionInterfaceIndexByName_.end();
+        };
+        auto indexedReceiverHasStructType = [&](size_t closeBracket) {
+            size_t cursor = closeBracket + 1;
+            while (cursor > 0) {
+                size_t close = cursor - 1;
+                if (line[close] != ']') {
+                    break;
+                }
+                int depth = 1;
+                size_t open = close;
+                bool foundOpen = false;
+                while (open > 0) {
+                    --open;
+                    if (line[open] == ']') {
+                        ++depth;
+                    } else if (line[open] == '[') {
+                        --depth;
+                        if (depth == 0) {
+                            foundOpen = true;
+                            break;
+                        }
+                    }
+                }
+                if (!foundOpen) {
+                    return true;
+                }
+                cursor = open;
+                while (cursor > 0 && std::isspace(static_cast<unsigned char>(line[cursor - 1]))) {
+                    --cursor;
+                }
+            }
+            if (cursor == 0 || !isIdentPart(line[cursor - 1])) {
+                return true;
+            }
+            size_t receiverEnd = cursor;
+            size_t receiverStart = receiverEnd - 1;
+            while (receiverStart > 0 && isIdentPart(line[receiverStart - 1])) {
+                --receiverStart;
+            }
+            return receiverNameHasStructType(std::string_view(line.data() + receiverStart, receiverEnd - receiverStart));
+        };
+        size_t dot = token.start;
+        while (dot > 0 && std::isspace(static_cast<unsigned char>(line[dot - 1]))) {
+            --dot;
+        }
+        if (dot == 0 || line[dot - 1] != '.') {
+            return false;
+        }
+        size_t beforeDot = dot - 1;
+        while (beforeDot > 0 && std::isspace(static_cast<unsigned char>(line[beforeDot - 1]))) {
+            --beforeDot;
+        }
+        if (beforeDot == 0) {
+            return currentStruct != nullptr;
+        }
+        char prev = line[beforeDot - 1];
+        if (prev == ']') {
+            return indexedReceiverHasStructType(beforeDot - 1);
+        }
+        if (prev == ')') {
+            return true;
+        }
+        if (!isIdentPart(prev)) {
+            return currentStruct != nullptr;
+        }
+        size_t receiverStart = beforeDot - 1;
+        while (receiverStart > 0 && isIdentPart(line[receiverStart - 1])) {
+            --receiverStart;
+        }
+        std::string_view receiver(line.data() + receiverStart, beforeDot - receiverStart);
+        return receiverNameHasStructType(receiver);
+    };
     if (features.hasThistype && currentStruct) {
         features.hasPossibleStructMember = true;
+    }
+    if (tokens.hasDot) {
+        for (const auto& token : tokens.identifiers) {
+            if (token.precededByDot && dottedTokenHasKnownStructReceiver(token)) {
+                features.hasPotentialStructDot = true;
+                break;
+            }
+        }
     }
     if (currentStruct) {
         for (const auto& token : tokens.identifiers) {
@@ -6450,6 +6671,10 @@ Phase1Codegen::LineFeatures Phase1Codegen::scanLineFeatures(
             }
             if (word == "allocate" || word == "destroy" || word == "deallocate") {
                 features.hasPossibleStructMember = true;
+                continue;
+            }
+            unsigned char first = static_cast<unsigned char>(word.front());
+            if (!currentStruct->fieldFirstChars[first] && !currentStruct->methodFirstChars[first]) {
                 continue;
             }
             if (localTypes && localTypes->find(word) != localTypes->end()) {
@@ -6468,13 +6693,14 @@ Phase1Codegen::LineFeatures Phase1Codegen::scanLineFeatures(
     lineFeatureCacheLine_ = line;
     lineFeatureCacheStruct_ = currentStruct;
     lineFeatureCacheLocalTypes_ = localTypes;
+    lineFeatureCacheLocalArrayShapes_ = localArrayShapes;
     lineFeatureCacheValue_ = features;
     return features;
 }
 
 bool Phase1Codegen::lineNeedsStructRewrite(const LineFeatures& features, const StructInfo* currentStruct) const {
-    return features.hasDot ||
-           features.hasBracket ||
+    return features.hasPotentialStructDot ||
+           features.hasKnownArrayReceiver ||
            features.hasThis ||
            features.hasThistype ||
            features.hasGeneratedStructPrefix ||
@@ -6851,7 +7077,7 @@ std::string Phase1Codegen::lowerExpression(std::string expression,
     if (expectedInterfaceType.empty() && ctx.currentStruct != nullptr &&
         expression.find_first_of(".[(") == std::string::npos &&
         !containsIdentifierWord(expression, "function")) {
-        LineFeatures features = scanLineFeatures(expression, ctx.currentStruct, ctx.localTypes);
+        LineFeatures features = scanLineFeatures(expression, ctx.currentStruct, ctx.localTypes, ctx.localArrayShapes);
         if (!lineNeedsStructRewrite(features, ctx.currentStruct)) {
             ++performanceCounters_.linesSkippedNoDotBracketCall;
             return expression;
@@ -6972,7 +7198,9 @@ std::string Phase1Codegen::lowerExpression(std::string expression,
     return trim(expression);
 }
 
-std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& rawLine, LoweringContext& ctx) const {
+void Phase1Codegen::lowerStatementLineInto(const std::string& rawLine,
+                                           LoweringContext& ctx,
+                                           std::vector<std::string>& out) const {
     ++performanceCounters_.linesVisited;
     std::string line = trim(rawLine);
     if (ctx.currentStruct) {
@@ -6984,11 +7212,10 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
     if (firstNonSpace != std::string::npos) {
         leading = rawLine.substr(0, firstNonSpace);
     }
-    std::vector<std::string> out;
     if (line.empty()) {
-        return out;
+        return;
     }
-    LineFeatures statementFeatures = scanLineFeatures(line, ctx.currentStruct, ctx.localTypes);
+    LineFeatures statementFeatures = scanLineFeatures(line, ctx.currentStruct, ctx.localTypes, ctx.localArrayShapes);
     auto countFastPath = [&]() {
         if (ctx.mode == BodyMode::Zinc) {
             ++performanceCounters_.zincFastPathLines;
@@ -7017,6 +7244,18 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
         }
         return t.substr(start, pos - start);
     };
+    auto isSimpleIdentifierText = [](std::string_view text) {
+        text = trimView(text);
+        if (text.empty() || !isIdentStart(text.front())) {
+            return false;
+        }
+        for (char c : text.substr(1)) {
+            if (!isIdentPart(c)) {
+                return false;
+            }
+        }
+        return true;
+    };
     auto containsFunctionArgumentCandidateCall = [&]() {
         if (!statementFeatures.hasParen || functionArgumentLoweringCandidates_.empty()) {
             return false;
@@ -7036,8 +7275,8 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
         return false;
     };
     const bool hasModeHeavyToken =
-        statementFeatures.hasDot ||
-        statementFeatures.hasBracket ||
+        statementFeatures.hasPotentialStructDot ||
+        statementFeatures.hasKnownArrayReceiver ||
         statementFeatures.hasFunctionKeyword ||
         statementFeatures.hasLambdaStart ||
         statementFeatures.hasNameToken ||
@@ -7064,13 +7303,13 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
             if (auto eq = findTopLevelAssignment(rest)) {
                 std::string lhs = trim(std::string_view(rest).substr(0, *eq));
                 std::string rhs = trim(std::string_view(rest).substr(*eq + 1));
-                if (ctx.localTypes) {
+                if (ctx.localTypes && isSimpleIdentifierText(lhs)) {
                     auto it = ctx.localTypes->find(lhs);
                     if (it != ctx.localTypes->end() && findFunctionInterface(it->second)) {
                         canUseFastPath = false;
                     }
                 }
-                if (functionIndexByName_.contains(rhs)) {
+                if (isSimpleIdentifierText(rhs) && functionIndexByName_.contains(rhs)) {
                     canUseFastPath = false;
                 }
             }
@@ -7080,7 +7319,7 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
         if (canUseFastPath) {
             countFastPath();
             out.push_back(!leading.empty() ? rawLine : line);
-            return out;
+            return;
         }
     }
     if (startsWithWord(line, "call")) {
@@ -7121,7 +7360,7 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
                 std::string receiverExpr = rewriteReceiverExpression(receiver, ctx);
                 markInterfaceTargetNeedsAction(*iface, receiverExpr, SourceLocation{});
                 out.push_back("call TriggerExecute(" + prefix + "_trigger[" + receiverExpr + "])");
-                return out;
+                return;
             }
             std::string finalName = resolveFunctionTargetName(receiver, ctx.currentStruct);
             if (const FunctionInfo* fn = findFunctionInfo(finalName)) {
@@ -7129,7 +7368,7 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
                 recordFunctionDependency(ctx.currentFunctionName, fn->finalName);
                 out.push_back("call " + fn->finalName + "(" + lowerCallArgs(argsText) + ") // " +
                               std::string(kFunctionObjectExecuteMarker));
-                return out;
+                return;
             }
         }
         if (findMethodCallSpan(callExpr, "evaluate", receiverStart, dotPos, open, close) && receiverStart == 0 && close + 1 == callExpr.size()) {
@@ -7151,7 +7390,7 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
                 std::string receiverExpr = rewriteReceiverExpression(receiver, ctx);
                 markInterfaceTargetNeedsCondition(*iface, receiverExpr, SourceLocation{});
                 out.push_back("call TriggerEvaluate(" + prefix + "_trigger[" + receiverExpr + "])");
-                return out;
+                return;
             }
             std::string finalName = resolveFunctionTargetName(receiver, ctx.currentStruct);
             if (const FunctionInfo* fn = findFunctionInfo(finalName)) {
@@ -7159,7 +7398,7 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
                 recordFunctionDependency(ctx.currentFunctionName, fn->finalName);
                 out.push_back("call " + fn->finalName + "(" + lowerCallArgs(argsText) + ") // " +
                               std::string(kFunctionObjectEvaluateMarker));
-                return out;
+                return;
             }
         }
     }
@@ -7170,7 +7409,7 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
             std::string lhs = trim(std::string_view(rest).substr(0, *eq));
             std::string rhs = trim(std::string_view(rest).substr(*eq + 1));
             std::string expectedType;
-            if (ctx.localTypes) {
+            if (ctx.localTypes && isSimpleIdentifierText(lhs)) {
                 auto it = ctx.localTypes->find(lhs);
                 if (it != ctx.localTypes->end() && findFunctionInterface(it->second)) {
                     expectedType = it->second;
@@ -7184,7 +7423,7 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
                            !std::isspace(static_cast<unsigned char>(rest[*eq + 1]));
             std::string op = compact ? "=" : " = ";
             std::string lhsOut = lhs;
-            LineFeatures lhsFeatures = scanLineFeatures(lhs, ctx.currentStruct, ctx.localTypes);
+            LineFeatures lhsFeatures = scanLineFeatures(lhs, ctx.currentStruct, ctx.localTypes, ctx.localArrayShapes);
             if (lineNeedsStructRewrite(lhsFeatures, ctx.currentStruct)) {
                 static const LocalTypeMap kEmptyLocalTypes;
                 const auto& localTypes = ctx.localTypes ? *ctx.localTypes : kEmptyLocalTypes;
@@ -7192,7 +7431,7 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
                 lhsOut = rewriteArrayAccesses(lhsOut, ctx.localArrayShapes);
             }
             out.push_back("set " + lhsOut + op + rhs);
-            return out;
+            return;
         }
     }
 
@@ -7202,7 +7441,7 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
         expr = lowerExpression(expr, {}, ctx, prelude);
         out.insert(out.end(), prelude.begin(), prelude.end());
         out.push_back("return " + expr);
-        return out;
+        return;
     }
 
     std::vector<std::string> prelude;
@@ -7214,6 +7453,11 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
     } else {
         out.push_back(line);
     }
+}
+
+std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& rawLine, LoweringContext& ctx) const {
+    std::vector<std::string> out;
+    lowerStatementLineInto(rawLine, ctx, out);
     return out;
 }
 

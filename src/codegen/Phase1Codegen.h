@@ -22,6 +22,7 @@ struct CodegenOptions {
     bool allowUnsupported = false;
     bool warnMode = false;
     bool fastMode = false;
+    bool emitGeneratedEntityPlan = false;
 };
 
 struct CodegenPerformanceCounters {
@@ -101,6 +102,7 @@ struct CodegenResult {
     size_t functionInterfaceEvaluateTempLimit = 8;
     std::unordered_map<std::string, long long> passTimings;
     CodegenPerformanceCounters performanceCounters;
+    std::string generatedEntityPlanJson;
 };
 
 class Phase1Codegen {
@@ -275,6 +277,8 @@ private:
         bool hasNameToken = false;
         bool hasExecuteEvaluate = false;
         bool hasBooleanOperators = false;
+        bool hasKnownArrayReceiver = false;
+        bool hasPotentialStructDot = false;
         bool hasPossibleStructMember = false;
         bool hasGeneratedStructPrefix = false;
         bool hasStringOrRawcode = false;
@@ -345,6 +349,9 @@ private:
                                      const ArrayShapeMap* localArrayShapes) const;
     bool hasKnownArrayReceiver(const std::string& line,
                                const ArrayShapeMap* localArrayShapes) const;
+    void lowerStatementLineInto(const std::string& line,
+                                LoweringContext& ctx,
+                                std::vector<std::string>& out) const;
     std::vector<std::string> lowerStatementLine(const std::string& line, LoweringContext& ctx) const;
     std::vector<std::string> lowerBodyByMode(BodyMode mode,
                                              const std::vector<std::string>& lines,
@@ -369,7 +376,8 @@ private:
     std::string rewriteFunctionNames(std::string expression, const StructInfo* currentStruct) const;
     LineFeatures scanLineFeatures(const std::string& line,
                                   const StructInfo* currentStruct,
-                                  const LocalTypeMap* localTypes) const;
+                                  const LocalTypeMap* localTypes,
+                                  const ArrayShapeMap* localArrayShapes) const;
     const LineTokenCache& getLineTokenCache(const std::string& line, bool* built = nullptr) const;
     LineTokenCache buildLineTokenCache(const std::string& line) const;
     BodyMode bodyModeForFunction(const Decl& decl) const;
@@ -413,6 +421,7 @@ private:
     std::vector<std::string> extractZincLambdas(const std::vector<std::string>& lines, SourceLocation loc);
     void recordLambdaContext(const std::string& beforeText);
     CodegenResult makeResult(bool ok);
+    std::string emitGeneratedEntityPlanJson() const;
     void lowerZincBlock(const std::vector<std::string>& lines, size_t& index, std::vector<std::string>& locals, std::vector<std::string>& body);
     void lowerZincSimpleStatement(const std::string& statement, std::vector<std::string>& locals, std::vector<std::string>& body);
 
@@ -427,9 +436,10 @@ private:
     std::unordered_map<const Decl*, size_t> structIndexByDecl_;
     std::unordered_map<std::string, size_t, TransparentStringHash, TransparentStringEqual> structIndexByName_;
     ArrayShapeMap globalArrayShapes_;
+    std::array<bool, 256> globalArrayShapeFirstChars_{};
     LocalTypeMap globalStructTypes_;
     mutable std::vector<FunctionInterfaceInfo> functionInterfaces_;
-    mutable std::unordered_map<std::string, size_t> functionInterfaceIndexByName_;
+    mutable std::unordered_map<std::string, size_t, TransparentStringHash, TransparentStringEqual> functionInterfaceIndexByName_;
     mutable std::unordered_map<std::string, size_t> functionObjectInterfaceIndexBySignature_;
     std::vector<FunctionInfo> functions_;
     std::unordered_map<std::string, size_t, TransparentStringHash, TransparentStringEqual> functionIndexByName_;
@@ -467,6 +477,7 @@ private:
     mutable std::string lineFeatureCacheLine_;
     mutable const StructInfo* lineFeatureCacheStruct_ = nullptr;
     mutable const LocalTypeMap* lineFeatureCacheLocalTypes_ = nullptr;
+    mutable const ArrayShapeMap* lineFeatureCacheLocalArrayShapes_ = nullptr;
     mutable LineFeatures lineFeatureCacheValue_;
     const Decl* mainFunction_ = nullptr;
     const Decl* mainContainer_ = nullptr;

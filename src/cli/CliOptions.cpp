@@ -10,6 +10,7 @@ bool needsValue(const std::string& arg) {
     return arg == "-o" || arg == "--emit-preprocessed" || arg == "--emit-tokens" ||
            arg == "--emit-ast" || arg == "--emit-expanded-ast" || arg == "--emit-stats" ||
            arg == "--emit-validation-report" || arg == "--emit-performance-report" ||
+           arg == "--emit-generated-entity-plan" ||
            arg == "--emit-incremental-report" || arg == "--emit-incremental-state" ||
            arg == "--compare-incremental-state" || arg == "--pjass" || arg == "--common" ||
            arg == "--blizzard" || arg == "--compare-jasshelper" || arg == "--pjass-timeout-ms" ||
@@ -138,6 +139,10 @@ CliParseResult parseCli(int argc, char** argv) {
             if (!requireValue(arg, opt.emitPerformanceReportPath)) {
                 return result;
             }
+        } else if (arg == "--emit-generated-entity-plan") {
+            if (!requireValue(arg, opt.emitGeneratedEntityPlanPath)) {
+                return result;
+            }
         } else if (arg == "--emit-incremental-report") {
             if (!requireValue(arg, opt.emitIncrementalReportPath)) {
                 return result;
@@ -221,6 +226,7 @@ CliParseResult parseCli(int argc, char** argv) {
             const bool emitsOnly = !opt.emitPreprocessedPath.empty() || !opt.emitTokensPath.empty() ||
                                !opt.emitAstPath.empty() || !opt.emitExpandedAstPath.empty() ||
                                !opt.emitStatsPath.empty() || !opt.emitPerformanceReportPath.empty() ||
+                               !opt.emitGeneratedEntityPlanPath.empty() ||
                                !opt.emitIncrementalReportPath.empty() || !opt.emitIncrementalStatePath.empty();
         if (!emitsOnly) {
             result.error = "missing output path; use -o <output.j> or --scan-only";
@@ -233,7 +239,7 @@ CliParseResult parseCli(int argc, char** argv) {
 }
 
 void printHelp(std::ostream& out) {
-    out << "vjassc phase19 - vJass/Zinc to JASS compiler prototype\n"
+    out << "vjassc phase20 - vJass/Zinc to JASS compiler prototype\n"
         << "\n"
         << "Usage:\n"
         << "  vjassc <input.j> -o <output.j> [--debug|--release]\n"
@@ -252,7 +258,8 @@ void printHelp(std::ostream& out) {
         << "  --emit-expanded-ast <path>   Write AST after module expansion\n"
         << "  --emit-stats <path>          Write JSON statistics\n"
         << "  --emit-validation-report <path> Write JSON validation report\n"
-        << "  --emit-performance-report <path> Write Phase 19 performance JSON report\n"
+        << "  --emit-performance-report <path> Write Phase 20 performance JSON report\n"
+        << "  --emit-generated-entity-plan <path> Write deterministic generated entity plan JSON\n"
         << "  --emit-incremental-report <path> Write read-only incremental chunk reuse report\n"
         << "  --emit-incremental-state <path> Write read-only incremental chunk state\n"
         << "  --compare-incremental-state <path> Compare incremental report against a prior state\n"
@@ -275,7 +282,7 @@ void printHelp(std::ostream& out) {
 }
 
 void printVersion(std::ostream& out) {
-    out << "vjassc phase19 0.19.0\n";
+    out << "vjassc phase20 0.20.0\n";
 }
 
 } // namespace vjassc

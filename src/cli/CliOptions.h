@@ -24,6 +24,7 @@ struct CliOptions {
     std::filesystem::path emitStatsPath;
     std::filesystem::path emitValidationReportPath;
     std::filesystem::path emitPerformanceReportPath;
+    std::filesystem::path emitGeneratedEntityPlanPath;
     std::filesystem::path emitIncrementalReportPath;
     std::filesystem::path emitIncrementalStatePath;
     std::filesystem::path compareIncrementalStatePath;

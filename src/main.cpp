@@ -1264,7 +1264,7 @@ std::string emitIncrementalReportJson(const CliOptions& options,
                                       bool stateOnly) {
     std::ostringstream out;
     out << "{\n"
-        << "  \"phase\": 19,\n"
+        << "  \"phase\": 20,\n"
         << "  \"kind\": ";
     writeJsonString(out, stateOnly ? "incremental-state" : "incremental-report");
     out << ",\n  \"input\": ";
@@ -1284,7 +1284,7 @@ std::string emitPerformanceReportJson(const CliOptions& options,
                                       const IncrementalReportData& incremental) {
     std::ostringstream out;
     out << "{\n"
-        << "  \"phase\": 19,\n"
+        << "  \"phase\": 20,\n"
         << "  \"mode\": ";
     writeJsonString(out, compileModeName(options.mode));
     out << ",\n  \"input\": ";
@@ -1657,7 +1657,8 @@ int main(int argc, char** argv) {
         Phase1Codegen generator(diagnostics, CodegenOptions{options.scanOnly,
                                                             options.allowUnsupported,
                                                             options.warnMode,
-                                                            options.mode == CompileMode::Fast});
+                                                            options.mode == CompileMode::Fast,
+                                                            !options.emitGeneratedEntityPlanPath.empty()});
         codegen = generator.generate(expandedProgram);
         auto codegenEnd = std::chrono::steady_clock::now();
         timings.codegen = elapsedMs(codegenStart, codegenEnd);
@@ -1789,6 +1790,9 @@ int main(int argc, char** argv) {
     }
     if (!options.emitStatsPath.empty()) {
         ok = writeTextFile(options.emitStatsPath, emitStatsJson(sources, preprocessed.stats, expandedProgram.stats, diagnostics, options.mode, timings)) && ok;
+    }
+    if (!options.emitGeneratedEntityPlanPath.empty()) {
+        ok = writeTextFile(options.emitGeneratedEntityPlanPath, codegen.generatedEntityPlanJson) && ok;
     }
     if (!options.emitIncrementalStatePath.empty()) {
         ok = writeTextFile(options.emitIncrementalStatePath,
