@@ -166,13 +166,13 @@ std::string SymbolTable::rewriteLine(const std::string& line, const Decl* contai
             while (i < line.size() && isIdentPart(line[i])) {
                 ++i;
             }
-            std::string ident = line.substr(start, i - start);
+            std::string_view ident(line.data() + start, i - start);
             size_t prev = start;
             while (prev > 0 && std::isspace(static_cast<unsigned char>(line[prev - 1]))) {
                 --prev;
             }
             if (prev > 0 && line[prev - 1] == '.') {
-                out += ident;
+                out.append(line, start, i - start);
                 continue;
             }
             if (symbols) {
@@ -186,7 +186,7 @@ std::string SymbolTable::rewriteLine(const std::string& line, const Decl* contai
             if (publicIt != publicReplacements_.end()) {
                 out += publicIt->second;
             } else {
-                out += ident;
+                out.append(line, start, i - start);
             }
             continue;
         }

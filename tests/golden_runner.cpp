@@ -202,6 +202,12 @@ int main(int argc, char** argv) {
         {"phase16_struct_source_method_lowering", "", fixtures / "phase16_struct_source_method_lowering.expected.j"},
         {"phase16_struct_on_destroy", "", fixtures / "phase16_struct_on_destroy.expected.j"},
         {"phase16_struct_deallocate_direct", "", fixtures / "phase16_struct_deallocate_direct.expected.j"},
+        {"phase18_body_mode_zinc_function", "", fixtures / "phase18_body_mode_zinc_function.expected.j"},
+        {"phase18_body_mode_vjass_function", "", fixtures / "phase18_body_mode_vjass_function.expected.j"},
+        {"phase18_body_mode_zinc_method", "", fixtures / "phase18_body_mode_zinc_method.expected.j"},
+        {"phase18_body_mode_generated_support", "", fixtures / "phase18_body_mode_generated_support.expected.j"},
+        {"phase18_zinc_inline_else_if_chain", "", fixtures / "phase18_zinc_inline_else_if_chain.expected.j"},
+        {"phase18_zinc_else_if_after_comment", "", fixtures / "phase18_zinc_else_if_after_comment.expected.j"},
     };
 
     bool ok = true;
