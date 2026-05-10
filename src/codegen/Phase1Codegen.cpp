@@ -7278,6 +7278,22 @@ void Phase1Codegen::lowerZincBlock(const std::vector<std::string>& lines, size_t
             lowerZincSimpleStatement(statement, locals, body);
         }
     };
+    auto consumeCloseBeforeElse = [&]() {
+        if (index >= lines.size() || trim(lines[index]) != "}") {
+            return;
+        }
+        size_t next = index + 1;
+        while (next < lines.size()) {
+            std::string lookahead = trim(lines[next]);
+            if (!lookahead.empty() && lookahead.rfind("//", 0) != 0) {
+                break;
+            }
+            ++next;
+        }
+        if (next < lines.size() && startsWithWord(trim(lines[next]), "else")) {
+            index = next;
+        }
+    };
 
     while (index < lines.size()) {
         std::string line = trim(lines[index]);
@@ -7346,9 +7362,7 @@ void Phase1Codegen::lowerZincBlock(const std::vector<std::string>& lines, size_t
             }
             ++index;
             lowerZincBlock(lines, index, locals, body);
-            if (index + 1 < lines.size() && trim(lines[index]) == "}" && trim(lines[index + 1]).rfind("else", 0) == 0) {
-                ++index;
-            }
+            consumeCloseBeforeElse();
             while (index < lines.size() &&
                    (trim(lines[index]).rfind("} else if", 0) == 0 || trim(lines[index]).rfind("else if", 0) == 0)) {
                 std::string elseIfLine = trim(lines[index]);
@@ -7357,6 +7371,7 @@ void Phase1Codegen::lowerZincBlock(const std::vector<std::string>& lines, size_t
                 body.push_back("elseif " + elseIfCond + " then");
                 ++index;
                 lowerZincBlock(lines, index, locals, body);
+                consumeCloseBeforeElse();
             }
             if (index < lines.size() &&
                 (trim(lines[index]).rfind("} else", 0) == 0 || trim(lines[index]).rfind("else", 0) == 0)) {
