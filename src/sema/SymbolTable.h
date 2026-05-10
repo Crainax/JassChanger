@@ -2,6 +2,7 @@
 
 #include "parser/Ast.h"
 
+#include <array>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -37,6 +38,7 @@ using ReplacementMap = std::unordered_map<std::string, std::string, TransparentS
 
 struct ScopedSymbolMap {
     ReplacementMap replacements;
+    std::array<bool, 256> firstChars{};
 };
 
 class SymbolTable {
@@ -53,6 +55,7 @@ private:
 
     std::unordered_map<const Decl*, ScopedSymbolMap> scoped_;
     ReplacementMap publicReplacements_;
+    std::array<bool, 256> publicFirstChars_{};
 };
 
 std::string extractGlobalName(std::string line, std::string& access);

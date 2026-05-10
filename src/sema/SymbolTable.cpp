@@ -87,6 +87,7 @@ std::string stripAccessPrefixFromLine(std::string line) {
 void SymbolTable::build(const Program& program) {
     scoped_.clear();
     publicReplacements_.clear();
+    publicFirstChars_.fill(false);
     std::vector<std::string> scopePath;
     for (const auto& decl : program.decls) {
         if (decl.kind == DeclKind::Library || decl.kind == DeclKind::Scope) {
@@ -118,19 +119,19 @@ std::string SymbolTable::rewriteLine(const std::string& line, const Decl* contai
         return line;
     }
 
+    const bool hasScoped = symbols && !symbols->replacements.empty();
+    const bool hasPublic = !publicReplacements_.empty();
     std::string out;
-    out.reserve(line.size());
+    size_t appendFrom = 0;
     bool inString = false;
     bool inRaw = false;
     bool escaped = false;
     for (size_t i = 0; i < line.size();) {
         if (!inString && !inRaw && i + 1 < line.size() && line[i] == '/' && line[i + 1] == '/') {
-            out.append(line.substr(i));
             break;
         }
         char c = line[i];
         if (inString) {
-            out.push_back(c);
             if (escaped) {
                 escaped = false;
             } else if (c == '\\') {
@@ -142,7 +143,6 @@ std::string SymbolTable::rewriteLine(const std::string& line, const Decl* contai
             continue;
         }
         if (inRaw) {
-            out.push_back(c);
             if (c == '\'') {
                 inRaw = false;
             }
@@ -151,13 +151,11 @@ std::string SymbolTable::rewriteLine(const std::string& line, const Decl* contai
         }
         if (c == '"') {
             inString = true;
-            out.push_back(c);
             ++i;
             continue;
         }
         if (c == '\'') {
             inRaw = true;
-            out.push_back(c);
             ++i;
             continue;
         }
@@ -172,27 +170,41 @@ std::string SymbolTable::rewriteLine(const std::string& line, const Decl* contai
                 --prev;
             }
             if (prev > 0 && line[prev - 1] == '.') {
-                out.append(line, start, i - start);
                 continue;
             }
+            unsigned char first = static_cast<unsigned char>(line[start]);
+            if ((!hasScoped || !symbols->firstChars[first]) && (!hasPublic || !publicFirstChars_[first])) {
+                continue;
+            }
+            const std::string* replacement = nullptr;
             if (symbols) {
                 auto it = symbols->replacements.find(ident);
                 if (it != symbols->replacements.end()) {
-                    out += it->second;
-                    continue;
+                    replacement = &it->second;
                 }
             }
-            auto publicIt = publicReplacements_.find(ident);
-            if (publicIt != publicReplacements_.end()) {
-                out += publicIt->second;
-            } else {
-                out.append(line, start, i - start);
+            if (!replacement) {
+                auto publicIt = publicReplacements_.find(ident);
+                if (publicIt != publicReplacements_.end()) {
+                    replacement = &publicIt->second;
+                }
+            }
+            if (replacement) {
+                if (out.empty()) {
+                    out.reserve(line.size() + replacement->size());
+                }
+                out.append(line, appendFrom, start - appendFrom);
+                out += *replacement;
+                appendFrom = i;
             }
             continue;
         }
-        out.push_back(c);
         ++i;
     }
+    if (out.empty()) {
+        return line;
+    }
+    out.append(line, appendFrom, std::string::npos);
     return out;
 }
 
@@ -210,8 +222,14 @@ void SymbolTable::buildInContainer(const Decl& container, std::vector<std::strin
             }
             std::string scopedName = makeScopedName(scopePath, access, child.name);
             map.replacements[child.name] = scopedName;
+            if (!child.name.empty()) {
+                map.firstChars[static_cast<unsigned char>(child.name.front())] = true;
+            }
             if (child.access == "public") {
                 publicReplacements_[child.name] = scopedName;
+                if (!child.name.empty()) {
+                    publicFirstChars_[static_cast<unsigned char>(child.name.front())] = true;
+                }
             }
         } else if (child.kind == DeclKind::GlobalBlock) {
             collectGlobalNames(child, scopePath, map);
@@ -249,8 +267,14 @@ void SymbolTable::collectGlobalNames(const Decl& globalBlock, const std::vector<
             std::string effectiveAccess = access.empty() ? (globalBlock.access.empty() ? "private" : globalBlock.access) : access;
             std::string scopedName = makeScopedGlobalName(scopePath, effectiveAccess, name);
             map.replacements[name] = scopedName;
+            if (!name.empty()) {
+                map.firstChars[static_cast<unsigned char>(name.front())] = true;
+            }
             if (effectiveAccess == "public") {
                 publicReplacements_[name] = scopedName;
+                if (!name.empty()) {
+                    publicFirstChars_[static_cast<unsigned char>(name.front())] = true;
+                }
             }
         }
     }

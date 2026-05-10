@@ -6,6 +6,7 @@
 #include "sema/LibraryGraph.h"
 #include "sema/SymbolTable.h"
 
+#include <array>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -13,6 +14,8 @@
 #include <vector>
 
 namespace vjassc {
+
+using LocalTypeMap = std::unordered_map<std::string, std::string, TransparentStringHash, TransparentStringEqual>;
 
 struct CodegenOptions {
     bool scanOnly = false;
@@ -70,6 +73,12 @@ struct CodegenPerformanceCounters {
     size_t functionDependencyMatchedEdges = 0;
     size_t functionDependencyMissingRecordedEdges = 0;
     size_t functionDependencyExtraRecordedEdges = 0;
+    size_t functionDependencyWeakExecuteFuncEdges = 0;
+    size_t methodPlanBuilt = 0;
+    size_t methodPlanLinesSkippedNoCandidate = 0;
+    size_t methodPlanBareFieldRewriteAttempts = 0;
+    size_t methodPlanBareFieldRewriteChanged = 0;
+    size_t methodPlanShadowSkips = 0;
 };
 
 struct CodegenResult {
@@ -104,6 +113,7 @@ private:
         std::vector<int> dimensions;
         bool structInstanceField = false;
     };
+    using ArrayShapeMap = std::unordered_map<std::string, ArrayShape, TransparentStringHash, TransparentStringEqual>;
 
     struct FieldInfo {
         const FieldDecl* decl = nullptr;
@@ -137,8 +147,10 @@ private:
         bool isArrayStruct = false;
         std::vector<FieldInfo> fields;
         std::vector<MethodInfo> methods;
-        std::unordered_map<std::string, size_t> fieldIndex;
-        std::unordered_map<std::string, size_t> methodIndex;
+        std::unordered_map<std::string, size_t, TransparentStringHash, TransparentStringEqual> fieldIndex;
+        std::unordered_map<std::string, size_t, TransparentStringHash, TransparentStringEqual> methodIndex;
+        std::array<bool, 256> fieldFirstChars{};
+        std::array<bool, 256> methodFirstChars{};
     };
 
     struct StructInitializerInfo {
@@ -211,8 +223,8 @@ private:
     struct LoweringContext {
         const StructInfo* currentStruct = nullptr;
         const Decl* container = nullptr;
-        std::unordered_map<std::string, std::string>* localTypes = nullptr;
-        std::unordered_map<std::string, ArrayShape>* localArrayShapes = nullptr;
+        LocalTypeMap* localTypes = nullptr;
+        ArrayShapeMap* localArrayShapes = nullptr;
         std::vector<std::string>* tempLocals = nullptr;
         BodyMode mode = BodyMode::JassLike;
         std::string currentFunctionName;
@@ -322,17 +334,17 @@ private:
     std::string rewriteParamList(const std::vector<ParamDecl>& params, bool includeThis, const StructInfo* currentStruct) const;
     std::string rewriteStructExpression(const std::string& line,
                                         const StructInfo* currentStruct,
-                                        const std::unordered_map<std::string, std::string>& localTypes) const;
+                                        const LocalTypeMap& localTypes) const;
     std::string rewriteReceiverChains(const std::string& line, const StructInfo* currentStruct) const;
     std::vector<std::string> rewriteLocalDeclLine(const std::string& line,
                                                   const StructInfo* currentStruct,
-                                                  std::unordered_map<std::string, std::string>& localTypes,
-                                                  std::unordered_map<std::string, ArrayShape>* localArrayShapes,
+                                                  LocalTypeMap& localTypes,
+                                                  ArrayShapeMap* localArrayShapes,
                                                   std::vector<std::string>& extraLines) const;
     std::string rewriteArrayAccesses(const std::string& line,
-                                     const std::unordered_map<std::string, ArrayShape>* localArrayShapes) const;
+                                     const ArrayShapeMap* localArrayShapes) const;
     bool hasKnownArrayReceiver(const std::string& line,
-                               const std::unordered_map<std::string, ArrayShape>* localArrayShapes) const;
+                               const ArrayShapeMap* localArrayShapes) const;
     std::vector<std::string> lowerStatementLine(const std::string& line, LoweringContext& ctx) const;
     std::vector<std::string> lowerBodyByMode(BodyMode mode,
                                              const std::vector<std::string>& lines,
@@ -357,7 +369,7 @@ private:
     std::string rewriteFunctionNames(std::string expression, const StructInfo* currentStruct) const;
     LineFeatures scanLineFeatures(const std::string& line,
                                   const StructInfo* currentStruct,
-                                  const std::unordered_map<std::string, std::string>* localTypes) const;
+                                  const LocalTypeMap* localTypes) const;
     const LineTokenCache& getLineTokenCache(const std::string& line, bool* built = nullptr) const;
     LineTokenCache buildLineTokenCache(const std::string& line) const;
     BodyMode bodyModeForFunction(const Decl& decl) const;
@@ -390,8 +402,8 @@ private:
     FunctionSignature signatureFromParams(const std::vector<ParamDecl>& params, const TypeRef& returnType, const StructInfo* currentStruct) const;
     FunctionSignature parseFunctionSignatureFromHeader(const std::string& header, SyntaxMode mode) const;
     std::string interfaceGlobalPrefix(const FunctionInterfaceInfo& iface) const;
-    void seedFunctionLocalTypes(const std::string& header, std::unordered_map<std::string, std::string>& localTypes) const;
-    void seedMethodLocalTypes(const StructInfo& info, const MethodInfo& method, std::unordered_map<std::string, std::string>& localTypes) const;
+    void seedFunctionLocalTypes(const std::string& header, LocalTypeMap& localTypes) const;
+    void seedMethodLocalTypes(const StructInfo& info, const MethodInfo& method, LocalTypeMap& localTypes) const;
     const StructInfo* findStruct(std::string_view name) const;
     const FieldInfo* findField(const StructInfo& info, std::string_view name) const;
     const MethodInfo* findMethod(const StructInfo& info, std::string_view name) const;
@@ -413,16 +425,16 @@ private:
     std::vector<StructInitializerInfo> structInitializers_;
     std::vector<StructInfo> structs_;
     std::unordered_map<const Decl*, size_t> structIndexByDecl_;
-    std::unordered_map<std::string, size_t> structIndexByName_;
-    std::unordered_map<std::string, ArrayShape> globalArrayShapes_;
-    std::unordered_map<std::string, std::string> globalStructTypes_;
+    std::unordered_map<std::string, size_t, TransparentStringHash, TransparentStringEqual> structIndexByName_;
+    ArrayShapeMap globalArrayShapes_;
+    LocalTypeMap globalStructTypes_;
     mutable std::vector<FunctionInterfaceInfo> functionInterfaces_;
     mutable std::unordered_map<std::string, size_t> functionInterfaceIndexByName_;
     mutable std::unordered_map<std::string, size_t> functionObjectInterfaceIndexBySignature_;
     std::vector<FunctionInfo> functions_;
-    std::unordered_map<std::string, size_t> functionIndexByName_;
+    std::unordered_map<std::string, size_t, TransparentStringHash, TransparentStringEqual> functionIndexByName_;
     std::unordered_map<std::string, std::vector<std::string>> functionInterfaceParamTypesByFunction_;
-    std::unordered_set<std::string> functionArgumentLoweringCandidates_;
+    std::unordered_set<std::string, TransparentStringHash, TransparentStringEqual> functionArgumentLoweringCandidates_;
     std::vector<size_t> arrayStructIndexes_;
     std::vector<LambdaInfo> lambdas_;
     std::unordered_map<const Decl*, std::vector<std::string>> processedZincFunctionBodies_;
@@ -444,16 +456,17 @@ private:
     static constexpr size_t functionInterfaceEvaluateTempLimit_ = 8;
     std::unordered_map<std::string, long long> passTimings_;
     mutable CodegenPerformanceCounters performanceCounters_;
-    mutable std::unordered_map<std::string, const StructInfo*> structLookupCache_;
-    mutable std::unordered_map<std::string, const FunctionInfo*> functionLookupCache_;
-    mutable std::unordered_map<std::string, bool> arrayStructReceiverCache_;
+    mutable std::unordered_map<std::string, const StructInfo*, TransparentStringHash, TransparentStringEqual> structLookupCache_;
+    mutable std::unordered_map<std::string, const FunctionInfo*, TransparentStringHash, TransparentStringEqual> functionLookupCache_;
+    mutable std::unordered_map<std::string, bool, TransparentStringHash, TransparentStringEqual> arrayStructReceiverCache_;
+    mutable std::unordered_map<std::string, std::string, TransparentStringHash, TransparentStringEqual> arrayRewriteCache_;
     mutable std::unordered_map<std::string, bool> structDeallocateCache_;
     mutable std::unordered_map<std::string, LineTokenCache> lineTokenCache_;
     mutable std::unordered_set<std::string> recordedFunctionDependencyEdges_;
     mutable bool lineFeatureCacheValid_ = false;
     mutable std::string lineFeatureCacheLine_;
     mutable const StructInfo* lineFeatureCacheStruct_ = nullptr;
-    mutable const std::unordered_map<std::string, std::string>* lineFeatureCacheLocalTypes_ = nullptr;
+    mutable const LocalTypeMap* lineFeatureCacheLocalTypes_ = nullptr;
     mutable LineFeatures lineFeatureCacheValue_;
     const Decl* mainFunction_ = nullptr;
     const Decl* mainContainer_ = nullptr;

@@ -29,7 +29,20 @@ std::string sanitizeName(std::string text);
 bool isIdentStart(char c);
 bool isIdentPart(char c);
 bool containsIdentifierWord(std::string_view text, std::string_view word);
+std::vector<std::string_view> splitLinesView(std::string_view text);
 std::string commentMissingInitTriggerCalls(std::string output);
+
+std::string_view trimView(std::string_view text) {
+    size_t start = 0;
+    while (start < text.size() && std::isspace(static_cast<unsigned char>(text[start]))) {
+        ++start;
+    }
+    size_t end = text.size();
+    while (end > start && std::isspace(static_cast<unsigned char>(text[end - 1]))) {
+        --end;
+    }
+    return text.substr(start, end - start);
+}
 
 bool mayContainAnonymousFunction(const std::vector<std::string>& lines) {
     for (const auto& line : lines) {
@@ -41,12 +54,22 @@ bool mayContainAnonymousFunction(const std::vector<std::string>& lines) {
     return false;
 }
 
-std::string removeSemicolon(std::string text) {
-    text = trim(text);
-    if (!text.empty() && text.back() == ';') {
-        text.pop_back();
+std::string removeSemicolon(std::string_view text) {
+    size_t begin = 0;
+    size_t end = text.size();
+    while (begin < end && std::isspace(static_cast<unsigned char>(text[begin]))) {
+        ++begin;
     }
-    return trim(text);
+    while (end > begin && std::isspace(static_cast<unsigned char>(text[end - 1]))) {
+        --end;
+    }
+    if (end > begin && text[end - 1] == ';') {
+        --end;
+        while (end > begin && std::isspace(static_cast<unsigned char>(text[end - 1]))) {
+            --end;
+        }
+    }
+    return std::string(text.substr(begin, end - begin));
 }
 
 std::string removeSemicolonsOutsideProtected(const std::string& line) {
@@ -333,30 +356,44 @@ std::string compactIdentifierHint(std::string text) {
     return out;
 }
 
+std::string functionNameFromHeaderLine(std::string_view line) {
+    std::string_view t = trimView(line);
+    if (!startsWithWord(t, "function")) {
+        return {};
+    }
+    size_t pos = 8;
+    while (pos < t.size() && std::isspace(static_cast<unsigned char>(t[pos]))) {
+        ++pos;
+    }
+    if (pos >= t.size() || !isIdentStart(t[pos])) {
+        return {};
+    }
+    size_t start = pos++;
+    while (pos < t.size() && isIdentPart(t[pos])) {
+        ++pos;
+    }
+    return std::string(t.substr(start, pos - start));
+}
+
 std::string commentMissingInitTriggerCalls(std::string output) {
+    std::vector<std::string_view> lines = splitLinesView(output);
     std::unordered_set<std::string> definedFunctions;
-    std::istringstream collect(output);
-    std::string line;
-    while (std::getline(collect, line)) {
-        std::string t = trim(line);
+    for (std::string_view line : lines) {
+        std::string_view t = trimView(line);
         if (!startsWithWord(t, "function")) {
             continue;
         }
-        std::istringstream in(t);
-        std::string keyword;
-        std::string name;
-        std::string takes;
-        in >> keyword >> name >> takes;
-        if (keyword == "function" && !name.empty() && takes == "takes") {
+        std::string name = functionNameFromHeaderLine(t);
+        if (!name.empty() && t.find(" takes ") != std::string_view::npos) {
             definedFunctions.insert(name);
         }
     }
 
-    std::ostringstream out;
-    std::istringstream in(output);
+    std::string out;
+    out.reserve(output.size());
     bool inInitCustomTriggers = false;
-    while (std::getline(in, line)) {
-        std::string trimmed = trim(line);
+    for (std::string_view line : lines) {
+        std::string_view trimmed = trimView(line);
         if (trimmed == "function InitCustomTriggers takes nothing returns nothing") {
             inInitCustomTriggers = true;
         } else if (inInitCustomTriggers && trimmed == "endfunction") {
@@ -365,8 +402,8 @@ std::string commentMissingInitTriggerCalls(std::string output) {
 
         if (inInitCustomTriggers) {
             size_t indentEnd = line.find_first_not_of(" \t");
-            std::string indent = indentEnd == std::string::npos ? "" : line.substr(0, indentEnd);
-            std::string t = trim(line);
+            std::string_view indent = indentEnd == std::string_view::npos ? std::string_view{} : line.substr(0, indentEnd);
+            std::string_view t = trimView(line);
             if (startsWithWord(t, "call")) {
                 size_t pos = 4;
                 while (pos < t.size() && std::isspace(static_cast<unsigned char>(t[pos]))) {
@@ -378,7 +415,7 @@ std::string commentMissingInitTriggerCalls(std::string output) {
                     while (pos < t.size() && isIdentPart(t[pos])) {
                         ++pos;
                     }
-                    std::string name = t.substr(nameStart, pos - nameStart);
+                    std::string name(t.substr(nameStart, pos - nameStart));
                     while (pos < t.size() && std::isspace(static_cast<unsigned char>(t[pos]))) {
                         ++pos;
                     }
@@ -393,7 +430,10 @@ std::string commentMissingInitTriggerCalls(std::string output) {
                                 ++pos;
                             }
                             if (pos == t.size() && !definedFunctions.contains(name)) {
-                                out << indent << "//Function not found: call " << name << "()\n";
+                                out.append(indent.data(), indent.size());
+                                out += "//Function not found: call ";
+                                out += name;
+                                out += "()\n";
                                 continue;
                             }
                         }
@@ -401,17 +441,10 @@ std::string commentMissingInitTriggerCalls(std::string output) {
                 }
             }
         }
-        out << line << '\n';
+        out.append(line.data(), line.size());
+        out += '\n';
     }
-    return out.str();
-}
-
-std::string functionNameFromHeaderLine(const std::string& line) {
-    std::istringstream in(trim(line));
-    std::string word;
-    std::string name;
-    in >> word >> name;
-    return name;
+    return out;
 }
 
 std::string blankStringRawcodeAndComment(const std::string& line) {
@@ -459,15 +492,15 @@ std::string blankStringRawcodeAndComment(const std::string& line) {
 }
 
 void addFunctionDependency(std::set<std::string>& deps,
-                           const std::unordered_map<std::string, size_t>& functionIndex,
+                           const std::unordered_map<std::string, size_t, TransparentStringHash, TransparentStringEqual>& functionIndex,
                            const std::string& current,
                            std::string_view candidate,
                            CodegenPerformanceCounters* counters) {
     if (candidate.empty() || candidate == current) {
         return;
     }
-    std::string key(candidate);
-    if (functionIndex.find(key) != functionIndex.end()) {
+    if (functionIndex.find(candidate) != functionIndex.end()) {
+        std::string key(candidate);
         if (deps.insert(std::move(key)).second && counters) {
             ++counters->functionOrderEdges;
         }
@@ -475,7 +508,7 @@ void addFunctionDependency(std::set<std::string>& deps,
 }
 
 std::set<std::string> extractFunctionDependencies(const FunctionBlock& block,
-                                                  const std::unordered_map<std::string, size_t>& functionIndex,
+                                                  const std::unordered_map<std::string, size_t, TransparentStringHash, TransparentStringEqual>& functionIndex,
                                                   CodegenPerformanceCounters* counters) {
     std::set<std::string> deps;
     auto identStart = [](char c) {
@@ -565,6 +598,29 @@ std::set<std::string> extractFunctionDependencies(const FunctionBlock& block,
             size_t open = pos;
             while (open < rawLine.size() && std::isspace(static_cast<unsigned char>(rawLine[open]))) {
                 ++open;
+            }
+            if (name == "ExecuteFunc" && open < rawLine.size() && rawLine[open] == '(') {
+                size_t quote = open + 1;
+                while (quote < rawLine.size() && std::isspace(static_cast<unsigned char>(rawLine[quote]))) {
+                    ++quote;
+                }
+                if (quote < rawLine.size() && rawLine[quote] == '"') {
+                    size_t targetStart = quote + 1;
+                    size_t targetEnd = targetStart;
+                    while (targetEnd < rawLine.size() && isIdentPart(rawLine[targetEnd])) {
+                        ++targetEnd;
+                    }
+                    if (targetEnd > targetStart &&
+                        targetEnd < rawLine.size() &&
+                        rawLine[targetEnd] == '"' &&
+                        functionIndex.find(std::string_view(rawLine.data() + targetStart, targetEnd - targetStart)) != functionIndex.end() &&
+                        std::string_view(rawLine.data() + targetStart, targetEnd - targetStart) != block.name &&
+                        counters) {
+                        ++counters->functionDependencyWeakExecuteFuncEdges;
+                    }
+                }
+                pos = open + 1;
+                continue;
             }
             if (open >= rawLine.size() || rawLine[open] != '(' || ignoredCalls.contains(name)) {
                 pos = open;
@@ -836,7 +892,8 @@ void insertMethodCallerGlobals(std::vector<std::string>& prefix,
     prefix.insert(prefix.begin() + static_cast<std::ptrdiff_t>(globalsEnd), globals.begin(), globals.end());
 }
 
-std::unordered_map<std::string, RuntimeInterfaceInfo> collectRuntimeInterfaces(const std::vector<std::string>& lines) {
+template <typename Lines>
+std::unordered_map<std::string, RuntimeInterfaceInfo> collectRuntimeInterfaces(const Lines& lines) {
     std::unordered_map<std::string, RuntimeInterfaceInfo> interfaces;
     bool inGlobals = false;
     for (const auto& line : lines) {
@@ -914,7 +971,36 @@ std::unordered_map<std::string, RuntimeInterfaceInfo> collectRuntimeInterfaces(c
     return interfaces;
 }
 
-std::unordered_map<std::string, FunctionBlockSignature> collectFunctionSignatures(const std::vector<std::string>& lines) {
+std::vector<std::string_view> splitLinesView(std::string_view text) {
+    std::vector<std::string_view> lines;
+    lines.reserve(text.size() / 48 + 1);
+    for (size_t pos = 0; pos < text.size();) {
+        size_t next = text.find('\n', pos);
+        std::string_view line = next == std::string_view::npos
+                                    ? text.substr(pos)
+                                    : text.substr(pos, next - pos);
+        if (!line.empty() && line.back() == '\r') {
+            line.remove_suffix(1);
+        }
+        lines.push_back(line);
+        if (next == std::string_view::npos) {
+            break;
+        }
+        pos = next + 1;
+    }
+    return lines;
+}
+
+std::vector<std::string> splitLinesCopy(std::string_view text) {
+    std::vector<std::string> lines;
+    for (std::string_view line : splitLinesView(text)) {
+        lines.emplace_back(line);
+    }
+    return lines;
+}
+
+template <typename Lines>
+std::unordered_map<std::string, FunctionBlockSignature> collectFunctionSignatures(const Lines& lines) {
     std::unordered_map<std::string, FunctionBlockSignature> signatures;
     for (const auto& line : lines) {
         std::string t = trim(line);
@@ -1013,12 +1099,7 @@ std::optional<int> parsePositiveIntegerLiteral(std::string text) {
 }
 
 std::string adaptFunctionInterfaceCallbacksBySignature(const std::string& output) {
-    std::vector<std::string> lines;
-    std::istringstream in(output);
-    std::string line;
-    while (std::getline(in, line)) {
-        lines.push_back(line);
-    }
+    std::vector<std::string> lines = splitLinesCopy(output);
     auto interfaces = collectRuntimeInterfaces(lines);
     if (interfaces.empty()) {
         return output;
@@ -1037,6 +1118,9 @@ std::string adaptFunctionInterfaceCallbacksBySignature(const std::string& output
     }
 
     for (auto& rawLine : lines) {
+        if (rawLine.find("function vjlambda__") == std::string::npos) {
+            continue;
+        }
         std::string text = rawLine;
         std::string code = blankStringRawcodeAndComment(text);
         for (size_t pos = 0; pos < code.size();) {
@@ -1444,7 +1528,7 @@ std::string orderFunctionBlocksForPjass(const std::string& output,
             block.name = functionNameFromHeaderLine(t);
             block.originalIndex = blocks.size();
             while (i < lines.size()) {
-                block.lines.push_back(lines[i]);
+                block.lines.emplace_back(lines[i]);
                 std::string inner = trim(lines[i]);
                 ++i;
                 if (startsWithWord(inner, "endfunction")) {
@@ -1452,16 +1536,16 @@ std::string orderFunctionBlocksForPjass(const std::string& output,
                 }
             }
             while (i < lines.size() && trim(lines[i]).empty()) {
-                block.lines.push_back(lines[i]);
+                block.lines.emplace_back(lines[i]);
                 ++i;
             }
             blocks.push_back(std::move(block));
             continue;
         }
         if (collectingFunctions) {
-            suffix.push_back(lines[i]);
+            suffix.emplace_back(lines[i]);
         } else {
-            prefix.push_back(lines[i]);
+            prefix.emplace_back(lines[i]);
         }
         ++i;
     }
@@ -1469,7 +1553,7 @@ std::string orderFunctionBlocksForPjass(const std::string& output,
         return output;
     }
 
-    std::unordered_map<std::string, size_t> functionIndex;
+    std::unordered_map<std::string, size_t, TransparentStringHash, TransparentStringEqual> functionIndex;
     std::unordered_map<std::string, FunctionBlockSignature> signatures;
     for (size_t i = 0; i < blocks.size(); ++i) {
         if (!blocks[i].name.empty()) {
@@ -1772,7 +1856,7 @@ std::string defaultReturnValueForType(const std::string& type) {
 }
 
 bool isLocalDecl(const std::string& line) {
-    std::string t = trim(line);
+    std::string_view t = trimView(line);
     if (startsWithWord(t, "local")) {
         return true;
     }
@@ -1781,26 +1865,36 @@ bool isLocalDecl(const std::string& line) {
         startsWithWord(t, "loop") || startsWithWord(t, "exitwhen") || startsWithWord(t, "else")) {
         return false;
     }
-    std::istringstream in(t);
-    std::string word;
-    std::string name;
-    in >> word >> name;
+    auto nextWord = [&](size_t& pos) -> std::string_view {
+        while (pos < t.size() && std::isspace(static_cast<unsigned char>(t[pos]))) {
+            ++pos;
+        }
+        size_t start = pos;
+        while (pos < t.size() && !std::isspace(static_cast<unsigned char>(t[pos]))) {
+            ++pos;
+        }
+        return t.substr(start, pos - start);
+    };
+    size_t pos = 0;
+    std::string_view word = nextWord(pos);
+    std::string_view name = nextWord(pos);
     if (word == "constant") {
-        in >> word >> name;
+        word = name;
+        name = nextWord(pos);
     }
     if (word.empty() || name.empty()) {
         return false;
     }
-    if (!std::all_of(word.begin(), word.end(), [](char c) {
-            return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '$';
-        })) {
+    for (char c : word) {
+        if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_' && c != '$') {
+            return false;
+        }
+    }
+    if (!std::isalpha(static_cast<unsigned char>(word.front())) && word.front() != '_' && word.front() != '$') {
         return false;
     }
-    if (!std::isalpha(static_cast<unsigned char>(word[0])) && word[0] != '_' && word[0] != '$') {
-        return false;
-    }
-    return (std::isalpha(static_cast<unsigned char>(name[0])) || name[0] == '_' || name[0] == '$') ||
-           isTypeWord(word);
+    return (std::isalpha(static_cast<unsigned char>(name.front())) || name.front() == '_' || name.front() == '$') ||
+           isTypeWord(std::string(word));
 }
 
 std::string parenContent(const std::string& text) {
@@ -2175,6 +2269,77 @@ std::string replaceRegex(std::string text, const std::string& pattern, const std
     static std::unordered_map<std::string, std::regex> regexCache;
     auto [it, _] = regexCache.try_emplace(pattern, pattern);
     return std::regex_replace(text, it->second, replacement);
+}
+
+bool replaceBareIdentifierToken(std::string& text,
+                                std::string_view name,
+                                const std::string& replacement,
+                                bool rejectCallForm) {
+    if (name.empty() || text.find(name) == std::string::npos) {
+        return false;
+    }
+    bool changed = false;
+    for (size_t pos = 0; pos < text.size();) {
+        size_t found = text.find(name, pos);
+        if (found == std::string::npos) {
+            break;
+        }
+        if (found > 0 && (isIdentPart(text[found - 1]) || text[found - 1] == '.')) {
+            pos = found + name.size();
+            continue;
+        }
+        size_t after = found + name.size();
+        if (after < text.size() && isIdentPart(text[after])) {
+            pos = after;
+            continue;
+        }
+        size_t afterSpace = after;
+        while (afterSpace < text.size() && std::isspace(static_cast<unsigned char>(text[afterSpace]))) {
+            ++afterSpace;
+        }
+        if (rejectCallForm && afterSpace < text.size() && text[afterSpace] == '(') {
+            pos = after;
+            continue;
+        }
+        text.replace(found, name.size(), replacement);
+        pos = found + replacement.size();
+        changed = true;
+    }
+    return changed;
+}
+
+bool replaceBareCallToken(std::string& text, std::string_view name, const std::string& replacementWithOpenParen) {
+    if (name.empty() || text.find(name) == std::string::npos) {
+        return false;
+    }
+    bool changed = false;
+    for (size_t pos = 0; pos < text.size();) {
+        size_t found = text.find(name, pos);
+        if (found == std::string::npos) {
+            break;
+        }
+        if (found > 0 && (isIdentPart(text[found - 1]) || text[found - 1] == '.')) {
+            pos = found + name.size();
+            continue;
+        }
+        size_t after = found + name.size();
+        if (after < text.size() && isIdentPart(text[after])) {
+            pos = after;
+            continue;
+        }
+        size_t open = after;
+        while (open < text.size() && std::isspace(static_cast<unsigned char>(text[open]))) {
+            ++open;
+        }
+        if (open >= text.size() || text[open] != '(') {
+            pos = after;
+            continue;
+        }
+        text.replace(found, open + 1 - found, replacementWithOpenParen);
+        pos = found + replacementWithOpenParen.size();
+        changed = true;
+    }
+    return changed;
 }
 
 std::vector<std::string> splitCommaList(const std::string& text) {
@@ -3229,8 +3394,13 @@ CodegenResult Phase1Codegen::generate(const Program& program) {
     functionInterfaceMaxEvaluateDepth_ = 0;
     performanceCounters_ = CodegenPerformanceCounters{};
     structLookupCache_.clear();
+    structLookupCache_.reserve(12000);
     functionLookupCache_.clear();
+    functionLookupCache_.reserve(12000);
     arrayStructReceiverCache_.clear();
+    arrayStructReceiverCache_.reserve(12000);
+    arrayRewriteCache_.clear();
+    arrayRewriteCache_.reserve(20000);
     structDeallocateCache_.clear();
     lineTokenCache_.clear();
     lineTokenCache_.reserve(80000);
@@ -3247,12 +3417,17 @@ CodegenResult Phase1Codegen::generate(const Program& program) {
         }
     }
     structLookupCache_.clear();
+    structLookupCache_.reserve(12000);
     arrayStructReceiverCache_.clear();
+    arrayStructReceiverCache_.reserve(12000);
+    arrayRewriteCache_.clear();
+    arrayRewriteCache_.reserve(20000);
     structDeallocateCache_.clear();
     recordPass("collectFunctionInterfaces", [&]() { collectFunctionInterfaces(program.decls, nullptr); });
     recordPass("collectFunctions", [&]() { collectFunctions(program.decls, nullptr); });
     recordPass("collectFunctionObjectInterfaces", [&]() { collectFunctionObjectEvaluateInterfaces(program.decls, nullptr, nullptr); });
     functionLookupCache_.clear();
+    functionLookupCache_.reserve(12000);
     LibraryGraph graph(diagnostics_);
     LibraryGraphResult graphResult;
     recordPass("functionOrderingPrep", [&]() { graphResult = graph.sort(program); });
@@ -3515,15 +3690,17 @@ void Phase1Codegen::emitJassFunction(const Decl& decl, const Decl* container, bo
     rememberFunctionInterfaceParamTypes(decl.name, functionNameFromHeaderLine(header), declaredSig.paramTypes, container);
     writer_.writeln(header);
     writer_.indent();
-    std::unordered_map<std::string, std::string> localTypes;
+    LocalTypeMap localTypes;
     seedFunctionLocalTypes(stripAccessPrefixFromLine(decl.lines.front()), localTypes);
     std::vector<std::string> tempLocals;
-    std::unordered_map<std::string, ArrayShape> localArrayShapes;
+    ArrayShapeMap localArrayShapes;
     LoweringContext ctx{nullptr, container, &localTypes, &localArrayShapes, &tempLocals, mode, functionNameFromHeaderLine(header), 0};
     bool injected = false;
     std::vector<std::string> locals;
     std::vector<std::string> body;
     std::vector<std::string> rawLines(decl.lines.begin() + 1, decl.lines.end());
+    locals.reserve(rawLines.size() / 4 + 1);
+    body.reserve(rawLines.size() + 4);
     const StructInfo* prevLambdaStruct = lambdaContextStruct_;
     const Decl* prevLambdaContainer = lambdaContextContainer_;
     lambdaContextStruct_ = nullptr;
@@ -3629,7 +3806,7 @@ void Phase1Codegen::emitZincFunction(const Decl& decl, const Decl* container) {
     }
     writer_.writeln("function " + finalName + " takes " + params + " returns " + rewriteTypeName(returns, nullptr));
     writer_.indent();
-    std::unordered_map<std::string, std::string> localTypes;
+    LocalTypeMap localTypes;
     FunctionSignature fnSig = parseFunctionSignatureFromHeader(header, SyntaxMode::Zinc);
     size_t paramIndex = 0;
     for (auto part : splitCommaList(params == "nothing" ? "" : params)) {
@@ -3663,7 +3840,7 @@ void Phase1Codegen::emitZincFunction(const Decl& decl, const Decl* container) {
     lambdaContextStruct_ = prevLambdaStruct;
     lambdaContextContainer_ = prevLambdaContainer;
     std::vector<std::string> tempLocals;
-    std::unordered_map<std::string, ArrayShape> localArrayShapes;
+    ArrayShapeMap localArrayShapes;
     LoweringContext ctx{nullptr, container, &localTypes, &localArrayShapes, &tempLocals, mode, finalName, 0};
     for (const auto& line : lowerBodyByMode(mode, bodyLines, ctx)) {
         std::string out = rewriteForContainer(line, container);
@@ -3695,14 +3872,14 @@ void Phase1Codegen::emitGeneratedLambdas() {
         writer_.writeln("function " + lambda.name + " takes " + rewriteParamList(lambda.params, false, nullptr) +
                         " returns " + rewrittenReturnType);
         writer_.indent();
-        std::unordered_map<std::string, std::string> localTypes;
+        LocalTypeMap localTypes;
         for (const auto& param : lambda.params) {
             localTypes[param.name] = param.type.name == "thistype" && lambda.currentStruct
                                          ? lambda.currentStruct->originalName
                                          : param.type.name;
         }
         std::vector<std::string> tempLocals;
-        std::unordered_map<std::string, ArrayShape> localArrayShapes;
+        ArrayShapeMap localArrayShapes;
         BodyMode mode = BodyMode::Zinc;
         countBodyMode(mode, false);
         LoweringContext ctx{lambda.currentStruct, lambda.container, &localTypes, &localArrayShapes, &tempLocals, mode, lambda.name, 0};
@@ -3993,6 +4170,7 @@ void Phase1Codegen::emitStructSourceMethods(const StructInfo& info,
 
 void Phase1Codegen::emitStructMethod(const StructInfo& info, const MethodInfo& method) {
     lineFeatureCacheValid_ = false;
+    ++performanceCounters_.methodPlanBuilt;
     BodyMode mode = bodyModeForMethod(*method.decl);
     countBodyMode(mode, true);
     std::string params = rewriteParamList(method.decl->params, !method.isStatic, &info);
@@ -4007,7 +4185,7 @@ void Phase1Codegen::emitStructMethod(const StructInfo& info, const MethodInfo& m
                                         info.container);
     writer_.writeln("function " + method.generatedName + " takes " + params + " returns " + returns);
     writer_.indent();
-    std::unordered_map<std::string, std::string> localTypes;
+    LocalTypeMap localTypes;
     localTypes.reserve(method.decl->params.size() + 4);
     seedMethodLocalTypes(info, method, localTypes);
     std::vector<std::string> rawLines;
@@ -4026,7 +4204,7 @@ void Phase1Codegen::emitStructMethod(const StructInfo& info, const MethodInfo& m
     lambdaContextContainer_ = prevLambdaContainer;
     std::vector<std::string> tempLocals;
     tempLocals.reserve(4);
-    std::unordered_map<std::string, ArrayShape> localArrayShapes;
+    ArrayShapeMap localArrayShapes;
     localArrayShapes.reserve(2);
     LoweringContext ctx{&info, info.container, &localTypes, &localArrayShapes, &tempLocals, mode, method.generatedName, 0};
     std::vector<std::string> lines = lowerBodyByMode(mode, rawLines, ctx);
@@ -4202,6 +4380,9 @@ void Phase1Codegen::collectStruct(const Decl& decl, const Decl* container, const
             globalStructTypes_[fieldInfo.generatedName] = fieldInfo.typeName == "thistype" ? info.originalName : fieldInfo.typeName;
         }
         info.fieldIndex[fieldInfo.name] = info.fields.size();
+        if (!fieldInfo.name.empty()) {
+            info.fieldFirstChars[static_cast<unsigned char>(fieldInfo.name.front())] = true;
+        }
         info.fields.push_back(std::move(fieldInfo));
     }
     for (const auto& method : decl.methods) {
@@ -4229,6 +4410,9 @@ void Phase1Codegen::collectStruct(const Decl& decl, const Decl* container, const
             methodInfo.generatedName = info.prefix + "_" + method.name;
         }
         info.methodIndex[methodInfo.name] = info.methods.size();
+        if (!methodInfo.name.empty()) {
+            info.methodFirstChars[static_cast<unsigned char>(methodInfo.name.front())] = true;
+        }
         info.methods.push_back(std::move(methodInfo));
     }
 
@@ -4658,9 +4842,17 @@ int Phase1Codegen::structInstanceLimit(const StructInfo& info) const {
 
 std::string Phase1Codegen::rewriteArrayAccesses(
     const std::string& line,
-    const std::unordered_map<std::string, ArrayShape>* localArrayShapes) const {
+    const ArrayShapeMap* localArrayShapes) const {
     if (line.find('[') == std::string::npos || !hasKnownArrayReceiver(line, localArrayShapes)) {
         return line;
+    }
+    const bool cacheable = !localArrayShapes || localArrayShapes->empty();
+    if (cacheable) {
+        if (auto cached = arrayRewriteCache_.find(line); cached != arrayRewriteCache_.end()) {
+            ++performanceCounters_.cachedRewriteHits;
+            return cached->second;
+        }
+        ++performanceCounters_.cachedRewriteMisses;
     }
     bool countedAttempt = false;
     std::string out;
@@ -4716,7 +4908,7 @@ std::string Phase1Codegen::rewriteArrayAccesses(
         while (i < line.size() && isIdentPart(line[i])) {
             ++i;
         }
-        std::string name = line.substr(nameStart, i - nameStart);
+        std::string_view name(line.data() + nameStart, i - nameStart);
         const ArrayShape* shape = nullptr;
         auto globalIt = globalArrayShapes_.find(name);
         if (globalIt != globalArrayShapes_.end()) {
@@ -4729,7 +4921,7 @@ std::string Phase1Codegen::rewriteArrayAccesses(
             }
         }
         if (!shape || shape->dimensions.empty()) {
-            out += name;
+            out.append(name.data(), name.size());
             continue;
         }
         size_t afterName = i;
@@ -4764,7 +4956,7 @@ std::string Phase1Codegen::rewriteArrayAccesses(
         if (shape->structInstanceField) {
             int stride = arrayFlatSize(shape->dimensions);
             if (stride <= 0) {
-                out += name;
+                out.append(name.data(), name.size());
                 continue;
             }
             flat = arrayIndexTerm(indexes[0]) + " * " + std::to_string(stride);
@@ -4775,7 +4967,10 @@ std::string Phase1Codegen::rewriteArrayAccesses(
         } else {
             flat = composeFlatIndex(indexes, shape->dimensions, 0);
         }
-        out += name + "[" + flat + "]";
+        out.append(name.data(), name.size());
+        out.push_back('[');
+        out += flat;
+        out.push_back(']');
         for (size_t extra = needed; extra < indexes.size(); ++extra) {
             out += "[" + stripRedundantOuterParens(indexes[extra]) + "]";
         }
@@ -4784,12 +4979,15 @@ std::string Phase1Codegen::rewriteArrayAccesses(
     if (out != line) {
         ++performanceCounters_.arrayAccessRewriteChanged;
     }
+    if (cacheable) {
+        arrayRewriteCache_.emplace(line, out);
+    }
     return out;
 }
 
 bool Phase1Codegen::hasKnownArrayReceiver(
     const std::string& line,
-    const std::unordered_map<std::string, ArrayShape>* localArrayShapes) const {
+    const ArrayShapeMap* localArrayShapes) const {
     if (line.find('[') == std::string::npos) {
         return false;
     }
@@ -4805,7 +5003,7 @@ bool Phase1Codegen::hasKnownArrayReceiver(
         if (cursor >= line.size() || line[cursor] != '[') {
             continue;
         }
-        std::string tokenText(tokens.line.data() + token.start, token.end - token.start);
+        std::string_view tokenText(tokens.line.data() + token.start, token.end - token.start);
         if (globalArrayShapes_.contains(tokenText)) {
             return true;
         }
@@ -4818,25 +5016,24 @@ bool Phase1Codegen::hasKnownArrayReceiver(
 
 const Phase1Codegen::StructInfo* Phase1Codegen::findStruct(std::string_view name) const {
     ++performanceCounters_.structLookupCalls;
-    std::string key(name);
-    if (auto cached = structLookupCache_.find(key); cached != structLookupCache_.end()) {
+    if (auto cached = structLookupCache_.find(name); cached != structLookupCache_.end()) {
         ++performanceCounters_.cachedRewriteHits;
         return cached->second;
     }
     ++performanceCounters_.cachedRewriteMisses;
-    auto it = structIndexByName_.find(key);
+    auto it = structIndexByName_.find(name);
     const StructInfo* result = it == structIndexByName_.end() ? nullptr : &structs_[it->second];
-    structLookupCache_[std::move(key)] = result;
+    structLookupCache_.emplace(std::string(name), result);
     return result;
 }
 
 const Phase1Codegen::FieldInfo* Phase1Codegen::findField(const StructInfo& info, std::string_view name) const {
-    auto it = info.fieldIndex.find(std::string(name));
+    auto it = info.fieldIndex.find(name);
     return it == info.fieldIndex.end() ? nullptr : &info.fields[it->second];
 }
 
 const Phase1Codegen::MethodInfo* Phase1Codegen::findMethod(const StructInfo& info, std::string_view name) const {
-    auto it = info.methodIndex.find(std::string(name));
+    auto it = info.methodIndex.find(name);
     return it == info.methodIndex.end() ? nullptr : &info.methods[it->second];
 }
 
@@ -4886,7 +5083,7 @@ std::string Phase1Codegen::rewriteParamList(const std::vector<ParamDecl>& params
     return joinParams(out);
 }
 
-void Phase1Codegen::seedMethodLocalTypes(const StructInfo& info, const MethodInfo& method, std::unordered_map<std::string, std::string>& localTypes) const {
+void Phase1Codegen::seedMethodLocalTypes(const StructInfo& info, const MethodInfo& method, LocalTypeMap& localTypes) const {
     if (!method.isStatic) {
         localTypes["this"] = info.originalName;
     }
@@ -4899,7 +5096,7 @@ void Phase1Codegen::seedMethodLocalTypes(const StructInfo& info, const MethodInf
     }
 }
 
-void Phase1Codegen::seedFunctionLocalTypes(const std::string& header, std::unordered_map<std::string, std::string>& localTypes) const {
+void Phase1Codegen::seedFunctionLocalTypes(const std::string& header, LocalTypeMap& localTypes) const {
     size_t takes = header.find(" takes ");
     size_t returns = header.find(" returns ");
     if (takes == std::string::npos || returns == std::string::npos || returns <= takes) {
@@ -4923,8 +5120,8 @@ void Phase1Codegen::seedFunctionLocalTypes(const std::string& header, std::unord
 
 std::vector<std::string> Phase1Codegen::rewriteLocalDeclLine(const std::string& line,
                                                              const StructInfo* currentStruct,
-                                                             std::unordered_map<std::string, std::string>& localTypes,
-                                                             std::unordered_map<std::string, ArrayShape>* localArrayShapes,
+                                                             LocalTypeMap& localTypes,
+                                                             ArrayShapeMap* localArrayShapes,
                                                              std::vector<std::string>& extraLines) const {
     ParsedLocalDeclList parsed = parseLocalDeclList(line);
     if (!parsed.matched) {
@@ -4956,7 +5153,7 @@ std::vector<std::string> Phase1Codegen::rewriteLocalDeclLine(const std::string& 
 
 std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
                                                    const StructInfo* currentStruct,
-                                                   const std::unordered_map<std::string, std::string>& localTypes) const {
+                                                   const LocalTypeMap& localTypes) const {
     LineFeatures initialFeatures = scanLineFeatures(line, currentStruct, &localTypes);
     const bool hasMemberAccess = initialFeatures.hasDot;
     const bool hasArrayReceiver = initialFeatures.hasBracket;
@@ -5320,9 +5517,10 @@ std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
                 }
                 if (field.isStatic) {
                     if (!localTypes.contains(field.name)) {
-                        text = replaceRegex(text,
-                                            R"((^|[^A-Za-z0-9_$.]))" + regexEscape(field.name) + R"(\b)",
-                                            "$1" + field.generatedName);
+                        ++performanceCounters_.methodPlanBareFieldRewriteAttempts;
+                        if (replaceBareIdentifierToken(text, field.name, field.generatedName, false)) {
+                            ++performanceCounters_.methodPlanBareFieldRewriteChanged;
+                        }
                     }
                     if (textHasThistype) {
                         text = replaceRegex(text,
@@ -5350,9 +5548,14 @@ std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
                     std::string storage = fixedArrayStorageName(*currentStruct, field);
                     std::string indexed = storage + "[" + field.generatedName + "[this]+$1]";
                     if (!localTypes.contains(field.name)) {
-                        text = replaceRegex(text,
-                                            R"((^|[^A-Za-z0-9_$.]))" + regexEscape(field.name) + R"(\s*\[\s*([^\]]+)\s*\])",
-                                            "$1" + storage + "[" + field.generatedName + "[this]+$2]");
+                        ++performanceCounters_.methodPlanBareFieldRewriteAttempts;
+                        std::string rewritten = replaceRegex(text,
+                                                             R"((^|[^A-Za-z0-9_$.]))" + regexEscape(field.name) + R"(\s*\[\s*([^\]]+)\s*\])",
+                                                             "$1" + storage + "[" + field.generatedName + "[this]+$2]");
+                        if (rewritten != text) {
+                            ++performanceCounters_.methodPlanBareFieldRewriteChanged;
+                        }
+                        text = std::move(rewritten);
                     }
                     if (textHasThistype) {
                         text = replaceRegex(text,
@@ -5372,9 +5575,10 @@ std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
                 }
                 std::string access = field.generatedName + "[this]";
                 if (!localTypes.contains(field.name)) {
-                    text = replaceRegex(text,
-                                        R"((^|[^A-Za-z0-9_$.]))" + regexEscape(field.name) + R"(\b(?!\s*\())",
-                                        "$1" + access);
+                    ++performanceCounters_.methodPlanBareFieldRewriteAttempts;
+                    if (replaceBareIdentifierToken(text, field.name, access, true)) {
+                        ++performanceCounters_.methodPlanBareFieldRewriteChanged;
+                    }
                 }
                 if (textHasThistype) {
                     text = replaceRegex(text,
@@ -5420,9 +5624,7 @@ std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
                                             method.generatedName + "(");
                     }
                     if (!localTypes.contains(method.name)) {
-                        text = replaceRegex(text,
-                                            R"((^|[^A-Za-z0-9_$.]))" + regexEscape(method.name) + R"(\s*\()",
-                                            "$1" + method.generatedName + "(");
+                        replaceBareCallToken(text, method.name, method.generatedName + "(");
                     }
                     continue;
                 }
@@ -5440,9 +5642,9 @@ std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
                                         "$1" + method.generatedName + "(this" + (method.decl->params.empty() ? "" : ", "));
                 }
                 if (!localTypes.contains(method.name)) {
-                    text = replaceRegex(text,
-                                        R"((^|[^A-Za-z0-9_$.]))" + regexEscape(method.name) + R"(\s*\()",
-                                        "$1" + method.generatedName + "(this" + (method.decl->params.empty() ? "" : ", "));
+                    replaceBareCallToken(text,
+                                         method.name,
+                                         method.generatedName + "(this" + (method.decl->params.empty() ? "" : ", "));
                 }
             }
             if (!currentStruct->isArrayStruct && text.find("allocate") != std::string::npos) {
@@ -5567,7 +5769,9 @@ std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
                 }
                 return receiverNames;
             };
-            for (const auto& varName : collectReceiverNames()) {
+            std::vector<std::string> receiverNames = collectReceiverNames();
+            std::string beforeLocalReceiverRewrite = text;
+            for (const auto& varName : receiverNames) {
                 if (auto localIt = localTypes.find(varName); localIt != localTypes.end()) {
                     const StructInfo* varStruct = localIt->second == "thistype" ? currentStruct : findStruct(localIt->second);
                     if (varStruct) {
@@ -5575,7 +5779,13 @@ std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
                     }
                 }
             }
-            for (const auto& varName : collectReceiverNames()) {
+            std::vector<std::string> refreshedReceiverNames;
+            const std::vector<std::string>* globalReceiverNames = &receiverNames;
+            if (text != beforeLocalReceiverRewrite) {
+                refreshedReceiverNames = collectReceiverNames();
+                globalReceiverNames = &refreshedReceiverNames;
+            }
+            for (const auto& varName : *globalReceiverNames) {
                 if (auto globalIt = globalStructTypes_.find(varName); globalIt != globalStructTypes_.end()) {
                     if (const StructInfo* varStruct = findStruct(globalIt->second)) {
                         rewriteNamedStructReceiver(*varStruct, varName);
@@ -5838,15 +6048,14 @@ std::string Phase1Codegen::resolveFunctionInterfaceTypeName(std::string_view nam
 
 const Phase1Codegen::FunctionInfo* Phase1Codegen::findFunctionInfo(std::string_view name) const {
     ++performanceCounters_.functionLookupCalls;
-    std::string key(name);
-    if (auto cached = functionLookupCache_.find(key); cached != functionLookupCache_.end()) {
+    if (auto cached = functionLookupCache_.find(name); cached != functionLookupCache_.end()) {
         ++performanceCounters_.cachedRewriteHits;
         return cached->second;
     }
     ++performanceCounters_.cachedRewriteMisses;
-    auto it = functionIndexByName_.find(key);
+    auto it = functionIndexByName_.find(name);
     const FunctionInfo* result = it == functionIndexByName_.end() ? nullptr : &functions_[it->second];
-    functionLookupCache_[std::move(key)] = result;
+    functionLookupCache_.emplace(std::string(name), result);
     return result;
 }
 
@@ -5999,7 +6208,7 @@ const Phase1Codegen::FunctionInterfaceInfo* Phase1Codegen::resolveReceiverInterf
 }
 
 std::string Phase1Codegen::rewriteReceiverExpression(const std::string& receiver, const LoweringContext& ctx) const {
-    static const std::unordered_map<std::string, std::string> kEmptyLocalTypes;
+    static const LocalTypeMap kEmptyLocalTypes;
     const auto& localTypes = ctx.localTypes ? *ctx.localTypes : kEmptyLocalTypes;
     return rewriteStructExpression(receiver, ctx.currentStruct, localTypes);
 }
@@ -6137,7 +6346,7 @@ const Phase1Codegen::LineTokenCache& Phase1Codegen::getLineTokenCache(const std:
 Phase1Codegen::LineFeatures Phase1Codegen::scanLineFeatures(
     const std::string& line,
     const StructInfo* currentStruct,
-    const std::unordered_map<std::string, std::string>* localTypes) const {
+    const LocalTypeMap* localTypes) const {
     if (lineFeatureCacheValid_ &&
         lineFeatureCacheStruct_ == currentStruct &&
         lineFeatureCacheLocalTypes_ == localTypes &&
@@ -6169,12 +6378,15 @@ Phase1Codegen::LineFeatures Phase1Codegen::scanLineFeatures(
     features.hasGeneratedStructPrefix = tokens.hasGeneratedStructPrefix;
     features.hasStringOrRawcode = tokens.hasStringOrRawcode;
     auto addCurrentStructMember = [&](std::string_view name) {
-        if (!currentStruct) {
+        if (!currentStruct || name.empty()) {
             return false;
         }
-        std::string key(name);
+        unsigned char first = static_cast<unsigned char>(name.front());
+        if (!currentStruct->fieldFirstChars[first] && !currentStruct->methodFirstChars[first]) {
+            return false;
+        }
         bool matched = false;
-        if (auto fieldIt = currentStruct->fieldIndex.find(key); fieldIt != currentStruct->fieldIndex.end()) {
+        if (auto fieldIt = currentStruct->fieldIndex.find(name); fieldIt != currentStruct->fieldIndex.end()) {
             const FieldInfo* field = &currentStruct->fields[fieldIt->second];
             if (std::find(features.currentStructFields.begin(), features.currentStructFields.end(), field) ==
                 features.currentStructFields.end()) {
@@ -6182,7 +6394,7 @@ Phase1Codegen::LineFeatures Phase1Codegen::scanLineFeatures(
             }
             matched = true;
         }
-        if (auto methodIt = currentStruct->methodIndex.find(key); methodIt != currentStruct->methodIndex.end()) {
+        if (auto methodIt = currentStruct->methodIndex.find(name); methodIt != currentStruct->methodIndex.end()) {
             const MethodInfo* method = &currentStruct->methods[methodIt->second];
             if (std::find(features.currentStructMethods.begin(), features.currentStructMethods.end(), method) ==
                 features.currentStructMethods.end()) {
@@ -6240,13 +6452,16 @@ Phase1Codegen::LineFeatures Phase1Codegen::scanLineFeatures(
                 features.hasPossibleStructMember = true;
                 continue;
             }
-            std::string key(word);
-            if (localTypes && localTypes->find(key) != localTypes->end()) {
+            if (localTypes && localTypes->find(word) != localTypes->end()) {
+                ++performanceCounters_.methodPlanShadowSkips;
                 continue;
             }
-            if (addCurrentStructMember(key)) {
+            if (addCurrentStructMember(word)) {
                 features.hasPossibleStructMember = true;
             }
+        }
+        if (!features.hasPossibleStructMember) {
+            ++performanceCounters_.methodPlanLinesSkippedNoCandidate;
         }
     }
     lineFeatureCacheValid_ = true;
@@ -6312,7 +6527,7 @@ std::string Phase1Codegen::lowerFunctionValue(std::string expression,
                                               LoweringContext& ctx,
                                               std::vector<std::string>& prelude) const {
     expression = trim(expression);
-    static const std::unordered_map<std::string, std::string> kEmptyLocalTypes;
+    static const LocalTypeMap kEmptyLocalTypes;
     const auto& localTypes = ctx.localTypes ? *ctx.localTypes : kEmptyLocalTypes;
     if (expression.empty()) {
         return expression;
@@ -6624,7 +6839,7 @@ std::string Phase1Codegen::lowerExpression(std::string expression,
                                            LoweringContext& ctx,
                                            std::vector<std::string>& prelude) const {
     expression = trim(expression);
-    static const std::unordered_map<std::string, std::string> kEmptyLocalTypes;
+    static const LocalTypeMap kEmptyLocalTypes;
     const auto& localTypes = ctx.localTypes ? *ctx.localTypes : kEmptyLocalTypes;
     if (expectedInterfaceType.empty() && ctx.currentStruct == nullptr &&
         expression.find_first_of(".[(") == std::string::npos &&
@@ -6814,7 +7029,7 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
             }
             std::string_view word(tokens.line.data() + token.start, token.end - token.start);
             if (cursor < line.size() && line[cursor] == '(' &&
-                functionArgumentLoweringCandidates_.contains(std::string(word))) {
+                functionArgumentLoweringCandidates_.contains(word)) {
                 return true;
             }
         }
@@ -6911,6 +7126,7 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
             std::string finalName = resolveFunctionTargetName(receiver, ctx.currentStruct);
             if (const FunctionInfo* fn = findFunctionInfo(finalName)) {
                 ++functionObjectCalls_;
+                recordFunctionDependency(ctx.currentFunctionName, fn->finalName);
                 out.push_back("call " + fn->finalName + "(" + lowerCallArgs(argsText) + ") // " +
                               std::string(kFunctionObjectExecuteMarker));
                 return out;
@@ -6940,6 +7156,7 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
             std::string finalName = resolveFunctionTargetName(receiver, ctx.currentStruct);
             if (const FunctionInfo* fn = findFunctionInfo(finalName)) {
                 ++functionObjectCalls_;
+                recordFunctionDependency(ctx.currentFunctionName, fn->finalName);
                 out.push_back("call " + fn->finalName + "(" + lowerCallArgs(argsText) + ") // " +
                               std::string(kFunctionObjectEvaluateMarker));
                 return out;
@@ -6969,7 +7186,7 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
             std::string lhsOut = lhs;
             LineFeatures lhsFeatures = scanLineFeatures(lhs, ctx.currentStruct, ctx.localTypes);
             if (lineNeedsStructRewrite(lhsFeatures, ctx.currentStruct)) {
-                static const std::unordered_map<std::string, std::string> kEmptyLocalTypes;
+                static const LocalTypeMap kEmptyLocalTypes;
                 const auto& localTypes = ctx.localTypes ? *ctx.localTypes : kEmptyLocalTypes;
                 lhsOut = rewriteStructExpression(lhs, ctx.currentStruct, localTypes);
                 lhsOut = rewriteArrayAccesses(lhsOut, ctx.localArrayShapes);
@@ -7043,10 +7260,15 @@ std::vector<std::string> Phase1Codegen::lowerGeneratedBodyFast(const std::vector
 std::vector<std::string> Phase1Codegen::lowerZincBody(const std::vector<std::string>& lines) {
     std::vector<std::string> locals;
     std::vector<std::string> body;
+    locals.reserve(lines.size() / 4 + 1);
+    body.reserve(lines.size());
     bool simpleBody = true;
     for (const auto& raw : lines) {
-        std::string t = trim(stripLineCommentPreservingLiterals(raw));
+        std::string t = raw.find("//") == std::string::npos
+                            ? trim(raw)
+                            : trim(stripLineCommentPreservingLiterals(raw));
         if (t.empty() || t.rfind("//", 0) == 0) {
+            lowerZincSimpleStatement(t, locals, body);
             continue;
         }
         if (t.front() == '.' ||
@@ -7069,20 +7291,22 @@ std::vector<std::string> Phase1Codegen::lowerZincBody(const std::vector<std::str
                 break;
             }
         }
+        lowerZincSimpleStatement(t, locals, body);
     }
     if (simpleBody) {
-        for (const auto& raw : lines) {
-            lowerZincSimpleStatement(trim(stripLineCommentPreservingLiterals(raw)), locals, body);
-        }
         std::vector<std::string> out;
+        out.reserve(locals.size() + body.size());
         out.insert(out.end(), locals.begin(), locals.end());
         out.insert(out.end(), body.begin(), body.end());
         return out;
     }
+    locals.clear();
+    body.clear();
     std::vector<std::string> normalized = splitZincStructuralLines(expandLeadingDotChains(joinZincContinuationLines(lines)));
     size_t index = 0;
     lowerZincBlock(normalized, index, locals, body);
     std::vector<std::string> out;
+    out.reserve(locals.size() + body.size());
     out.insert(out.end(), locals.begin(), locals.end());
     out.insert(out.end(), body.begin(), body.end());
     return out;
@@ -7482,6 +7706,9 @@ void Phase1Codegen::lowerZincSimpleStatement(const std::string& rawStatement, st
         }
     };
     auto emitAssign = [&](const std::string& op, const std::string& jassOp) -> bool {
+        if (statement.find(op.front()) == std::string::npos) {
+            return false;
+        }
         auto pos = findTopLevelOperatorAssignment(statement, op);
         if (!pos) {
             return false;
@@ -7490,6 +7717,12 @@ void Phase1Codegen::lowerZincSimpleStatement(const std::string& rawStatement, st
         return true;
     };
     if (emitAssign("+=", "+") || emitAssign("-=", "-") || emitAssign("*=", "*") || emitAssign("/=", "/")) {
+        return;
+    }
+    if (statement.find('=') == std::string::npos) {
+        if (!statement.empty()) {
+            body.push_back("call " + statement);
+        }
         return;
     }
     if (auto pos = findTopLevelAssignment(statement)) {

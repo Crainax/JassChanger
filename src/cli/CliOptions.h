@@ -23,6 +23,10 @@ struct CliOptions {
     std::filesystem::path emitExpandedAstPath;
     std::filesystem::path emitStatsPath;
     std::filesystem::path emitValidationReportPath;
+    std::filesystem::path emitPerformanceReportPath;
+    std::filesystem::path emitIncrementalReportPath;
+    std::filesystem::path emitIncrementalStatePath;
+    std::filesystem::path compareIncrementalStatePath;
     std::filesystem::path analyzePjassLogPath;
     std::filesystem::path validateExistingOutputPath;
     std::filesystem::path pjassPath;
