@@ -15,12 +15,15 @@
 #include <algorithm>
 #include <chrono>
 #include <cctype>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <map>
 #include <regex>
+#include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 using namespace vjassc;
@@ -41,6 +44,27 @@ struct Timings {
     long long total = 0;
     std::unordered_map<std::string, long long> codegenPasses;
     CodegenPerformanceCounters performanceCounters;
+};
+
+struct IncrementalChunk {
+    std::string key;
+    std::string kind;
+    std::string name;
+    size_t lineStart = 0;
+    size_t lineEnd = 0;
+    size_t bytes = 0;
+    uint64_t hash = 0;
+};
+
+struct IncrementalReportData {
+    std::vector<IncrementalChunk> chunks;
+    std::filesystem::path comparedStatePath;
+    bool compared = false;
+    size_t priorChunks = 0;
+    size_t reusedChunks = 0;
+    size_t changedChunks = 0;
+    size_t addedChunks = 0;
+    size_t removedChunks = 0;
 };
 
 long long elapsedMs(std::chrono::steady_clock::time_point start, std::chrono::steady_clock::time_point end) {
@@ -330,6 +354,10 @@ void writeCodegenPassesJson(std::ostream& out, const std::unordered_map<std::str
 
 void writePerformanceCountersJson(std::ostream& out, const CodegenPerformanceCounters& counters, int indent) {
     std::string pad(static_cast<size_t>(indent), ' ');
+    double dependencyCoverage = counters.functionDependencyOutputScanEdges == 0
+        ? 100.0
+        : (static_cast<double>(counters.functionDependencyMatchedEdges) * 100.0 /
+           static_cast<double>(counters.functionDependencyOutputScanEdges));
     out << "{\n"
         << pad << "  \"linesVisited\": " << counters.linesVisited << ",\n"
         << pad << "  \"regexCalls\": " << counters.regexCalls << ",\n"
@@ -387,7 +415,16 @@ void writePerformanceCountersJson(std::ostream& out, const CodegenPerformanceCou
         << pad << "    \"outputScanEdges\": " << counters.functionDependencyOutputScanEdges << ",\n"
         << pad << "    \"matchedEdges\": " << counters.functionDependencyMatchedEdges << ",\n"
         << pad << "    \"missingRecordedEdges\": " << counters.functionDependencyMissingRecordedEdges << ",\n"
-        << pad << "    \"extraRecordedEdges\": " << counters.functionDependencyExtraRecordedEdges << "\n"
+        << pad << "    \"extraRecordedEdges\": " << counters.functionDependencyExtraRecordedEdges << ",\n"
+        << pad << "    \"weakExecuteFuncEdges\": " << counters.functionDependencyWeakExecuteFuncEdges << ",\n"
+        << pad << "    \"coveragePercent\": " << dependencyCoverage << "\n"
+        << pad << "  },\n"
+        << pad << "  \"methodPlan\": {\n"
+        << pad << "    \"built\": " << counters.methodPlanBuilt << ",\n"
+        << pad << "    \"linesSkippedNoCandidate\": " << counters.methodPlanLinesSkippedNoCandidate << ",\n"
+        << pad << "    \"bareFieldRewriteAttempts\": " << counters.methodPlanBareFieldRewriteAttempts << ",\n"
+        << pad << "    \"bareFieldRewriteChanged\": " << counters.methodPlanBareFieldRewriteChanged << ",\n"
+        << pad << "    \"shadowSkips\": " << counters.methodPlanShadowSkips << "\n"
         << pad << "  }\n"
         << pad << "}";
 }
@@ -1035,6 +1072,246 @@ void writePerformanceJson(std::ostream& out, const Timings& timings, int indent)
     out << "]\n" << pad << "}";
 }
 
+uint64_t fnv1a64(std::string_view text) {
+    uint64_t hash = 1469598103934665603ull;
+    for (unsigned char c : text) {
+        hash ^= c;
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+std::string decimalHash(uint64_t hash) {
+    return std::to_string(hash);
+}
+
+std::string outputFunctionName(std::string_view line) {
+    std::string t = trim(line);
+    if (!startsWithWord(t, "function")) {
+        return {};
+    }
+    size_t pos = 8;
+    while (pos < t.size() && std::isspace(static_cast<unsigned char>(t[pos]))) {
+        ++pos;
+    }
+    if (pos >= t.size() || !isWordPart(t[pos])) {
+        return {};
+    }
+    size_t start = pos++;
+    while (pos < t.size() && isWordPart(t[pos])) {
+        ++pos;
+    }
+    return t.substr(start, pos - start);
+}
+
+std::vector<std::string> splitOutputLines(const std::string& text) {
+    std::vector<std::string> lines;
+    std::istringstream in(text);
+    std::string line;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        lines.push_back(std::move(line));
+    }
+    if (!text.empty() && text.back() == '\n') {
+        lines.emplace_back();
+    }
+    return lines;
+}
+
+IncrementalChunk makeChunk(std::string kind,
+                           std::string name,
+                           size_t lineStart,
+                           size_t lineEnd,
+                           std::string_view text) {
+    IncrementalChunk chunk;
+    chunk.kind = std::move(kind);
+    chunk.name = std::move(name);
+    chunk.key = chunk.kind + ":" + chunk.name;
+    chunk.lineStart = lineStart;
+    chunk.lineEnd = lineEnd;
+    chunk.bytes = text.size();
+    chunk.hash = fnv1a64(text);
+    return chunk;
+}
+
+IncrementalReportData buildIncrementalReport(const std::string& output,
+                                             const std::filesystem::path& compareStatePath) {
+    IncrementalReportData report;
+    report.comparedStatePath = compareStatePath;
+    std::vector<std::string> lines = splitOutputLines(output);
+    std::string currentText;
+    std::string currentKind = "preamble";
+    std::string currentName = "0";
+    size_t chunkStartLine = 1;
+    size_t syntheticIndex = 0;
+
+    auto flushChunk = [&](size_t lineEnd) {
+        if (currentText.empty()) {
+            return;
+        }
+        report.chunks.push_back(makeChunk(currentKind, currentName, chunkStartLine, lineEnd, currentText));
+        currentText.clear();
+    };
+
+    bool inFunction = false;
+    for (size_t i = 0; i < lines.size(); ++i) {
+        const size_t lineNo = i + 1;
+        std::string trimmed = trim(lines[i]);
+        if (!inFunction && startsWithWord(trimmed, "function")) {
+            flushChunk(lineNo == 0 ? 0 : lineNo - 1);
+            inFunction = true;
+            currentKind = "function";
+            currentName = outputFunctionName(trimmed);
+            if (currentName.empty()) {
+                currentName = "anonymous_" + std::to_string(++syntheticIndex);
+            }
+            chunkStartLine = lineNo;
+        }
+        currentText += lines[i];
+        currentText += '\n';
+        if (inFunction && startsWithWord(trimmed, "endfunction")) {
+            flushChunk(lineNo);
+            inFunction = false;
+            currentKind = "gap";
+            currentName = std::to_string(++syntheticIndex);
+            chunkStartLine = lineNo + 1;
+        }
+    }
+    flushChunk(lines.empty() ? 0 : lines.size());
+
+    if (!compareStatePath.empty()) {
+        std::unordered_map<std::string, std::string> priorHashes;
+        std::string priorText = readTextFile(compareStatePath);
+        std::regex chunkPattern(R"json(\{\s*"key":\s*"([^"]+)".*"hash":\s*"([^"]+)")json");
+        std::istringstream priorLines(priorText);
+        std::string priorLine;
+        while (std::getline(priorLines, priorLine)) {
+            std::smatch match;
+            if (std::regex_search(priorLine, match, chunkPattern) && match.size() >= 3) {
+                priorHashes[match[1].str()] = match[2].str();
+            }
+        }
+        report.compared = true;
+        report.priorChunks = priorHashes.size();
+        std::unordered_set<std::string> seenKeys;
+        for (const auto& chunk : report.chunks) {
+            auto prior = priorHashes.find(chunk.key);
+            if (prior == priorHashes.end()) {
+                ++report.addedChunks;
+                continue;
+            }
+            seenKeys.insert(chunk.key);
+            if (prior->second == decimalHash(chunk.hash)) {
+                ++report.reusedChunks;
+            } else {
+                ++report.changedChunks;
+            }
+        }
+        report.removedChunks = priorHashes.size() - seenKeys.size();
+    }
+    return report;
+}
+
+void writeIncrementalChunksJson(std::ostream& out, const IncrementalReportData& report, int indent) {
+    std::string pad(static_cast<size_t>(indent), ' ');
+    out << "[";
+    if (!report.chunks.empty()) {
+        out << "\n";
+        for (size_t i = 0; i < report.chunks.size(); ++i) {
+            const auto& chunk = report.chunks[i];
+            out << pad << "  {\"key\": ";
+            writeJsonString(out, chunk.key);
+            out << ", \"kind\": ";
+            writeJsonString(out, chunk.kind);
+            out << ", \"name\": ";
+            writeJsonString(out, chunk.name);
+            out << ", \"lineStart\": " << chunk.lineStart
+                << ", \"lineEnd\": " << chunk.lineEnd
+                << ", \"bytes\": " << chunk.bytes
+                << ", \"hash\": ";
+            writeJsonString(out, decimalHash(chunk.hash));
+            out << "}" << (i + 1 == report.chunks.size() ? "\n" : ",\n");
+        }
+        out << pad;
+    }
+    out << "]";
+}
+
+void writeIncrementalSummaryJson(std::ostream& out, const IncrementalReportData& report, int indent) {
+    std::string pad(static_cast<size_t>(indent), ' ');
+    double reusePercent = report.chunks.empty()
+        ? 100.0
+        : (static_cast<double>(report.reusedChunks) * 100.0 / static_cast<double>(report.chunks.size()));
+    out << "{\n"
+        << pad << "  \"chunkCount\": " << report.chunks.size() << ",\n"
+        << pad << "  \"compared\": " << (report.compared ? "true" : "false") << ",\n"
+        << pad << "  \"comparedStatePath\": ";
+    writeJsonString(out, pathToGenericString(report.comparedStatePath));
+    out << ",\n"
+        << pad << "  \"priorChunks\": " << report.priorChunks << ",\n"
+        << pad << "  \"reusedChunks\": " << report.reusedChunks << ",\n"
+        << pad << "  \"changedChunks\": " << report.changedChunks << ",\n"
+        << pad << "  \"addedChunks\": " << report.addedChunks << ",\n"
+        << pad << "  \"removedChunks\": " << report.removedChunks << ",\n"
+        << pad << "  \"reusePercent\": " << reusePercent << "\n"
+        << pad << "}";
+}
+
+std::string emitIncrementalReportJson(const CliOptions& options,
+                                      const IncrementalReportData& report,
+                                      bool stateOnly) {
+    std::ostringstream out;
+    out << "{\n"
+        << "  \"phase\": 19,\n"
+        << "  \"kind\": ";
+    writeJsonString(out, stateOnly ? "incremental-state" : "incremental-report");
+    out << ",\n  \"input\": ";
+    writeJsonString(out, pathToGenericString(options.inputPath));
+    out << ",\n  \"output\": ";
+    writeJsonString(out, pathToGenericString(options.outputPath));
+    out << ",\n  \"incremental\": ";
+    writeIncrementalSummaryJson(out, report, 2);
+    out << ",\n  \"chunks\": ";
+    writeIncrementalChunksJson(out, report, 2);
+    out << "\n}\n";
+    return out.str();
+}
+
+std::string emitPerformanceReportJson(const CliOptions& options,
+                                      const Timings& timings,
+                                      const IncrementalReportData& incremental) {
+    std::ostringstream out;
+    out << "{\n"
+        << "  \"phase\": 19,\n"
+        << "  \"mode\": ";
+    writeJsonString(out, compileModeName(options.mode));
+    out << ",\n  \"input\": ";
+    writeJsonString(out, pathToGenericString(options.inputPath));
+    out << ",\n  \"output\": ";
+    writeJsonString(out, pathToGenericString(options.outputPath));
+    out << ",\n  \"timingMs\": {\n"
+        << "    \"read\": " << timings.read << ",\n"
+        << "    \"preprocess\": " << timings.preprocess << ",\n"
+        << "    \"staticIf\": " << timings.staticIf << ",\n"
+        << "    \"lex\": " << timings.lex << ",\n"
+        << "    \"parse\": " << timings.parse << ",\n"
+        << "    \"moduleExpand\": " << timings.moduleExpand << ",\n"
+        << "    \"codegen\": " << timings.codegen << ",\n"
+        << "    \"syntaxLite\": " << timings.syntaxLite << ",\n"
+        << "    \"pjass\": " << timings.pjass << ",\n"
+        << "    \"comparison\": " << timings.comparison << ",\n"
+        << "    \"total\": " << timings.total << "\n"
+        << "  },\n"
+        << "  \"performance\": ";
+    writePerformanceJson(out, timings, 2);
+    out << ",\n  \"incremental\": ";
+    writeIncrementalSummaryJson(out, incremental, 2);
+    out << "\n}\n";
+    return out.str();
+}
+
 std::string emitValidationReportJson(const CliOptions& options,
                                      const OutputSyntaxReport& syntax,
                                      const InitValidationReport& init,
@@ -1503,8 +1780,27 @@ int main(int argc, char** argv) {
     }
 
     timings.total = elapsedMs(totalStart, std::chrono::steady_clock::now());
+    IncrementalReportData incrementalReport;
+    const bool needIncrementalData = !options.emitIncrementalReportPath.empty() ||
+                                     !options.emitIncrementalStatePath.empty() ||
+                                     !options.emitPerformanceReportPath.empty();
+    if (needIncrementalData && !codegen.output.empty()) {
+        incrementalReport = buildIncrementalReport(codegen.output, options.compareIncrementalStatePath);
+    }
     if (!options.emitStatsPath.empty()) {
         ok = writeTextFile(options.emitStatsPath, emitStatsJson(sources, preprocessed.stats, expandedProgram.stats, diagnostics, options.mode, timings)) && ok;
+    }
+    if (!options.emitIncrementalStatePath.empty()) {
+        ok = writeTextFile(options.emitIncrementalStatePath,
+                           emitIncrementalReportJson(options, incrementalReport, true)) && ok;
+    }
+    if (!options.emitIncrementalReportPath.empty()) {
+        ok = writeTextFile(options.emitIncrementalReportPath,
+                           emitIncrementalReportJson(options, incrementalReport, false)) && ok;
+    }
+    if (!options.emitPerformanceReportPath.empty()) {
+        ok = writeTextFile(options.emitPerformanceReportPath,
+                           emitPerformanceReportJson(options, timings, incrementalReport)) && ok;
     }
     if (!options.emitValidationReportPath.empty()) {
         if (runSyntaxLite && !syntaxReport.ran && !codegen.output.empty()) {

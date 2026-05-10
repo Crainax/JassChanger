@@ -262,5 +262,35 @@ int main(int argc, char** argv) {
         ok = false;
     }
 
+    fs::path phase19Out = outDir / "phase19_report.out.j";
+    fs::path phase19Out2 = outDir / "phase19_report.second.out.j";
+    fs::path phase19State = outDir / "phase19.incremental.state.json";
+    fs::path phase19Report = outDir / "phase19.incremental.report.json";
+    fs::path phase19Performance = outDir / "phase19.performance.json";
+    std::string reportCommand = exe.string() + " " + quote(fixtures / "phase18_body_mode_zinc_function.in.j") +
+                                " -o " + quote(phase19Out) +
+                                " --mode fast --emit-incremental-state " + quote(phase19State) +
+                                " --emit-performance-report " + quote(phase19Performance);
+    ok = runCommand(reportCommand) && ok;
+    reportCommand = exe.string() + " " + quote(fixtures / "phase18_body_mode_zinc_function.in.j") +
+                    " -o " + quote(phase19Out2) +
+                    " --mode fast --emit-incremental-report " + quote(phase19Report) +
+                    " --compare-incremental-state " + quote(phase19State);
+    ok = runCommand(reportCommand) && ok;
+    std::string performanceText = readFile(phase19Performance);
+    std::string incrementalText = readFile(phase19Report);
+    if (performanceText.find("\"functionDependencyRecorder\"") == std::string::npos ||
+        performanceText.find("\"methodPlan\"") == std::string::npos ||
+        performanceText.find("\"incremental\"") == std::string::npos) {
+        std::cerr << "phase19 performance report did not include expected sections\n";
+        ok = false;
+    }
+    if (incrementalText.find("\"compared\": true") == std::string::npos ||
+        incrementalText.find("\"reusePercent\": 100") == std::string::npos ||
+        incrementalText.find("\"chunks\"") == std::string::npos) {
+        std::cerr << "phase19 incremental report did not show stable chunk reuse\n";
+        ok = false;
+    }
+
     return ok ? 0 : 1;
 }

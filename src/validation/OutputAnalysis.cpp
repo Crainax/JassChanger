@@ -32,7 +32,7 @@ bool containsWord(const std::string& text, const std::string& word) {
     return false;
 }
 
-std::string stripProtected(const std::string& line) {
+std::string stripProtected(std::string_view line) {
     std::string out;
     out.reserve(line.size());
     bool inString = false;
@@ -76,13 +76,13 @@ std::string stripProtected(const std::string& line) {
     return out;
 }
 
-std::string stripLineCommentPreservingLiterals(const std::string& line) {
+std::string stripLineCommentPreservingLiterals(std::string_view line) {
     bool inString = false;
     bool inRaw = false;
     bool escaped = false;
     for (size_t i = 0; i < line.size(); ++i) {
         if (!inString && !inRaw && i + 1 < line.size() && line[i] == '/' && line[i + 1] == '/') {
-            return line.substr(0, i);
+            return std::string(line.substr(0, i));
         }
         char c = line[i];
         if (inString) {
@@ -103,7 +103,7 @@ std::string stripLineCommentPreservingLiterals(const std::string& line) {
             inRaw = true;
         }
     }
-    return line;
+    return std::string(line);
 }
 
 bool containsAnonymousFunctionSyntax(const std::string& text) {
@@ -219,6 +219,26 @@ std::string callbackTargetInLine(const std::string& text) {
     return {};
 }
 
+std::vector<std::string_view> splitLinesView(std::string_view text) {
+    std::vector<std::string_view> lines;
+    lines.reserve(text.size() / 48 + 1);
+    for (size_t pos = 0; pos < text.size();) {
+        size_t next = text.find('\n', pos);
+        std::string_view line = next == std::string_view::npos
+                                    ? text.substr(pos)
+                                    : text.substr(pos, next - pos);
+        if (!line.empty() && line.back() == '\r') {
+            line.remove_suffix(1);
+        }
+        lines.push_back(line);
+        if (next == std::string_view::npos) {
+            break;
+        }
+        pos = next + 1;
+    }
+    return lines;
+}
+
 bool isValidJassFunctionStatementShape(std::string_view statement) {
     std::string t = trim(statement);
     while (startsWithWord(t, "debug")) {
@@ -271,15 +291,25 @@ bool hasInlineZincControlResidue(const std::string& text) {
     return startsWithWord(after, "return") || startsWithWord(after, "call") || startsWithWord(after, "set");
 }
 
-std::string functionNameFromHeader(const std::string& line) {
-    std::istringstream in(line);
-    std::string word;
-    std::string name;
-    in >> word >> name;
-    return name;
+std::string functionNameFromHeader(std::string_view line) {
+    size_t pos = 0;
+    while (pos < line.size() && std::isspace(static_cast<unsigned char>(line[pos]))) {
+        ++pos;
+    }
+    while (pos < line.size() && !std::isspace(static_cast<unsigned char>(line[pos]))) {
+        ++pos;
+    }
+    while (pos < line.size() && std::isspace(static_cast<unsigned char>(line[pos]))) {
+        ++pos;
+    }
+    size_t start = pos;
+    while (pos < line.size() && isWordPart(line[pos])) {
+        ++pos;
+    }
+    return start == pos ? std::string{} : std::string(line.substr(start, pos - start));
 }
 
-std::string returnTypeFromHeader(const std::string& line) {
+std::string returnTypeFromHeader(std::string_view line) {
     size_t pos = line.find(" returns ");
     if (pos == std::string::npos) {
         return {};
@@ -287,8 +317,8 @@ std::string returnTypeFromHeader(const std::string& line) {
     return trim(std::string_view(line).substr(pos + 9));
 }
 
-std::string declarationNameInGlobals(const std::string& line) {
-    std::istringstream in(line);
+std::string declarationNameInGlobals(std::string_view line) {
+    std::istringstream in{std::string(line)};
     std::string word;
     std::string type;
     std::string name;
@@ -316,7 +346,7 @@ std::string declarationNameInGlobals(const std::string& line) {
     return name;
 }
 
-void addIssue(OutputSyntaxReport& report, std::string check, size_t line, std::string message, const std::string& snippet) {
+void addIssue(OutputSyntaxReport& report, std::string check, size_t line, std::string message, std::string_view snippet) {
     report.ok = false;
     report.issues.push_back(ValidationIssue{std::move(check), line, std::move(message), trim(snippet)});
 }
@@ -356,7 +386,7 @@ bool containsCallInMain(std::string_view output, const std::string& callName) {
     return false;
 }
 
-std::string blankProtectedForAnalysis(const std::string& line) {
+std::string blankProtectedForAnalysis(std::string_view line) {
     std::string out;
     out.reserve(line.size());
     bool inString = false;
@@ -405,7 +435,8 @@ struct ForwardReferenceReports {
     std::vector<ValidationIssue> lambdas;
 };
 
-ForwardReferenceReports findForwardFunctionReferences(const std::vector<std::string>& lines) {
+template <typename Lines>
+ForwardReferenceReports findForwardFunctionReferences(const Lines& lines) {
     std::unordered_map<std::string, size_t> definitions;
     for (size_t i = 0; i < lines.size(); ++i) {
         std::string t = trim(stripProtected(lines[i]));
@@ -593,10 +624,7 @@ OutputSyntaxReport analyzeOutputSyntaxLite(std::string_view output) {
     OutputSyntaxReport report;
     report.ran = true;
     report.metrics.bytes = output.size();
-    std::istringstream in{std::string(output)};
-    std::string line;
-    std::vector<std::string> lines;
-    lines.reserve(output.size() / 32);
+    std::vector<std::string_view> lines = splitLinesView(output);
     bool inGlobals = false;
     bool inFunction = false;
     bool sawExecutableInFunction = false;
@@ -614,8 +642,7 @@ OutputSyntaxReport analyzeOutputSyntaxLite(std::string_view output) {
         "method", "endmethod", "module", "endmodule", "implement", "delegate",
         "stub", "super", "operator", "interface"
     };
-    while (std::getline(in, line)) {
-        lines.push_back(line);
+    for (std::string_view line : lines) {
         ++lineNo;
         ++report.metrics.lines;
         std::string rawTrim = trim(line);
@@ -724,7 +751,8 @@ OutputSyntaxReport analyzeOutputSyntaxLite(std::string_view output) {
         if (hasChainedIndexing(t)) {
             addIssue(report, "noMultidimensionalArray", lineNo, "residual chained array indexing", line);
         }
-        if (hasIndexedStructMemberResidue(t)) {
+        if (t.find(']') != std::string::npos && t.find('.') != std::string::npos &&
+            hasIndexedStructMemberResidue(t)) {
             ValidationIssue issue{"indexedStructMemberResidue", lineNo, "residual indexed struct member access", trim(line)};
             report.indexedStructMemberResidues.push_back(issue);
             addIssue(report, issue.check, issue.line, issue.message, issue.snippet);
@@ -734,7 +762,9 @@ OutputSyntaxReport analyzeOutputSyntaxLite(std::string_view output) {
             report.inlineZincControlResidues.push_back(issue);
             addIssue(report, issue.check, issue.line, issue.message, issue.snippet);
         }
-        if (hasMethodChainCallResultResidue(t)) {
+        if ((t.find(").") != std::string::npos || t.find("].") != std::string::npos ||
+             t.find("call .") != std::string::npos) &&
+            hasMethodChainCallResultResidue(t)) {
             report.methodChainCallResultResidues.push_back(ValidationIssue{
                 "methodChainCallResultResidue",
                 lineNo,
@@ -750,14 +780,16 @@ OutputSyntaxReport analyzeOutputSyntaxLite(std::string_view output) {
                 trim(line),
             });
         }
-        if (std::string callbackTarget = callbackTargetInLine(t); !callbackTarget.empty() &&
-            callbackTarget.rfind("vjlambda__", 0) == 0) {
-            report.callbackCodeSignatureResidues.push_back(ValidationIssue{
-                "callbackCodeSignatureCandidate",
-                lineNo,
-                "lambda target is passed as a raw code callback: " + callbackTarget,
-                trim(line),
-            });
+        if (t.find("TriggerAdd") != std::string::npos && t.find("vjlambda__") != std::string::npos) {
+            if (std::string callbackTarget = callbackTargetInLine(t); !callbackTarget.empty() &&
+                callbackTarget.rfind("vjlambda__", 0) == 0) {
+                report.callbackCodeSignatureResidues.push_back(ValidationIssue{
+                    "callbackCodeSignatureCandidate",
+                    lineNo,
+                    "lambda target is passed as a raw code callback: " + callbackTarget,
+                    trim(line),
+                });
+            }
         }
         if (startsWithWord(t, "function")) {
             if (inFunction) {
@@ -862,12 +894,18 @@ OutputSyntaxReport analyzeOutputSyntaxLite(std::string_view output) {
 
 std::vector<ValidationIssue> findInvalidJassStatementShapes(std::string_view output) {
     std::vector<ValidationIssue> issues;
-    std::istringstream in{std::string(output)};
-    std::string line;
     bool inFunction = false;
     size_t functionDepth = 0;
     size_t lineNo = 0;
-    while (std::getline(in, line)) {
+    for (size_t pos = 0; pos <= output.size();) {
+        size_t next = output.find('\n', pos);
+        std::string_view line = next == std::string_view::npos
+                                    ? output.substr(pos)
+                                    : output.substr(pos, next - pos);
+        if (!line.empty() && line.back() == '\r') {
+            line.remove_suffix(1);
+        }
+        pos = next == std::string_view::npos ? output.size() + 1 : next + 1;
         ++lineNo;
         std::string t = trim(stripProtected(line));
         if (t.empty()) {
