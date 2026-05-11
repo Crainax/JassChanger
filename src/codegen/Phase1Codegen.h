@@ -7,6 +7,7 @@
 #include "sema/SymbolTable.h"
 
 #include <array>
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -26,7 +27,9 @@ struct CodegenOptions {
     bool experimentalRecordedOrder = false;
     bool experimentalParallelLowering = false;
     bool experimentalBodyJobsSingleThread = false;
+    bool experimentalIncrementalReuse = false;
     size_t parallelWorkers = 0;
+    std::filesystem::path experimentalIncrementalCachePath;
 };
 
 struct CodegenPerformanceCounters {
@@ -89,6 +92,14 @@ struct CodegenPerformanceCounters {
     size_t experimentalParallelQueueMs = 0;
     size_t experimentalParallelWorkerTotalMs = 0;
     size_t experimentalParallelMergeMs = 0;
+    size_t bodyCacheEnabled = 0;
+    size_t bodyCacheLookups = 0;
+    size_t bodyCacheHits = 0;
+    size_t bodyCacheMisses = 0;
+    size_t bodyCacheStores = 0;
+    size_t bodyCacheBypassedUnsafe = 0;
+    size_t bodyCacheReusedLines = 0;
+    size_t bodyCacheStoredLines = 0;
     size_t methodPlanBuilt = 0;
     size_t methodPlanLinesSkippedNoCandidate = 0;
     size_t methodPlanBareFieldRewriteAttempts = 0;
@@ -430,6 +441,15 @@ private:
     const FieldInfo* findField(const StructInfo& info, std::string_view name) const;
     const MethodInfo* findMethod(const StructInfo& info, std::string_view name) const;
     bool structUsesDeallocate(const StructInfo& info) const;
+    bool bodyCacheEnabled() const;
+    bool bodyCacheSafe(const std::vector<std::string>& sourceLines, bool allowFunctionKeyword = false) const;
+    std::string bodyCacheKey(const std::string& kind,
+                             const std::string& stableKey,
+                             BodyMode mode,
+                             const std::vector<std::string>& sourceLines) const;
+    std::string bodyCacheSignatureContextKey() const;
+    bool loadBodyCache(const std::string& key, std::vector<std::string>& lines) const;
+    void storeBodyCache(const std::string& key, const std::vector<std::string>& lines) const;
 
     std::vector<std::string> lowerZincBody(const std::vector<std::string>& lines);
     std::vector<std::string> extractZincLambdas(const std::vector<std::string>& lines, SourceLocation loc);
@@ -461,6 +481,7 @@ private:
     std::unordered_set<std::string, TransparentStringHash, TransparentStringEqual> functionArgumentLoweringCandidates_;
     std::vector<size_t> arrayStructIndexes_;
     std::vector<LambdaInfo> lambdas_;
+    mutable std::string bodyCacheSignatureContextKeyCache_;
     std::unordered_map<const Decl*, std::vector<std::string>> processedZincFunctionBodies_;
     std::unordered_map<const MethodDecl*, std::vector<std::string>> processedZincMethodBodies_;
     size_t nextLambdaId_ = 1;

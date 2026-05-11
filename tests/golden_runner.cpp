@@ -346,7 +346,7 @@ int main(int argc, char** argv) {
     if (readFile(phase21Single) != readFile(phase21Recorded) ||
         readFile(phase21Single) != readFile(phase21Parallel) ||
         readFile(phase21Single) != readFile(phase22BodyJobs)) {
-        std::cerr << "phase21/phase22 experimental output was not stable against default output\n";
+        std::cerr << "phase21/phase23 experimental output was not stable against default output\n";
         ok = false;
     }
     std::string depsText = readFile(phase21Deps);
@@ -367,14 +367,15 @@ int main(int argc, char** argv) {
         ok = false;
     }
     if (bodyPerfText.find("\"bodyJobsSingleThread\": true") == std::string::npos ||
-        bodyPerfText.find("\"phase\": 22") == std::string::npos ||
+        bodyPerfText.find("\"phase\": 23") == std::string::npos ||
         structPlanText.find("\"generatedSupport\"") == std::string::npos ||
         structPlanText.find("\"StructAllocate\"") == std::string::npos) {
-        std::cerr << "phase22 body-job or generated-support plan reports were missing expected fields\n";
+        std::cerr << "phase23 body-job or generated-support plan reports were missing expected fields\n";
         ok = false;
     }
 
     fs::path phase21CacheDir = outDir / "phase21-cache";
+    fs::remove_all(phase21CacheDir);
     fs::path phase21IncCold = outDir / "phase21.incremental.cold.out.j";
     fs::path phase21IncNoChange = outDir / "phase21.incremental.nochange.out.j";
     fs::path phase21IncState = outDir / "phase21.incremental.state.json";
@@ -384,6 +385,7 @@ int main(int argc, char** argv) {
                                         " --mode fast --experimental-incremental-cache " + quote(phase21CacheDir) +
                                         " --incremental-mode reuse --emit-incremental-state " + quote(phase21IncState);
     ok = runCommand(phase21IncColdCommand) && ok;
+    std::string phase21IncStateText = readFile(phase21IncState);
     std::string phase21IncNoChangeCommand = exe.string() + " " + quote(fixtures / "phase18_body_mode_zinc_function.in.j") +
                                             " -o " + quote(phase21IncNoChange) +
                                             " --mode fast --experimental-incremental-cache " + quote(phase21CacheDir) +
@@ -393,8 +395,10 @@ int main(int argc, char** argv) {
     std::string phase21IncReportText = readFile(phase21IncReport);
     if (readFile(phase21IncCold) != readFile(phase21IncNoChange) ||
         phase21IncReportText.find("\"cacheHit\": true") == std::string::npos ||
-        phase21IncReportText.find("\"reusePercent\": 100") == std::string::npos) {
-        std::cerr << "phase21 incremental cache no-change run did not reuse stable output\n";
+        phase21IncReportText.find("\"reusePercent\": 100") == std::string::npos ||
+        phase21IncStateText.find("\"bodyCacheStores\"") == std::string::npos ||
+        phase21IncStateText.find("\"bodyCacheStores\": 0") != std::string::npos) {
+        std::cerr << "phase23 incremental cache no-change run did not reuse stable output or store body cache entries\n";
         ok = false;
     }
 

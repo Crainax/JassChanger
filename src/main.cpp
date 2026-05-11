@@ -71,6 +71,14 @@ struct IncrementalReportData {
     size_t changedChunks = 0;
     size_t addedChunks = 0;
     size_t removedChunks = 0;
+    bool bodyCacheEnabled = false;
+    size_t bodyCacheLookups = 0;
+    size_t bodyCacheHits = 0;
+    size_t bodyCacheMisses = 0;
+    size_t bodyCacheStores = 0;
+    size_t bodyCacheBypassedUnsafe = 0;
+    size_t bodyCacheReusedLines = 0;
+    size_t bodyCacheStoredLines = 0;
 };
 
 long long elapsedMs(std::chrono::steady_clock::time_point start, std::chrono::steady_clock::time_point end) {
@@ -456,6 +464,16 @@ void writePerformanceCountersJson(std::ostream& out, const CodegenPerformanceCou
         << pad << "    \"workerTotalMs\": " << counters.experimentalParallelWorkerTotalMs << ",\n"
         << pad << "    \"mergeMs\": " << counters.experimentalParallelMergeMs << ",\n"
         << pad << "    \"speedupRatioEstimate\": 1.0\n"
+        << pad << "  },\n"
+        << pad << "  \"bodyCache\": {\n"
+        << pad << "    \"enabled\": " << (counters.bodyCacheEnabled ? "true" : "false") << ",\n"
+        << pad << "    \"lookups\": " << counters.bodyCacheLookups << ",\n"
+        << pad << "    \"hits\": " << counters.bodyCacheHits << ",\n"
+        << pad << "    \"misses\": " << counters.bodyCacheMisses << ",\n"
+        << pad << "    \"stores\": " << counters.bodyCacheStores << ",\n"
+        << pad << "    \"bypassedUnsafe\": " << counters.bodyCacheBypassedUnsafe << ",\n"
+        << pad << "    \"reusedLines\": " << counters.bodyCacheReusedLines << ",\n"
+        << pad << "    \"storedLines\": " << counters.bodyCacheStoredLines << "\n"
         << pad << "  },\n"
         << pad << "  \"methodPlan\": {\n"
         << pad << "    \"built\": " << counters.methodPlanBuilt << ",\n"
@@ -1130,7 +1148,7 @@ bool inputEligibleForEarlyCache(std::string_view text) {
 
 std::string incrementalCacheKey(const CliOptions& options, std::string_view inputText) {
     std::ostringstream key;
-    key << "vjassc-phase22-cache-v1\n"
+    key << "vjassc-phase23-cache-v1\n"
         << "mode=" << compileModeName(options.mode) << "\n"
         << "debug=" << (options.debugMode ? "1" : "0") << "\n"
         << "warn=" << (options.warnMode ? "1" : "0") << "\n"
@@ -1209,7 +1227,7 @@ bool storeIncrementalCache(const CliOptions& options, const std::string& output)
     }
     std::ostringstream manifest;
     manifest << "{\n"
-             << "  \"phase\": 21,\n"
+             << "  \"phase\": 23,\n"
              << "  \"kind\": \"experimental-incremental-cache\",\n"
              << "  \"key\": ";
     writeJsonString(manifest, key);
@@ -1398,7 +1416,15 @@ void writeIncrementalSummaryJson(std::ostream& out, const IncrementalReportData&
         << pad << "  \"changedChunks\": " << report.changedChunks << ",\n"
         << pad << "  \"addedChunks\": " << report.addedChunks << ",\n"
         << pad << "  \"removedChunks\": " << report.removedChunks << ",\n"
-        << pad << "  \"reusePercent\": " << reusePercent << "\n"
+        << pad << "  \"reusePercent\": " << reusePercent << ",\n"
+        << pad << "  \"bodyCacheEnabled\": " << (report.bodyCacheEnabled ? "true" : "false") << ",\n"
+        << pad << "  \"bodyCacheLookups\": " << report.bodyCacheLookups << ",\n"
+        << pad << "  \"bodyCacheHits\": " << report.bodyCacheHits << ",\n"
+        << pad << "  \"bodyCacheMisses\": " << report.bodyCacheMisses << ",\n"
+        << pad << "  \"bodyCacheStores\": " << report.bodyCacheStores << ",\n"
+        << pad << "  \"bodyCacheBypassedUnsafe\": " << report.bodyCacheBypassedUnsafe << ",\n"
+        << pad << "  \"bodyCacheReusedLines\": " << report.bodyCacheReusedLines << ",\n"
+        << pad << "  \"bodyCacheStoredLines\": " << report.bodyCacheStoredLines << "\n"
         << pad << "}";
 }
 
@@ -1407,7 +1433,7 @@ std::string emitIncrementalReportJson(const CliOptions& options,
                                       bool stateOnly) {
     std::ostringstream out;
     out << "{\n"
-        << "  \"phase\": 22,\n"
+        << "  \"phase\": 23,\n"
         << "  \"kind\": ";
     writeJsonString(out, stateOnly ? "incremental-state" : "incremental-report");
     out << ",\n  \"input\": ";
@@ -1427,7 +1453,7 @@ std::string emitPerformanceReportJson(const CliOptions& options,
                                       const IncrementalReportData& incremental) {
     std::ostringstream out;
     out << "{\n"
-        << "  \"phase\": 22,\n"
+        << "  \"phase\": 23,\n"
         << "  \"mode\": ";
     writeJsonString(out, compileModeName(options.mode));
     out << ",\n  \"input\": ";
@@ -1478,6 +1504,15 @@ std::string emitPerformanceReportJson(const CliOptions& options,
         << "    \"workerTotalMs\": " << timings.performanceCounters.experimentalParallelWorkerTotalMs << ",\n"
         << "    \"mergeMs\": " << timings.performanceCounters.experimentalParallelMergeMs << ",\n"
         << "    \"speedupRatioEstimate\": 1.0\n"
+        << "  },\n  \"bodyCache\": {\n"
+        << "    \"enabled\": " << (timings.performanceCounters.bodyCacheEnabled ? "true" : "false") << ",\n"
+        << "    \"lookups\": " << timings.performanceCounters.bodyCacheLookups << ",\n"
+        << "    \"hits\": " << timings.performanceCounters.bodyCacheHits << ",\n"
+        << "    \"misses\": " << timings.performanceCounters.bodyCacheMisses << ",\n"
+        << "    \"stores\": " << timings.performanceCounters.bodyCacheStores << ",\n"
+        << "    \"bypassedUnsafe\": " << timings.performanceCounters.bodyCacheBypassedUnsafe << ",\n"
+        << "    \"reusedLines\": " << timings.performanceCounters.bodyCacheReusedLines << ",\n"
+        << "    \"storedLines\": " << timings.performanceCounters.bodyCacheStoredLines << "\n"
         << "  }";
     out << "\n}\n";
     return out.str();
@@ -1491,7 +1526,7 @@ std::string emitDependencyReportJson(const CliOptions& options, const Timings& t
            static_cast<double>(counters.functionDependencyOutputScanEdges));
     std::ostringstream out;
     out << "{\n"
-        << "  \"phase\": 22,\n"
+        << "  \"phase\": 23,\n"
         << "  \"kind\": \"dependency-report\",\n"
         << "  \"experimentalRecordedOrder\": " << (options.experimentalRecordedOrder ? "true" : "false") << ",\n"
         << "  \"input\": ";
@@ -1537,14 +1572,14 @@ std::string emitDependencyReportJson(const CliOptions& options, const Timings& t
 std::string emitBenchmarkReportJson(const CliOptions& options, const Timings& timings) {
     std::ostringstream out;
     out << "{\n"
-        << "  \"phase\": 22,\n"
+        << "  \"phase\": 23,\n"
         << "  \"kind\": \"benchmark-report\",\n"
         << "  \"mode\": ";
     writeJsonString(out, compileModeName(options.mode));
     out << ",\n"
         << "  \"warmup\": " << options.benchmarkWarmup << ",\n"
         << "  \"repeat\": " << options.benchmarkRepeat << ",\n"
-        << "  \"note\": \"single-process compile result; use tools/bench_phase22.ps1 for multi-run median\",\n"
+        << "  \"note\": \"single-process compile result; use tools/bench_phase23.ps1 for multi-run median\",\n"
         << "  \"totalMs\": {\n"
         << "    \"min\": " << timings.total << ",\n"
         << "    \"median\": " << timings.total << ",\n"
@@ -1566,7 +1601,7 @@ std::string emitValidationReportJson(const CliOptions& options,
                                      const Timings& timings) {
     std::ostringstream out;
     out << "{\n"
-        << "  \"phase\": 22,\n"
+        << "  \"phase\": 23,\n"
         << "  \"mode\": ";
     writeJsonString(out, compileModeName(options.mode));
     out << ",\n"
@@ -2026,7 +2061,10 @@ int main(int argc, char** argv) {
                                                             options.experimentalRecordedOrder,
                                                             options.experimentalParallelLowering,
                                                             options.experimentalBodyJobsSingleThread,
-                                                            parallelWorkers});
+                                                            !options.experimentalIncrementalCachePath.empty() &&
+                                                                options.incrementalMode == "reuse",
+                                                            parallelWorkers,
+                                                            options.experimentalIncrementalCachePath});
         codegen = generator.generate(expandedProgram);
         auto codegenEnd = std::chrono::steady_clock::now();
         timings.codegen = elapsedMs(codegenStart, codegenEnd);
@@ -2162,6 +2200,14 @@ int main(int argc, char** argv) {
     incrementalReport.cacheEnabled = !options.experimentalIncrementalCachePath.empty();
     incrementalReport.cachePath = options.experimentalIncrementalCachePath;
     incrementalReport.incrementalMode = options.incrementalMode;
+    incrementalReport.bodyCacheEnabled = timings.performanceCounters.bodyCacheEnabled > 0;
+    incrementalReport.bodyCacheLookups = timings.performanceCounters.bodyCacheLookups;
+    incrementalReport.bodyCacheHits = timings.performanceCounters.bodyCacheHits;
+    incrementalReport.bodyCacheMisses = timings.performanceCounters.bodyCacheMisses;
+    incrementalReport.bodyCacheStores = timings.performanceCounters.bodyCacheStores;
+    incrementalReport.bodyCacheBypassedUnsafe = timings.performanceCounters.bodyCacheBypassedUnsafe;
+    incrementalReport.bodyCacheReusedLines = timings.performanceCounters.bodyCacheReusedLines;
+    incrementalReport.bodyCacheStoredLines = timings.performanceCounters.bodyCacheStoredLines;
     if (generatedOutputWritten && ok && !codegen.output.empty()) {
         incrementalReport.cacheStored = storeIncrementalCache(options, codegen.output);
     }

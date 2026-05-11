@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cctype>
+#include <fstream>
 #include <functional>
 #include <map>
 #include <optional>
@@ -33,6 +34,19 @@ bool isIdentPart(char c);
 bool containsIdentifierWord(std::string_view text, std::string_view word);
 std::vector<std::string_view> splitLinesView(std::string_view text);
 std::string commentMissingInitTriggerCalls(std::string output);
+
+uint64_t fnv1a64(std::string_view text) {
+    uint64_t hash = 1469598103934665603ull;
+    for (unsigned char c : text) {
+        hash ^= c;
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+std::string decimalHash(uint64_t hash) {
+    return std::to_string(hash);
+}
 
 std::string_view trimView(std::string_view text) {
     size_t start = 0;
@@ -3416,6 +3430,148 @@ void Phase1Codegen::countBodyMode(BodyMode mode, bool isMethod) const {
     }
 }
 
+bool Phase1Codegen::bodyCacheEnabled() const {
+    return options_.experimentalIncrementalReuse && !options_.experimentalIncrementalCachePath.empty();
+}
+
+bool Phase1Codegen::bodyCacheSafe(const std::vector<std::string>& sourceLines, bool allowFunctionKeyword) const {
+    for (const auto& raw : sourceLines) {
+        std::string line = stripLineCommentPreservingLiterals(raw);
+        if (!allowFunctionKeyword && line.find("function") != std::string::npos) {
+            return false;
+        }
+        if (line.find(".execute") != std::string::npos ||
+            line.find(".evaluate") != std::string::npos ||
+            line.find("ExecuteFunc") != std::string::npos ||
+            line.find("Condition(") != std::string::npos ||
+            line.find("Filter(") != std::string::npos ||
+            line.find("TriggerAddAction") != std::string::npos ||
+            line.find("TriggerAddCondition") != std::string::npos) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::string Phase1Codegen::bodyCacheKey(const std::string& kind,
+                                        const std::string& stableKey,
+                                        BodyMode mode,
+                                        const std::vector<std::string>& sourceLines) const {
+    std::ostringstream key;
+    key << "vjassc-phase23-body-cache-v3\n"
+        << "kind=" << kind << "\n"
+        << "stableKey=" << stableKey << "\n"
+        << "signatureContext=" << bodyCacheSignatureContextKey() << "\n"
+        << "mode=" << static_cast<int>(mode) << "\n"
+        << "fast=" << (options_.fastMode ? "1" : "0") << "\n"
+        << "warn=" << (options_.warnMode ? "1" : "0") << "\n";
+    for (const auto& line : sourceLines) {
+        key << line << "\n";
+    }
+    return decimalHash(fnv1a64(key.str()));
+}
+
+std::string Phase1Codegen::bodyCacheSignatureContextKey() const {
+    if (!bodyCacheSignatureContextKeyCache_.empty()) {
+        return bodyCacheSignatureContextKeyCache_;
+    }
+    std::ostringstream ctx;
+    ctx << "phase23-body-signature-context-v1\n";
+    for (const auto& fn : functions_) {
+        ctx << "fn|" << fn.sourceName << "|" << fn.finalName << "|" << fn.signature.returnType << "|"
+            << (fn.isStaticMethod ? "static" : "plain") << "|" << static_cast<int>(fn.generatedKind);
+        for (const auto& param : fn.signature.paramTypes) {
+            ctx << "|p:" << param;
+        }
+        ctx << "\n";
+    }
+    for (const auto& info : structs_) {
+        ctx << "struct|" << info.originalName << "|" << info.generatedName << "|" << info.prefix << "|"
+            << info.typeId << "|" << (info.isArrayStruct ? "array" : "plain") << "\n";
+        for (const auto& field : info.fields) {
+            ctx << "field|" << field.name << "|" << field.generatedName << "|" << field.typeName << "|"
+                << (field.isStatic ? "static" : "member") << "|" << (field.isArray ? "array" : "scalar") << "|"
+                << field.fixedArraySize;
+            for (int dimension : field.arrayDimensions) {
+                ctx << "|d:" << dimension;
+            }
+            ctx << "\n";
+        }
+        for (const auto& method : info.methods) {
+            ctx << "method|" << method.name << "|" << method.generatedName << "|"
+                << (method.isStatic ? "static" : "member") << "|" << (method.isOnDestroy ? "destroy" : "") << "|"
+                << (method.isOnInit ? "init" : "");
+            if (method.decl) {
+                ctx << "|returns:" << method.decl->returnType.name;
+                for (const auto& param : method.decl->params) {
+                    ctx << "|p:" << param.type.name;
+                }
+            }
+            ctx << "\n";
+        }
+    }
+    for (const auto& iface : functionInterfaces_) {
+        ctx << "iface|" << iface.sourceName << "|" << iface.finalName << "|" << iface.signature.returnType << "|"
+            << (iface.syntheticFunctionObject ? "synthetic" : "declared");
+        for (const auto& param : iface.signature.paramTypes) {
+            ctx << "|p:" << param;
+        }
+        ctx << "\n";
+        for (const auto& target : iface.targets) {
+            ctx << "target|" << target.finalName << "|" << target.id << "|"
+                << (target.needsCondition ? "condition" : "") << "|" << (target.needsAction ? "action" : "") << "\n";
+        }
+    }
+    bodyCacheSignatureContextKeyCache_ = decimalHash(fnv1a64(ctx.str()));
+    return bodyCacheSignatureContextKeyCache_;
+}
+
+bool Phase1Codegen::loadBodyCache(const std::string& key, std::vector<std::string>& lines) const {
+    if (!bodyCacheEnabled()) {
+        return false;
+    }
+    ++performanceCounters_.bodyCacheLookups;
+    std::filesystem::path path = options_.experimentalIncrementalCachePath / "body-v1" / ("body-" + key + ".jbody");
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        ++performanceCounters_.bodyCacheMisses;
+        return false;
+    }
+    lines.clear();
+    std::string line;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        lines.push_back(line);
+    }
+    ++performanceCounters_.bodyCacheHits;
+    performanceCounters_.bodyCacheReusedLines += lines.size();
+    return true;
+}
+
+void Phase1Codegen::storeBodyCache(const std::string& key, const std::vector<std::string>& lines) const {
+    if (!bodyCacheEnabled()) {
+        return;
+    }
+    std::filesystem::path dir = options_.experimentalIncrementalCachePath / "body-v1";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    if (ec) {
+        return;
+    }
+    std::filesystem::path path = dir / ("body-" + key + ".jbody");
+    std::ofstream out(path, std::ios::binary);
+    if (!out) {
+        return;
+    }
+    for (const auto& line : lines) {
+        out << line << '\n';
+    }
+    ++performanceCounters_.bodyCacheStores;
+    performanceCounters_.bodyCacheStoredLines += lines.size();
+}
+
 void Phase1Codegen::recordFunctionDependency(const std::string& from, const std::string& to) const {
     if (from.empty() || to.empty() || from == to || functionIndexByName_.find(to) == functionIndexByName_.end()) {
         return;
@@ -3494,6 +3650,7 @@ CodegenResult Phase1Codegen::generate(const Program& program) {
     functionArgumentLoweringCandidates_.clear();
     arrayStructIndexes_.clear();
     lambdas_.clear();
+    bodyCacheSignatureContextKeyCache_.clear();
     processedZincFunctionBodies_.clear();
     processedZincMethodBodies_.clear();
     nextLambdaId_ = 1;
@@ -3544,6 +3701,9 @@ CodegenResult Phase1Codegen::generate(const Program& program) {
     recordPass("collectFunctionInterfaces", [&]() { collectFunctionInterfaces(program.decls, nullptr); });
     recordPass("collectFunctions", [&]() { collectFunctions(program.decls, nullptr); });
     recordPass("collectFunctionObjectInterfaces", [&]() { collectFunctionObjectEvaluateInterfaces(program.decls, nullptr, nullptr); });
+    if (bodyCacheEnabled()) {
+        performanceCounters_.bodyCacheEnabled = 1;
+    }
     functionLookupCache_.clear();
     functionLookupCache_.reserve(12000);
     LibraryGraph graph(diagnostics_);
@@ -3647,9 +3807,9 @@ CodegenResult Phase1Codegen::makeResult(bool ok) {
 std::string Phase1Codegen::emitGeneratedEntityPlanJson() const {
     std::ostringstream out;
     out << "{\n"
-        << "  \"phase\": 22,\n"
+        << "  \"phase\": 23,\n"
         << "  \"kind\": \"generated-entity-plan\",\n"
-        << "  \"bodyJobModel\": \"phase22 single-thread deterministic body jobs\",\n"
+        << "  \"bodyJobModel\": \"phase23 body cache guarded deterministic body jobs\",\n"
         << "  \"lambdas\": [\n";
     for (size_t i = 0; i < lambdas_.size(); ++i) {
         const auto& lambda = lambdas_[i];
@@ -3985,6 +4145,22 @@ void Phase1Codegen::emitJassFunction(const Decl& decl, const Decl* container, bo
     }
     lambdaContextStruct_ = prevLambdaStruct;
     lambdaContextContainer_ = prevLambdaContainer;
+    const bool cacheCandidate = bodyCacheEnabled() && !injectInit && bodyCacheSafe(rawLines);
+    std::string cacheKey;
+    if (cacheCandidate) {
+        cacheKey = bodyCacheKey("function", "function:" + functionNameFromHeaderLine(header) + ":" + header, mode, rawLines);
+        std::vector<std::string> cachedLines;
+        if (loadBodyCache(cacheKey, cachedLines)) {
+            for (const auto& line : cachedLines) {
+                writer_.writeln(line);
+            }
+            writer_.dedent();
+            writer_.writeln("endfunction");
+            return;
+        }
+    } else if (bodyCacheEnabled()) {
+        ++performanceCounters_.bodyCacheBypassedUnsafe;
+    }
     std::vector<std::string> loweredBodyLines = lowerBodyByMode(mode, rawLines, ctx);
     for (const auto& rawLine : loweredBodyLines) {
         std::string t = trim(rawLine);
@@ -4023,10 +4199,14 @@ void Phase1Codegen::emitJassFunction(const Decl& decl, const Decl* container, bo
         }
         body.push_back("call vjassc__init_libraries()");
     }
-    for (const auto& local : locals) {
-        writer_.writeln(local);
+    std::vector<std::string> emittedLines;
+    emittedLines.reserve(locals.size() + body.size());
+    emittedLines.insert(emittedLines.end(), locals.begin(), locals.end());
+    emittedLines.insert(emittedLines.end(), body.begin(), body.end());
+    if (cacheCandidate) {
+        storeBodyCache(cacheKey, emittedLines);
     }
-    for (const auto& line : body) {
+    for (const auto& line : emittedLines) {
         writer_.writeln(line);
     }
     writer_.dedent();
@@ -4117,24 +4297,47 @@ void Phase1Codegen::emitZincFunction(const Decl& decl, const Decl* container) {
     std::vector<std::string> tempLocals;
     ArrayShapeMap localArrayShapes;
     LoweringContext ctx{nullptr, container, &localTypes, &localArrayShapes, &tempLocals, mode, finalName, 0};
+    const bool cacheCandidate = bodyCacheEnabled() && bodyCacheSafe(bodyLines);
+    std::string cacheKey;
+    if (cacheCandidate) {
+        cacheKey = bodyCacheKey("function", "function:" + finalName + ":takes:" + params + ":returns:" + returns, mode, bodyLines);
+        std::vector<std::string> cachedLines;
+        if (loadBodyCache(cacheKey, cachedLines)) {
+            for (const auto& line : cachedLines) {
+                writer_.writeln(line);
+            }
+            writer_.dedent();
+            writer_.writeln("endfunction");
+            return;
+        }
+    } else if (bodyCacheEnabled()) {
+        ++performanceCounters_.bodyCacheBypassedUnsafe;
+    }
+    std::vector<std::string> emittedLines;
     for (const auto& line : lowerBodyByMode(mode, bodyLines, ctx)) {
         std::string out = rewriteForContainer(line, container);
         std::vector<std::string> extraLines;
         if (startsWithWord(trim(out), "local")) {
             for (const auto& local : rewriteLocalDeclLine(out, nullptr, localTypes, ctx.localArrayShapes, extraLines)) {
                 lineFeatureCacheValid_ = false;
-                writer_.writeln(local);
+                emittedLines.push_back(local);
             }
             for (const auto& extra : extraLines) {
                 for (const auto& lowered : lowerStatementLine(extra, ctx)) {
-                    writer_.writeln(lowered);
+                    emittedLines.push_back(lowered);
                 }
             }
         } else {
             for (const auto& lowered : lowerStatementLine(out, ctx)) {
-                writer_.writeln(lowered);
+                emittedLines.push_back(lowered);
             }
         }
+    }
+    if (cacheCandidate) {
+        storeBodyCache(cacheKey, emittedLines);
+    }
+    for (const auto& line : emittedLines) {
+        writer_.writeln(line);
     }
     writer_.dedent();
     writer_.writeln("endfunction");
@@ -4158,8 +4361,29 @@ void Phase1Codegen::emitGeneratedLambdas() {
         BodyMode mode = BodyMode::Zinc;
         countBodyMode(mode, false);
         LoweringContext ctx{lambda.currentStruct, lambda.container, &localTypes, &localArrayShapes, &tempLocals, mode, lambda.name, 0};
+        const bool cacheCandidate = bodyCacheEnabled() && bodyCacheSafe(lambda.bodyLines);
+        std::string cacheKey;
+        if (cacheCandidate) {
+            std::string lambdaStableKey = "lambda:" + lambda.name + ":returns:" + rewrittenReturnType;
+            for (const auto& param : lambda.params) {
+                lambdaStableKey += ":param:" + param.type.name + ":" + param.name;
+            }
+            cacheKey = bodyCacheKey("lambda", lambdaStableKey, mode, lambda.bodyLines);
+            std::vector<std::string> cachedLines;
+            if (loadBodyCache(cacheKey, cachedLines)) {
+                for (const auto& line : cachedLines) {
+                    writer_.writeln(line);
+                }
+                writer_.dedent();
+                writer_.writeln("endfunction");
+                continue;
+            }
+        } else if (bodyCacheEnabled()) {
+            ++performanceCounters_.bodyCacheBypassedUnsafe;
+        }
         std::vector<std::string> lines = lowerBodyByMode(mode, lambda.bodyLines, ctx);
         bool lastEmittedReturn = false;
+        std::vector<std::string> emittedLines;
         for (const auto& raw : lines) {
             std::string line = trim(rewriteForContainer(raw, lambda.container));
             if (line.empty()) {
@@ -4168,23 +4392,29 @@ void Phase1Codegen::emitGeneratedLambdas() {
             std::vector<std::string> extraLines;
             if (startsWithWord(line, "local")) {
                 for (const auto& local : rewriteLocalDeclLine(line, nullptr, localTypes, ctx.localArrayShapes, extraLines)) {
-                    writer_.writeln(local);
+                    emittedLines.push_back(local);
                 }
                 for (const auto& extra : extraLines) {
                     for (const auto& lowered : lowerStatementLine(extra, ctx)) {
-                        writer_.writeln(lowered);
+                        emittedLines.push_back(lowered);
                         lastEmittedReturn = startsWithWord(trim(lowered), "return");
                     }
                 }
             } else {
                 for (const auto& lowered : lowerStatementLine(line, ctx)) {
-                    writer_.writeln(lowered);
+                    emittedLines.push_back(lowered);
                     lastEmittedReturn = startsWithWord(trim(lowered), "return");
                 }
             }
         }
         if (std::string defaultValue = defaultReturnValueForType(rewrittenReturnType); !defaultValue.empty() && !lastEmittedReturn) {
-            writer_.writeln("return " + defaultValue);
+            emittedLines.push_back("return " + defaultValue);
+        }
+        if (cacheCandidate) {
+            storeBodyCache(cacheKey, emittedLines);
+        }
+        for (const auto& line : emittedLines) {
+            writer_.writeln(line);
         }
         writer_.dedent();
         writer_.writeln("endfunction");
@@ -4464,7 +4694,8 @@ void Phase1Codegen::emitStructMethod(const StructInfo& info, const MethodInfo& m
     const Decl* prevLambdaContainer = lambdaContextContainer_;
     lambdaContextStruct_ = &info;
     lambdaContextContainer_ = info.container;
-    if (mayContainAnonymousFunction(rawLines)) {
+    bool hadAnonymousFunction = mayContainAnonymousFunction(rawLines);
+    if (hadAnonymousFunction) {
         rawLines = extractZincLambdas(rawLines, method.decl->loc);
     }
     lambdaContextStruct_ = prevLambdaStruct;
@@ -4474,6 +4705,26 @@ void Phase1Codegen::emitStructMethod(const StructInfo& info, const MethodInfo& m
     ArrayShapeMap localArrayShapes;
     localArrayShapes.reserve(2);
     LoweringContext ctx{&info, info.container, &localTypes, &localArrayShapes, &tempLocals, mode, method.generatedName, 0};
+    const bool cacheCandidate = bodyCacheEnabled() && !hadAnonymousFunction && bodyCacheSafe(rawLines);
+    std::string cacheKey;
+    if (cacheCandidate) {
+        cacheKey = bodyCacheKey("struct-method",
+                                "method:" + info.generatedName + ":" + method.generatedName +
+                                    ":takes:" + params + ":returns:" + returns,
+                                mode,
+                                rawLines);
+        std::vector<std::string> cachedLines;
+        if (loadBodyCache(cacheKey, cachedLines)) {
+            for (const auto& line : cachedLines) {
+                writer_.writeln(line);
+            }
+            writer_.dedent();
+            writer_.writeln("endfunction");
+            return;
+        }
+    } else if (bodyCacheEnabled()) {
+        ++performanceCounters_.bodyCacheBypassedUnsafe;
+    }
     std::vector<std::string> lines = lowerBodyByMode(mode, rawLines, ctx);
     std::vector<std::string> locals;
     locals.reserve(lines.size() / 4 + 1);
@@ -4496,10 +4747,14 @@ void Phase1Codegen::emitStructMethod(const StructInfo& info, const MethodInfo& m
             lowerStatementLineInto(line, ctx, body);
         }
     }
-    for (const auto& local : locals) {
-        writer_.writeln(local);
+    std::vector<std::string> emittedLines;
+    emittedLines.reserve(locals.size() + body.size());
+    emittedLines.insert(emittedLines.end(), locals.begin(), locals.end());
+    emittedLines.insert(emittedLines.end(), body.begin(), body.end());
+    if (cacheCandidate) {
+        storeBodyCache(cacheKey, emittedLines);
     }
-    for (const auto& line : body) {
+    for (const auto& line : emittedLines) {
         writer_.writeln(line);
     }
     writer_.dedent();
