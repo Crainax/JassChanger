@@ -53,6 +53,7 @@ struct CliOptions {
     bool validatePjass = false;
     bool experimentalRecordedOrder = false;
     bool experimentalParallelLowering = false;
+    bool experimentalBodyJobsSingleThread = false;
     bool showHelp = false;
     bool showVersion = false;
     CompileMode mode = CompileMode::Legacy;

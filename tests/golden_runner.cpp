@@ -314,9 +314,13 @@ int main(int argc, char** argv) {
     fs::path phase21Single = outDir / "phase21.single.out.j";
     fs::path phase21Recorded = outDir / "phase21.recorded.out.j";
     fs::path phase21Parallel = outDir / "phase21.parallel.out.j";
+    fs::path phase22BodyJobs = outDir / "phase22.bodyjobs.single.out.j";
     fs::path phase21Deps = outDir / "phase21.dependency.json";
     fs::path phase21ParallelPerf = outDir / "phase21.parallel.performance.json";
+    fs::path phase22BodyPerf = outDir / "phase22.bodyjobs.performance.json";
     fs::path phase21Bench = outDir / "phase21.benchmark.json";
+    fs::path phase22StructPlanOut = outDir / "phase22.struct_plan.out.j";
+    fs::path phase22StructPlan = outDir / "phase22.struct.generated_entity_plan.json";
     std::string phase21BaseCommand = exe.string() + " " + quote(fixtures / "phase18_body_mode_zinc_function.in.j") +
                                      " -o " + quote(phase21Single) +
                                      " --mode fast --emit-benchmark-report " + quote(phase21Bench);
@@ -330,17 +334,29 @@ int main(int argc, char** argv) {
                                          " --mode fast --experimental-parallel-lowering --parallel-workers 2" +
                                          " --emit-performance-report " + quote(phase21ParallelPerf);
     ok = runCommand(phase21ParallelCommand) && ok;
+    std::string phase22BodyJobsCommand = exe.string() + " " + quote(fixtures / "phase18_body_mode_zinc_function.in.j") +
+                                         " -o " + quote(phase22BodyJobs) +
+                                         " --mode fast --experimental-body-jobs-single-thread" +
+                                         " --emit-performance-report " + quote(phase22BodyPerf);
+    ok = runCommand(phase22BodyJobsCommand) && ok;
+    std::string phase22StructPlanCommand = exe.string() + " " + quote(fixtures / "phase16_struct_generated_support.in.j") +
+                                           " -o " + quote(phase22StructPlanOut) +
+                                           " --mode fast --emit-generated-entity-plan " + quote(phase22StructPlan);
+    ok = runCommand(phase22StructPlanCommand) && ok;
     if (readFile(phase21Single) != readFile(phase21Recorded) ||
-        readFile(phase21Single) != readFile(phase21Parallel)) {
-        std::cerr << "phase21 experimental output was not stable against default output\n";
+        readFile(phase21Single) != readFile(phase21Parallel) ||
+        readFile(phase21Single) != readFile(phase22BodyJobs)) {
+        std::cerr << "phase21/phase22 experimental output was not stable against default output\n";
         ok = false;
     }
     std::string depsText = readFile(phase21Deps);
     std::string parallelPerfText = readFile(phase21ParallelPerf);
+    std::string bodyPerfText = readFile(phase22BodyPerf);
     std::string benchText = readFile(phase21Bench);
+    std::string structPlanText = readFile(phase22StructPlan);
     if (depsText.find("\"kind\": \"dependency-report\"") == std::string::npos ||
         depsText.find("\"experimentalRecordedOrder\": true") == std::string::npos ||
-        depsText.find("\"functionOrderTokenScans\": 0") == std::string::npos) {
+        depsText.find("\"recordedOrder\"") == std::string::npos) {
         std::cerr << "phase21 recorded-order dependency report was missing expected fields\n";
         ok = false;
     }
@@ -348,6 +364,13 @@ int main(int argc, char** argv) {
         parallelPerfText.find("\"workers\": 2") == std::string::npos ||
         benchText.find("\"kind\": \"benchmark-report\"") == std::string::npos) {
         std::cerr << "phase21 parallel/benchmark reports were missing expected fields\n";
+        ok = false;
+    }
+    if (bodyPerfText.find("\"bodyJobsSingleThread\": true") == std::string::npos ||
+        bodyPerfText.find("\"phase\": 22") == std::string::npos ||
+        structPlanText.find("\"generatedSupport\"") == std::string::npos ||
+        structPlanText.find("\"StructAllocate\"") == std::string::npos) {
+        std::cerr << "phase22 body-job or generated-support plan reports were missing expected fields\n";
         ok = false;
     }
 

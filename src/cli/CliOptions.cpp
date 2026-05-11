@@ -97,6 +97,8 @@ CliParseResult parseCli(int argc, char** argv) {
             opt.experimentalRecordedOrder = true;
         } else if (arg == "--experimental-parallel-lowering") {
             opt.experimentalParallelLowering = true;
+        } else if (arg == "--experimental-body-jobs-single-thread") {
+            opt.experimentalBodyJobsSingleThread = true;
         } else if (arg == "--parallel-workers") {
             std::filesystem::path value;
             if (!requireValue(arg, value)) {
@@ -308,7 +310,7 @@ CliParseResult parseCli(int argc, char** argv) {
 }
 
 void printHelp(std::ostream& out) {
-    out << "vjassc phase21 - vJass/Zinc to JASS compiler prototype\n"
+    out << "vjassc phase22 - vJass/Zinc to JASS compiler prototype\n"
         << "\n"
         << "Usage:\n"
         << "  vjassc <input.j> -o <output.j> [--debug|--release]\n"
@@ -335,6 +337,7 @@ void printHelp(std::ostream& out) {
         << "  --compare-incremental-state <path> Compare incremental report against a prior state\n"
         << "  --experimental-recorded-order Use recorded dependency edges for function ordering\n"
         << "  --experimental-parallel-lowering Enable deterministic parallel-lowering experiment metadata\n"
+        << "  --experimental-body-jobs-single-thread Route through the Phase 22 single-thread body job model\n"
         << "  --parallel-workers <n>        Worker count for experimental parallel lowering metadata\n"
         << "  --experimental-incremental-cache <dir> Enable experimental incremental cache directory\n"
         << "  --incremental-mode <mode>     report or reuse for experimental incremental cache\n"
@@ -360,7 +363,7 @@ void printHelp(std::ostream& out) {
 }
 
 void printVersion(std::ostream& out) {
-    out << "vjassc phase21 0.21.0\n";
+    out << "vjassc phase22 0.22.0\n";
 }
 
 } // namespace vjassc

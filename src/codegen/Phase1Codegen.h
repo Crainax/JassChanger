@@ -25,6 +25,7 @@ struct CodegenOptions {
     bool emitGeneratedEntityPlan = false;
     bool experimentalRecordedOrder = false;
     bool experimentalParallelLowering = false;
+    bool experimentalBodyJobsSingleThread = false;
     size_t parallelWorkers = 0;
 };
 
@@ -79,8 +80,15 @@ struct CodegenPerformanceCounters {
     size_t functionDependencyExtraRecordedEdges = 0;
     size_t functionDependencyWeakExecuteFuncEdges = 0;
     size_t functionDependencyRecordedOrderEdgesUsed = 0;
+    size_t functionDependencyRecordedOrderFallbacks = 0;
+    size_t experimentalBodyJobsSingleThread = 0;
     size_t experimentalParallelWorkers = 0;
     size_t experimentalParallelJobs = 0;
+    size_t experimentalParallelCompletedJobs = 0;
+    size_t experimentalParallelFailedJobs = 0;
+    size_t experimentalParallelQueueMs = 0;
+    size_t experimentalParallelWorkerTotalMs = 0;
+    size_t experimentalParallelMergeMs = 0;
     size_t methodPlanBuilt = 0;
     size_t methodPlanLinesSkippedNoCandidate = 0;
     size_t methodPlanBareFieldRewriteAttempts = 0;

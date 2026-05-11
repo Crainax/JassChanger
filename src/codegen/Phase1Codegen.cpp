@@ -1582,9 +1582,9 @@ std::string orderFunctionBlocksForPjass(const std::string& output,
             signatures[blocks[i].name] = parseFunctionBlockSignature(blocks[i].lines.empty() ? "" : blocks[i].lines.front());
         }
     }
-    auto assignRecordedDependencies = [&]() {
+    auto assignRecordedDependencies = [&]() -> size_t {
         if (!recordedEdges) {
-            return false;
+            return 0;
         }
         size_t used = 0;
         for (const auto& edge : *recordedEdges) {
@@ -1608,16 +1608,50 @@ std::string orderFunctionBlocksForPjass(const std::string& output,
         for (auto& block : blocks) {
             std::sort(block.dependencies.begin(), block.dependencies.end());
         }
-        if (counters) {
-            counters->functionDependencyRecordedOrderEdgesUsed += used;
-            counters->functionOrderEdges += used;
-        }
-        return true;
+        return used;
     };
-    if (useRecordedOrder && assignRecordedDependencies()) {
-        // The experimental path consumes edges recorded while lowering bodies,
-        // avoiding the full final-output token scan used by the conservative path.
-    } else {
+    bool recordedOrderUsed = false;
+    bool dependenciesAssigned = false;
+    if (useRecordedOrder) {
+        size_t recordedUsed = assignRecordedDependencies();
+        if (recordedUsed > 0) {
+            std::unordered_set<std::string> scannedEdges;
+            for (const auto& block : blocks) {
+                std::vector<std::string> scanned = extractFunctionDependencies(block, functionIndex, nullptr, nullptr);
+                for (const auto& dep : scanned) {
+                    scannedEdges.insert(block.name + "\n" + dep);
+                }
+            }
+            size_t matched = 0;
+            if (recordedEdges) {
+                for (const auto& edge : *recordedEdges) {
+                    if (scannedEdges.contains(edge)) {
+                        ++matched;
+                    }
+                }
+            }
+            const size_t missing = scannedEdges.size() > matched ? scannedEdges.size() - matched : 0;
+            if (missing == 0) {
+                recordedOrderUsed = true;
+                if (counters) {
+                    counters->functionDependencyRecordedOrderEdgesUsed += recordedUsed;
+                    counters->functionOrderEdges += recordedUsed;
+                }
+            } else {
+                if (counters) {
+                    ++counters->functionDependencyRecordedOrderFallbacks;
+                }
+                for (auto& block : blocks) {
+                    block.dependencies = extractFunctionDependencies(block, functionIndex, counters, nullptr);
+                }
+                dependenciesAssigned = true;
+            }
+        }
+    }
+    if (recordedOrderUsed) {
+        // The experimental path consumes edges recorded while lowering bodies
+        // after proving they cover the conservative output-scan edges.
+    } else if (!dependenciesAssigned) {
         for (auto& block : blocks) {
             block.dependencies = extractFunctionDependencies(block, functionIndex, counters, recordedEdges);
         }
@@ -3586,7 +3620,8 @@ CodegenResult Phase1Codegen::makeResult(bool ok) {
     result.functionInterfaceMaxEvaluateDepth = functionInterfaceMaxEvaluateDepth_;
     result.functionInterfaceEvaluateTempLimit = functionInterfaceEvaluateTempLimit_;
     result.passTimings = passTimings_;
-    if (options_.experimentalParallelLowering) {
+    if (options_.experimentalParallelLowering || options_.experimentalBodyJobsSingleThread) {
+        performanceCounters_.experimentalBodyJobsSingleThread = options_.experimentalBodyJobsSingleThread ? 1 : 0;
         performanceCounters_.experimentalParallelWorkers = options_.parallelWorkers <= 1 ? 1 : options_.parallelWorkers;
         performanceCounters_.experimentalParallelJobs =
             performanceCounters_.bodyModeZincFunctions +
@@ -3594,6 +3629,13 @@ CodegenResult Phase1Codegen::makeResult(bool ok) {
             performanceCounters_.bodyModeZincMethods +
             performanceCounters_.bodyModeJassLikeMethods +
             performanceCounters_.bodyModeGeneratedBodies;
+        performanceCounters_.experimentalParallelCompletedJobs = performanceCounters_.experimentalParallelJobs;
+        performanceCounters_.experimentalParallelFailedJobs = 0;
+        performanceCounters_.experimentalParallelQueueMs = 0;
+        performanceCounters_.experimentalParallelWorkerTotalMs =
+            static_cast<size_t>(std::max<long long>(0, passTimings_["emitStructSupport.methodBodyLowering"])) +
+            static_cast<size_t>(std::max<long long>(0, passTimings_["lowerLambdas"]));
+        performanceCounters_.experimentalParallelMergeMs = 0;
     }
     result.performanceCounters = performanceCounters_;
     if (options_.emitGeneratedEntityPlan) {
@@ -3605,9 +3647,9 @@ CodegenResult Phase1Codegen::makeResult(bool ok) {
 std::string Phase1Codegen::emitGeneratedEntityPlanJson() const {
     std::ostringstream out;
     out << "{\n"
-        << "  \"phase\": 21,\n"
+        << "  \"phase\": 22,\n"
         << "  \"kind\": \"generated-entity-plan\",\n"
-        << "  \"bodyJobModel\": \"single-thread deterministic\",\n"
+        << "  \"bodyJobModel\": \"phase22 single-thread deterministic body jobs\",\n"
         << "  \"lambdas\": [\n";
     for (size_t i = 0; i < lambdas_.size(); ++i) {
         const auto& lambda = lambdas_[i];
@@ -3661,6 +3703,73 @@ std::string Phase1Codegen::emitGeneratedEntityPlanJson() const {
         out << ", \"needsCondition\": " << (target.needsCondition ? "true" : "false")
             << ", \"needsAction\": " << (target.needsAction ? "true" : "false")
             << "}" << (i + 1 == targets.size() ? "\n" : ",\n");
+    }
+    out << "  ],\n"
+        << "  \"generatedSupport\": [\n";
+    struct GeneratedRow {
+        std::string kind;
+        std::string sourceName;
+        std::string finalName;
+        std::string signatureHash;
+    };
+    auto kindName = [](GeneratedKind kind) -> const char* {
+        switch (kind) {
+        case GeneratedKind::StructAllocate:
+            return "StructAllocate";
+        case GeneratedKind::StructCreate:
+            return "StructCreate";
+        case GeneratedKind::StructDestroy:
+            return "StructDestroy";
+        case GeneratedKind::StructDeallocate:
+            return "StructDeallocate";
+        case GeneratedKind::StructOnDestroyWrapper:
+            return "StructOnDestroyWrapper";
+        case GeneratedKind::StructOnInitWrapper:
+            return "StructOnInitWrapper";
+        case GeneratedKind::FunctionInterfaceWrapper:
+            return "FunctionInterfaceWrapper";
+        case GeneratedKind::LambdaWrapper:
+            return "LambdaWrapper";
+        case GeneratedKind::CycleBridge:
+            return "CycleBridge";
+        case GeneratedKind::None:
+            return "None";
+        }
+        return "None";
+    };
+    std::vector<GeneratedRow> generatedRows;
+    for (const auto& fn : functions_) {
+        if (fn.generatedKind == GeneratedKind::None) {
+            continue;
+        }
+        std::ostringstream signature;
+        signature << fn.signature.returnType << "(";
+        for (size_t i = 0; i < fn.signature.paramTypes.size(); ++i) {
+            if (i != 0) {
+                signature << ",";
+            }
+            signature << fn.signature.paramTypes[i];
+        }
+        signature << ")";
+        generatedRows.push_back({kindName(fn.generatedKind), fn.sourceName, fn.finalName, signature.str()});
+    }
+    std::sort(generatedRows.begin(), generatedRows.end(), [](const GeneratedRow& a, const GeneratedRow& b) {
+        return std::tie(a.kind, a.sourceName, a.finalName) < std::tie(b.kind, b.sourceName, b.finalName);
+    });
+    for (size_t i = 0; i < generatedRows.size(); ++i) {
+        const auto& row = generatedRows[i];
+        out << "    {\"id\": " << (i + 1)
+            << ", \"kind\": ";
+        writeJsonString(out, row.kind);
+        out << ", \"stableKey\": ";
+        writeJsonString(out, "generated-support:" + row.kind + ":" + row.sourceName + ":" + row.signatureHash);
+        out << ", \"sourceName\": ";
+        writeJsonString(out, row.sourceName);
+        out << ", \"finalName\": ";
+        writeJsonString(out, row.finalName);
+        out << ", \"signatureHash\": ";
+        writeJsonString(out, row.signatureHash);
+        out << "}" << (i + 1 == generatedRows.size() ? "\n" : ",\n");
     }
     out << "  ],\n"
         << "  \"wrappers\": [],\n"
