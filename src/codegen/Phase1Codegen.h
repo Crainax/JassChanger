@@ -7,6 +7,7 @@
 #include "sema/SymbolTable.h"
 
 #include <array>
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -22,6 +23,13 @@ struct CodegenOptions {
     bool allowUnsupported = false;
     bool warnMode = false;
     bool fastMode = false;
+    bool emitGeneratedEntityPlan = false;
+    bool experimentalRecordedOrder = false;
+    bool experimentalParallelLowering = false;
+    bool experimentalBodyJobsSingleThread = false;
+    bool experimentalIncrementalReuse = false;
+    size_t parallelWorkers = 0;
+    std::filesystem::path experimentalIncrementalCachePath;
 };
 
 struct CodegenPerformanceCounters {
@@ -74,6 +82,24 @@ struct CodegenPerformanceCounters {
     size_t functionDependencyMissingRecordedEdges = 0;
     size_t functionDependencyExtraRecordedEdges = 0;
     size_t functionDependencyWeakExecuteFuncEdges = 0;
+    size_t functionDependencyRecordedOrderEdgesUsed = 0;
+    size_t functionDependencyRecordedOrderFallbacks = 0;
+    size_t experimentalBodyJobsSingleThread = 0;
+    size_t experimentalParallelWorkers = 0;
+    size_t experimentalParallelJobs = 0;
+    size_t experimentalParallelCompletedJobs = 0;
+    size_t experimentalParallelFailedJobs = 0;
+    size_t experimentalParallelQueueMs = 0;
+    size_t experimentalParallelWorkerTotalMs = 0;
+    size_t experimentalParallelMergeMs = 0;
+    size_t bodyCacheEnabled = 0;
+    size_t bodyCacheLookups = 0;
+    size_t bodyCacheHits = 0;
+    size_t bodyCacheMisses = 0;
+    size_t bodyCacheStores = 0;
+    size_t bodyCacheBypassedUnsafe = 0;
+    size_t bodyCacheReusedLines = 0;
+    size_t bodyCacheStoredLines = 0;
     size_t methodPlanBuilt = 0;
     size_t methodPlanLinesSkippedNoCandidate = 0;
     size_t methodPlanBareFieldRewriteAttempts = 0;
@@ -101,6 +127,7 @@ struct CodegenResult {
     size_t functionInterfaceEvaluateTempLimit = 8;
     std::unordered_map<std::string, long long> passTimings;
     CodegenPerformanceCounters performanceCounters;
+    std::string generatedEntityPlanJson;
 };
 
 class Phase1Codegen {
@@ -275,6 +302,8 @@ private:
         bool hasNameToken = false;
         bool hasExecuteEvaluate = false;
         bool hasBooleanOperators = false;
+        bool hasKnownArrayReceiver = false;
+        bool hasPotentialStructDot = false;
         bool hasPossibleStructMember = false;
         bool hasGeneratedStructPrefix = false;
         bool hasStringOrRawcode = false;
@@ -345,6 +374,9 @@ private:
                                      const ArrayShapeMap* localArrayShapes) const;
     bool hasKnownArrayReceiver(const std::string& line,
                                const ArrayShapeMap* localArrayShapes) const;
+    void lowerStatementLineInto(const std::string& line,
+                                LoweringContext& ctx,
+                                std::vector<std::string>& out) const;
     std::vector<std::string> lowerStatementLine(const std::string& line, LoweringContext& ctx) const;
     std::vector<std::string> lowerBodyByMode(BodyMode mode,
                                              const std::vector<std::string>& lines,
@@ -369,7 +401,8 @@ private:
     std::string rewriteFunctionNames(std::string expression, const StructInfo* currentStruct) const;
     LineFeatures scanLineFeatures(const std::string& line,
                                   const StructInfo* currentStruct,
-                                  const LocalTypeMap* localTypes) const;
+                                  const LocalTypeMap* localTypes,
+                                  const ArrayShapeMap* localArrayShapes) const;
     const LineTokenCache& getLineTokenCache(const std::string& line, bool* built = nullptr) const;
     LineTokenCache buildLineTokenCache(const std::string& line) const;
     BodyMode bodyModeForFunction(const Decl& decl) const;
@@ -408,11 +441,21 @@ private:
     const FieldInfo* findField(const StructInfo& info, std::string_view name) const;
     const MethodInfo* findMethod(const StructInfo& info, std::string_view name) const;
     bool structUsesDeallocate(const StructInfo& info) const;
+    bool bodyCacheEnabled() const;
+    bool bodyCacheSafe(const std::vector<std::string>& sourceLines, bool allowFunctionKeyword = false) const;
+    std::string bodyCacheKey(const std::string& kind,
+                             const std::string& stableKey,
+                             BodyMode mode,
+                             const std::vector<std::string>& sourceLines) const;
+    std::string bodyCacheSignatureContextKey() const;
+    bool loadBodyCache(const std::string& key, std::vector<std::string>& lines) const;
+    void storeBodyCache(const std::string& key, const std::vector<std::string>& lines) const;
 
     std::vector<std::string> lowerZincBody(const std::vector<std::string>& lines);
     std::vector<std::string> extractZincLambdas(const std::vector<std::string>& lines, SourceLocation loc);
     void recordLambdaContext(const std::string& beforeText);
     CodegenResult makeResult(bool ok);
+    std::string emitGeneratedEntityPlanJson() const;
     void lowerZincBlock(const std::vector<std::string>& lines, size_t& index, std::vector<std::string>& locals, std::vector<std::string>& body);
     void lowerZincSimpleStatement(const std::string& statement, std::vector<std::string>& locals, std::vector<std::string>& body);
 
@@ -427,9 +470,10 @@ private:
     std::unordered_map<const Decl*, size_t> structIndexByDecl_;
     std::unordered_map<std::string, size_t, TransparentStringHash, TransparentStringEqual> structIndexByName_;
     ArrayShapeMap globalArrayShapes_;
+    std::array<bool, 256> globalArrayShapeFirstChars_{};
     LocalTypeMap globalStructTypes_;
     mutable std::vector<FunctionInterfaceInfo> functionInterfaces_;
-    mutable std::unordered_map<std::string, size_t> functionInterfaceIndexByName_;
+    mutable std::unordered_map<std::string, size_t, TransparentStringHash, TransparentStringEqual> functionInterfaceIndexByName_;
     mutable std::unordered_map<std::string, size_t> functionObjectInterfaceIndexBySignature_;
     std::vector<FunctionInfo> functions_;
     std::unordered_map<std::string, size_t, TransparentStringHash, TransparentStringEqual> functionIndexByName_;
@@ -437,6 +481,7 @@ private:
     std::unordered_set<std::string, TransparentStringHash, TransparentStringEqual> functionArgumentLoweringCandidates_;
     std::vector<size_t> arrayStructIndexes_;
     std::vector<LambdaInfo> lambdas_;
+    mutable std::string bodyCacheSignatureContextKeyCache_;
     std::unordered_map<const Decl*, std::vector<std::string>> processedZincFunctionBodies_;
     std::unordered_map<const MethodDecl*, std::vector<std::string>> processedZincMethodBodies_;
     size_t nextLambdaId_ = 1;
@@ -467,6 +512,7 @@ private:
     mutable std::string lineFeatureCacheLine_;
     mutable const StructInfo* lineFeatureCacheStruct_ = nullptr;
     mutable const LocalTypeMap* lineFeatureCacheLocalTypes_ = nullptr;
+    mutable const ArrayShapeMap* lineFeatureCacheLocalArrayShapes_ = nullptr;
     mutable LineFeatures lineFeatureCacheValue_;
     const Decl* mainFunction_ = nullptr;
     const Decl* mainContainer_ = nullptr;

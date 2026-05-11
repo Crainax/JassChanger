@@ -1,6 +1,6 @@
 # vjassc
 
-`vjassc` is a C++20 phase-19 compiler prototype for lowering a supported subset of vJASS/Zinc to plain Warcraft III JASS.
+`vjassc` is a C++20 phase-20 compiler prototype for lowering a supported subset of vJASS/Zinc to plain Warcraft III JASS.
 
 Phase 1 built the compiler foundation: file loading, preprocessing, lexing, top-level parsing, library sorting, minimal public/private rewriting, basic Zinc function lowering, diagnostics, stats, and golden fixture tests.
 
@@ -38,10 +38,12 @@ Phase 18 adds explicit Zinc/JASS-like/generated body-mode routing, reusable line
 
 Phase 19 adds another conservative performance pass: string-view lookups in hot maps, current-struct first-character candidate filters, token-level bare member rewrites, global array rewrite caching, single-pass Zinc simple-body lowering, faster syntax-lite guards, pre-reserved cold-compile caches, MethodPlan counters, and report-only incremental chunk state. The real sample remains PJASS green; standalone fast/validate/full-validation meet the Phase 19 speed gates, War3Lib ALPHA validate passes at 6.93 seconds, and War3Lib ALPHA fast compare records vjassc fast at 5.57 seconds versus JassHelper at 11.76 seconds.
 
+Phase 20 adds deterministic generated-entity plan reporting, repeated-output stability coverage, dependency-recorder reconciliation, and conservative array/function-order hot-path work. Correctness remains green, but the strict Phase 20 speed gate was not reached locally, so the release executable was not deployed.
+
 ## Repository Layout
 
 - `src/`: compiler implementation
-- `tests/fixtures/`: golden cases for the supported phase-1 through phase-19 subset
+- `tests/fixtures/`: golden cases for the supported phase-1 through phase-20 subset
 - `samples/input.j`: large real input used for scan-only validation
 - `samples/output_jasshelper.j`: legacy JassHelper output reference for later phases
 - `jasshelper/`: old compiler package, kept for behavior comparisons when needed
@@ -63,6 +65,7 @@ Phase 19 adds another conservative performance pass: string-view lookups in hot 
 - `docs/phase17_status.md`: phase-17 optimization, War3Lib compare, and remaining hotspot status
 - `docs/phase18_status.md`: phase-18 body-mode routing, token-cache reuse, War3Lib compare, and deployment status
 - `docs/phase19_status.md`: phase-19 performance pass, standalone/War3Lib acceptance, and deployment status
+- `docs/phase20_status.md`: phase-20 deterministic plan reporting, dependency coverage, timing results, and skipped deployment
 
 ## Build
 

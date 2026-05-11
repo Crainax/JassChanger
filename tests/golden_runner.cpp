@@ -267,18 +267,26 @@ int main(int argc, char** argv) {
     fs::path phase19State = outDir / "phase19.incremental.state.json";
     fs::path phase19Report = outDir / "phase19.incremental.report.json";
     fs::path phase19Performance = outDir / "phase19.performance.json";
+    fs::path phase20Plan = outDir / "phase20.generated_entity_plan.json";
+    fs::path phase20Plan2 = outDir / "phase20.generated_entity_plan.second.json";
     std::string reportCommand = exe.string() + " " + quote(fixtures / "phase18_body_mode_zinc_function.in.j") +
                                 " -o " + quote(phase19Out) +
                                 " --mode fast --emit-incremental-state " + quote(phase19State) +
-                                " --emit-performance-report " + quote(phase19Performance);
+                                " --emit-performance-report " + quote(phase19Performance) +
+                                " --emit-generated-entity-plan " + quote(phase20Plan);
     ok = runCommand(reportCommand) && ok;
     reportCommand = exe.string() + " " + quote(fixtures / "phase18_body_mode_zinc_function.in.j") +
                     " -o " + quote(phase19Out2) +
                     " --mode fast --emit-incremental-report " + quote(phase19Report) +
-                    " --compare-incremental-state " + quote(phase19State);
+                    " --compare-incremental-state " + quote(phase19State) +
+                    " --emit-generated-entity-plan " + quote(phase20Plan2);
     ok = runCommand(reportCommand) && ok;
     std::string performanceText = readFile(phase19Performance);
     std::string incrementalText = readFile(phase19Report);
+    std::string repeatOutText = readFile(phase19Out);
+    std::string repeatOutText2 = readFile(phase19Out2);
+    std::string planText = readFile(phase20Plan);
+    std::string planText2 = readFile(phase20Plan2);
     if (performanceText.find("\"functionDependencyRecorder\"") == std::string::npos ||
         performanceText.find("\"methodPlan\"") == std::string::npos ||
         performanceText.find("\"incremental\"") == std::string::npos) {
@@ -289,6 +297,108 @@ int main(int argc, char** argv) {
         incrementalText.find("\"reusePercent\": 100") == std::string::npos ||
         incrementalText.find("\"chunks\"") == std::string::npos) {
         std::cerr << "phase19 incremental report did not show stable chunk reuse\n";
+        ok = false;
+    }
+    if (repeatOutText != repeatOutText2) {
+        std::cerr << "phase20 repeated fast output was not stable\n";
+        ok = false;
+    }
+    if (planText.find("\"kind\": \"generated-entity-plan\"") == std::string::npos ||
+        planText.find("\"lambdas\"") == std::string::npos ||
+        planText.find("\"functionInterfaceTargets\"") == std::string::npos ||
+        planText != planText2) {
+        std::cerr << "phase20 generated entity plan was missing or unstable\n";
+        ok = false;
+    }
+
+    fs::path phase21Single = outDir / "phase21.single.out.j";
+    fs::path phase21Recorded = outDir / "phase21.recorded.out.j";
+    fs::path phase21Parallel = outDir / "phase21.parallel.out.j";
+    fs::path phase22BodyJobs = outDir / "phase22.bodyjobs.single.out.j";
+    fs::path phase21Deps = outDir / "phase21.dependency.json";
+    fs::path phase21ParallelPerf = outDir / "phase21.parallel.performance.json";
+    fs::path phase22BodyPerf = outDir / "phase22.bodyjobs.performance.json";
+    fs::path phase21Bench = outDir / "phase21.benchmark.json";
+    fs::path phase22StructPlanOut = outDir / "phase22.struct_plan.out.j";
+    fs::path phase22StructPlan = outDir / "phase22.struct.generated_entity_plan.json";
+    std::string phase21BaseCommand = exe.string() + " " + quote(fixtures / "phase18_body_mode_zinc_function.in.j") +
+                                     " -o " + quote(phase21Single) +
+                                     " --mode fast --emit-benchmark-report " + quote(phase21Bench);
+    ok = runCommand(phase21BaseCommand) && ok;
+    std::string phase21RecordedCommand = exe.string() + " " + quote(fixtures / "phase18_body_mode_zinc_function.in.j") +
+                                         " -o " + quote(phase21Recorded) +
+                                         " --mode fast --experimental-recorded-order --emit-dependency-report " + quote(phase21Deps);
+    ok = runCommand(phase21RecordedCommand) && ok;
+    std::string phase21ParallelCommand = exe.string() + " " + quote(fixtures / "phase18_body_mode_zinc_function.in.j") +
+                                         " -o " + quote(phase21Parallel) +
+                                         " --mode fast --experimental-parallel-lowering --parallel-workers 2" +
+                                         " --emit-performance-report " + quote(phase21ParallelPerf);
+    ok = runCommand(phase21ParallelCommand) && ok;
+    std::string phase22BodyJobsCommand = exe.string() + " " + quote(fixtures / "phase18_body_mode_zinc_function.in.j") +
+                                         " -o " + quote(phase22BodyJobs) +
+                                         " --mode fast --experimental-body-jobs-single-thread" +
+                                         " --emit-performance-report " + quote(phase22BodyPerf);
+    ok = runCommand(phase22BodyJobsCommand) && ok;
+    std::string phase22StructPlanCommand = exe.string() + " " + quote(fixtures / "phase16_struct_generated_support.in.j") +
+                                           " -o " + quote(phase22StructPlanOut) +
+                                           " --mode fast --emit-generated-entity-plan " + quote(phase22StructPlan);
+    ok = runCommand(phase22StructPlanCommand) && ok;
+    if (readFile(phase21Single) != readFile(phase21Recorded) ||
+        readFile(phase21Single) != readFile(phase21Parallel) ||
+        readFile(phase21Single) != readFile(phase22BodyJobs)) {
+        std::cerr << "phase21/phase23 experimental output was not stable against default output\n";
+        ok = false;
+    }
+    std::string depsText = readFile(phase21Deps);
+    std::string parallelPerfText = readFile(phase21ParallelPerf);
+    std::string bodyPerfText = readFile(phase22BodyPerf);
+    std::string benchText = readFile(phase21Bench);
+    std::string structPlanText = readFile(phase22StructPlan);
+    if (depsText.find("\"kind\": \"dependency-report\"") == std::string::npos ||
+        depsText.find("\"experimentalRecordedOrder\": true") == std::string::npos ||
+        depsText.find("\"recordedOrder\"") == std::string::npos) {
+        std::cerr << "phase21 recorded-order dependency report was missing expected fields\n";
+        ok = false;
+    }
+    if (parallelPerfText.find("\"parallel\"") == std::string::npos ||
+        parallelPerfText.find("\"workers\": 2") == std::string::npos ||
+        benchText.find("\"kind\": \"benchmark-report\"") == std::string::npos) {
+        std::cerr << "phase21 parallel/benchmark reports were missing expected fields\n";
+        ok = false;
+    }
+    if (bodyPerfText.find("\"bodyJobsSingleThread\": true") == std::string::npos ||
+        bodyPerfText.find("\"phase\": 23") == std::string::npos ||
+        structPlanText.find("\"generatedSupport\"") == std::string::npos ||
+        structPlanText.find("\"StructAllocate\"") == std::string::npos) {
+        std::cerr << "phase23 body-job or generated-support plan reports were missing expected fields\n";
+        ok = false;
+    }
+
+    fs::path phase21CacheDir = outDir / "phase21-cache";
+    fs::remove_all(phase21CacheDir);
+    fs::path phase21IncCold = outDir / "phase21.incremental.cold.out.j";
+    fs::path phase21IncNoChange = outDir / "phase21.incremental.nochange.out.j";
+    fs::path phase21IncState = outDir / "phase21.incremental.state.json";
+    fs::path phase21IncReport = outDir / "phase21.incremental.report.json";
+    std::string phase21IncColdCommand = exe.string() + " " + quote(fixtures / "phase18_body_mode_zinc_function.in.j") +
+                                        " -o " + quote(phase21IncCold) +
+                                        " --mode fast --experimental-incremental-cache " + quote(phase21CacheDir) +
+                                        " --incremental-mode reuse --emit-incremental-state " + quote(phase21IncState);
+    ok = runCommand(phase21IncColdCommand) && ok;
+    std::string phase21IncStateText = readFile(phase21IncState);
+    std::string phase21IncNoChangeCommand = exe.string() + " " + quote(fixtures / "phase18_body_mode_zinc_function.in.j") +
+                                            " -o " + quote(phase21IncNoChange) +
+                                            " --mode fast --experimental-incremental-cache " + quote(phase21CacheDir) +
+                                            " --incremental-mode reuse --compare-incremental-state " + quote(phase21IncState) +
+                                            " --emit-incremental-report " + quote(phase21IncReport);
+    ok = runCommand(phase21IncNoChangeCommand) && ok;
+    std::string phase21IncReportText = readFile(phase21IncReport);
+    if (readFile(phase21IncCold) != readFile(phase21IncNoChange) ||
+        phase21IncReportText.find("\"cacheHit\": true") == std::string::npos ||
+        phase21IncReportText.find("\"reusePercent\": 100") == std::string::npos ||
+        phase21IncStateText.find("\"bodyCacheStores\"") == std::string::npos ||
+        phase21IncStateText.find("\"bodyCacheStores\": 0") != std::string::npos) {
+        std::cerr << "phase23 incremental cache no-change run did not reuse stable output or store body cache entries\n";
         ok = false;
     }
 

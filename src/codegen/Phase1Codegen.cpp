@@ -1,17 +1,20 @@
 #include "codegen/Phase1Codegen.h"
 
 #include "codegen/CodeWriter.h"
+#include "util/JsonWriter.h"
 #include "util/PathUtil.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cctype>
+#include <fstream>
 #include <functional>
 #include <map>
 #include <optional>
 #include <set>
 #include <regex>
 #include <sstream>
+#include <tuple>
 #include <unordered_set>
 
 namespace vjassc {
@@ -31,6 +34,19 @@ bool isIdentPart(char c);
 bool containsIdentifierWord(std::string_view text, std::string_view word);
 std::vector<std::string_view> splitLinesView(std::string_view text);
 std::string commentMissingInitTriggerCalls(std::string output);
+
+uint64_t fnv1a64(std::string_view text) {
+    uint64_t hash = 1469598103934665603ull;
+    for (unsigned char c : text) {
+        hash ^= c;
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+std::string decimalHash(uint64_t hash) {
+    return std::to_string(hash);
+}
 
 std::string_view trimView(std::string_view text) {
     size_t start = 0;
@@ -234,7 +250,7 @@ std::string sanitizeGeneratedLine(const std::string& line) {
 struct FunctionBlock {
     std::string name;
     std::vector<std::string> lines;
-    std::set<std::string> dependencies;
+    std::vector<std::string> dependencies;
     size_t originalIndex = 0;
 };
 
@@ -491,7 +507,7 @@ std::string blankStringRawcodeAndComment(const std::string& line) {
     return out;
 }
 
-void addFunctionDependency(std::set<std::string>& deps,
+void addFunctionDependency(std::vector<std::string>& deps,
                            const std::unordered_map<std::string, size_t, TransparentStringHash, TransparentStringEqual>& functionIndex,
                            const std::string& current,
                            std::string_view candidate,
@@ -500,17 +516,27 @@ void addFunctionDependency(std::set<std::string>& deps,
         return;
     }
     if (functionIndex.find(candidate) != functionIndex.end()) {
-        std::string key(candidate);
-        if (deps.insert(std::move(key)).second && counters) {
-            ++counters->functionOrderEdges;
+        bool seen = false;
+        for (const auto& dep : deps) {
+            if (dep == candidate) {
+                seen = true;
+                break;
+            }
+        }
+        if (!seen) {
+            deps.emplace_back(candidate);
+            if (counters) {
+                ++counters->functionOrderEdges;
+            }
         }
     }
 }
 
-std::set<std::string> extractFunctionDependencies(const FunctionBlock& block,
-                                                  const std::unordered_map<std::string, size_t, TransparentStringHash, TransparentStringEqual>& functionIndex,
-                                                  CodegenPerformanceCounters* counters) {
-    std::set<std::string> deps;
+std::vector<std::string> extractFunctionDependencies(const FunctionBlock& block,
+                                                     const std::unordered_map<std::string, size_t, TransparentStringHash, TransparentStringEqual>& functionIndex,
+                                                     CodegenPerformanceCounters* counters,
+                                                     std::unordered_set<std::string>* recordedEdges) {
+    std::vector<std::string> deps;
     auto identStart = [](char c) {
         return std::isalpha(static_cast<unsigned char>(c)) || c == '_' || c == '$';
     };
@@ -627,6 +653,14 @@ std::set<std::string> extractFunctionDependencies(const FunctionBlock& block,
                 continue;
             }
             addFunctionDependency(deps, functionIndex, block.name, name, counters);
+        }
+    }
+    std::sort(deps.begin(), deps.end());
+    if (recordedEdges) {
+        for (const auto& dep : deps) {
+            if (recordedEdges->insert(block.name + "\n" + dep).second && counters) {
+                ++counters->functionDependencyRecordedEdges;
+            }
         }
     }
     return deps;
@@ -1508,7 +1542,8 @@ void ensureFunctionInterfaceInitCall(std::vector<FunctionBlock>& blocks) {
 
 std::string orderFunctionBlocksForPjass(const std::string& output,
                                         CodegenPerformanceCounters* counters,
-                                        const std::unordered_set<std::string>* recordedEdges) {
+                                        std::unordered_set<std::string>* recordedEdges,
+                                        bool useRecordedOrder) {
     std::vector<std::string> lines;
     std::istringstream in(output);
     std::string line;
@@ -1561,8 +1596,79 @@ std::string orderFunctionBlocksForPjass(const std::string& output,
             signatures[blocks[i].name] = parseFunctionBlockSignature(blocks[i].lines.empty() ? "" : blocks[i].lines.front());
         }
     }
-    for (auto& block : blocks) {
-        block.dependencies = extractFunctionDependencies(block, functionIndex, counters);
+    auto assignRecordedDependencies = [&]() -> size_t {
+        if (!recordedEdges) {
+            return 0;
+        }
+        size_t used = 0;
+        for (const auto& edge : *recordedEdges) {
+            size_t split = edge.find('\n');
+            if (split == std::string::npos) {
+                continue;
+            }
+            std::string_view from(edge.data(), split);
+            std::string_view to(edge.data() + split + 1, edge.size() - split - 1);
+            auto fromIt = functionIndex.find(from);
+            auto toIt = functionIndex.find(to);
+            if (fromIt == functionIndex.end() || toIt == functionIndex.end() || fromIt->second == toIt->second) {
+                continue;
+            }
+            auto& deps = blocks[fromIt->second].dependencies;
+            if (std::find(deps.begin(), deps.end(), std::string(to)) == deps.end()) {
+                deps.emplace_back(to);
+                ++used;
+            }
+        }
+        for (auto& block : blocks) {
+            std::sort(block.dependencies.begin(), block.dependencies.end());
+        }
+        return used;
+    };
+    bool recordedOrderUsed = false;
+    bool dependenciesAssigned = false;
+    if (useRecordedOrder) {
+        size_t recordedUsed = assignRecordedDependencies();
+        if (recordedUsed > 0) {
+            std::unordered_set<std::string> scannedEdges;
+            for (const auto& block : blocks) {
+                std::vector<std::string> scanned = extractFunctionDependencies(block, functionIndex, nullptr, nullptr);
+                for (const auto& dep : scanned) {
+                    scannedEdges.insert(block.name + "\n" + dep);
+                }
+            }
+            size_t matched = 0;
+            if (recordedEdges) {
+                for (const auto& edge : *recordedEdges) {
+                    if (scannedEdges.contains(edge)) {
+                        ++matched;
+                    }
+                }
+            }
+            const size_t missing = scannedEdges.size() > matched ? scannedEdges.size() - matched : 0;
+            if (missing == 0) {
+                recordedOrderUsed = true;
+                if (counters) {
+                    counters->functionDependencyRecordedOrderEdgesUsed += recordedUsed;
+                    counters->functionOrderEdges += recordedUsed;
+                }
+            } else {
+                if (counters) {
+                    ++counters->functionDependencyRecordedOrderFallbacks;
+                }
+                for (auto& block : blocks) {
+                    block.dependencies = extractFunctionDependencies(block, functionIndex, counters, nullptr);
+                }
+                dependenciesAssigned = true;
+            }
+        }
+    }
+    if (recordedOrderUsed) {
+        // The experimental path consumes edges recorded while lowering bodies
+        // after proving they cover the conservative output-scan edges.
+    } else if (!dependenciesAssigned) {
+        for (auto& block : blocks) {
+            block.dependencies = extractFunctionDependencies(block, functionIndex, counters, recordedEdges);
+        }
     }
     auto rebuildFunctionIndexAndSignatures = [&]() {
         functionIndex.clear();
@@ -1593,7 +1699,10 @@ std::string orderFunctionBlocksForPjass(const std::string& output,
         rebuildFunctionIndexAndSignatures();
         for (size_t index : dirty) {
             if (index < blocks.size()) {
-                blocks[index].dependencies = extractFunctionDependencies(blocks[index], functionIndex, counters);
+                blocks[index].dependencies = extractFunctionDependencies(blocks[index],
+                                                                         functionIndex,
+                                                                         counters,
+                                                                         useRecordedOrder ? nullptr : recordedEdges);
             }
         }
     };
@@ -1665,11 +1774,11 @@ std::string orderFunctionBlocksForPjass(const std::string& output,
             targetSigIt->second.returnsNothing() &&
             !targetSigIt->second.paramTypes.empty() &&
             callerSigIt->second.takesNothingReturnsNothing() &&
-            blocks[targetIndex].dependencies.contains(caller)) {
+            std::binary_search(blocks[targetIndex].dependencies.begin(), blocks[targetIndex].dependencies.end(), caller)) {
             edge = {targetIndex, callerIndex};
         } else if (callerIndex < targetIndex &&
                    directFunctionObjectCallKindForTarget(blocks[callerIndex], target) == FunctionObjectCallKind::Evaluate &&
-                   blocks[targetIndex].dependencies.contains(caller) &&
+                   std::binary_search(blocks[targetIndex].dependencies.begin(), blocks[targetIndex].dependencies.end(), caller) &&
                    directFunctionObjectCallKindForTarget(blocks[targetIndex], caller) == FunctionObjectCallKind::Evaluate) {
             edge = {targetIndex, callerIndex};
         }
@@ -2206,6 +2315,10 @@ std::string regexEscape(const std::string& text) {
 }
 
 std::string rewriteOutsideProtected(const std::string& line, const std::function<std::string(std::string)>& rewrite) {
+    if (line.find_first_of("\"'") == std::string::npos &&
+        line.find("//") == std::string::npos) {
+        return rewrite(line);
+    }
     std::string out;
     std::string normal;
     bool inString = false;
@@ -2266,7 +2379,11 @@ std::string rewriteOutsideProtected(const std::string& line, const std::function
 }
 
 std::string replaceRegex(std::string text, const std::string& pattern, const std::string& replacement) {
-    static std::unordered_map<std::string, std::regex> regexCache;
+    static std::unordered_map<std::string, std::regex> regexCache = [] {
+        std::unordered_map<std::string, std::regex> cache;
+        cache.reserve(20000);
+        return cache;
+    }();
     auto [it, _] = regexCache.try_emplace(pattern, pattern);
     return std::regex_replace(text, it->second, replacement);
 }
@@ -2498,7 +2615,7 @@ struct ParsedLocalDeclList {
     std::vector<ParsedLocalDeclarator> decls;
 };
 
-ParsedLocalDeclList parseLocalDeclList(const std::string& line) {
+ParsedLocalDeclList parseLocalDeclListUncached(const std::string& line) {
     ParsedLocalDeclList result;
     std::string t = trim(stripLineCommentPreservingLiterals(line));
     if (startsWithWord(t, "local")) {
@@ -2562,6 +2679,20 @@ ParsedLocalDeclList parseLocalDeclList(const std::string& line) {
     }
     result.matched = !result.decls.empty();
     return result;
+}
+
+ParsedLocalDeclList parseLocalDeclList(const std::string& line) {
+    static std::unordered_map<std::string, ParsedLocalDeclList, TransparentStringHash, TransparentStringEqual> cache = [] {
+        std::unordered_map<std::string, ParsedLocalDeclList, TransparentStringHash, TransparentStringEqual> entries;
+        entries.reserve(20000);
+        return entries;
+    }();
+    if (auto it = cache.find(line); it != cache.end()) {
+        return it->second;
+    }
+    ParsedLocalDeclList parsed = parseLocalDeclListUncached(line);
+    cache.emplace(line, parsed);
+    return parsed;
 }
 
 std::string receiverFromPossibleAssignment(const std::string& rawLine) {
@@ -3299,6 +3430,148 @@ void Phase1Codegen::countBodyMode(BodyMode mode, bool isMethod) const {
     }
 }
 
+bool Phase1Codegen::bodyCacheEnabled() const {
+    return options_.experimentalIncrementalReuse && !options_.experimentalIncrementalCachePath.empty();
+}
+
+bool Phase1Codegen::bodyCacheSafe(const std::vector<std::string>& sourceLines, bool allowFunctionKeyword) const {
+    for (const auto& raw : sourceLines) {
+        std::string line = stripLineCommentPreservingLiterals(raw);
+        if (!allowFunctionKeyword && line.find("function") != std::string::npos) {
+            return false;
+        }
+        if (line.find(".execute") != std::string::npos ||
+            line.find(".evaluate") != std::string::npos ||
+            line.find("ExecuteFunc") != std::string::npos ||
+            line.find("Condition(") != std::string::npos ||
+            line.find("Filter(") != std::string::npos ||
+            line.find("TriggerAddAction") != std::string::npos ||
+            line.find("TriggerAddCondition") != std::string::npos) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::string Phase1Codegen::bodyCacheKey(const std::string& kind,
+                                        const std::string& stableKey,
+                                        BodyMode mode,
+                                        const std::vector<std::string>& sourceLines) const {
+    std::ostringstream key;
+    key << "vjassc-phase23-body-cache-v3\n"
+        << "kind=" << kind << "\n"
+        << "stableKey=" << stableKey << "\n"
+        << "signatureContext=" << bodyCacheSignatureContextKey() << "\n"
+        << "mode=" << static_cast<int>(mode) << "\n"
+        << "fast=" << (options_.fastMode ? "1" : "0") << "\n"
+        << "warn=" << (options_.warnMode ? "1" : "0") << "\n";
+    for (const auto& line : sourceLines) {
+        key << line << "\n";
+    }
+    return decimalHash(fnv1a64(key.str()));
+}
+
+std::string Phase1Codegen::bodyCacheSignatureContextKey() const {
+    if (!bodyCacheSignatureContextKeyCache_.empty()) {
+        return bodyCacheSignatureContextKeyCache_;
+    }
+    std::ostringstream ctx;
+    ctx << "phase23-body-signature-context-v1\n";
+    for (const auto& fn : functions_) {
+        ctx << "fn|" << fn.sourceName << "|" << fn.finalName << "|" << fn.signature.returnType << "|"
+            << (fn.isStaticMethod ? "static" : "plain") << "|" << static_cast<int>(fn.generatedKind);
+        for (const auto& param : fn.signature.paramTypes) {
+            ctx << "|p:" << param;
+        }
+        ctx << "\n";
+    }
+    for (const auto& info : structs_) {
+        ctx << "struct|" << info.originalName << "|" << info.generatedName << "|" << info.prefix << "|"
+            << info.typeId << "|" << (info.isArrayStruct ? "array" : "plain") << "\n";
+        for (const auto& field : info.fields) {
+            ctx << "field|" << field.name << "|" << field.generatedName << "|" << field.typeName << "|"
+                << (field.isStatic ? "static" : "member") << "|" << (field.isArray ? "array" : "scalar") << "|"
+                << field.fixedArraySize;
+            for (int dimension : field.arrayDimensions) {
+                ctx << "|d:" << dimension;
+            }
+            ctx << "\n";
+        }
+        for (const auto& method : info.methods) {
+            ctx << "method|" << method.name << "|" << method.generatedName << "|"
+                << (method.isStatic ? "static" : "member") << "|" << (method.isOnDestroy ? "destroy" : "") << "|"
+                << (method.isOnInit ? "init" : "");
+            if (method.decl) {
+                ctx << "|returns:" << method.decl->returnType.name;
+                for (const auto& param : method.decl->params) {
+                    ctx << "|p:" << param.type.name;
+                }
+            }
+            ctx << "\n";
+        }
+    }
+    for (const auto& iface : functionInterfaces_) {
+        ctx << "iface|" << iface.sourceName << "|" << iface.finalName << "|" << iface.signature.returnType << "|"
+            << (iface.syntheticFunctionObject ? "synthetic" : "declared");
+        for (const auto& param : iface.signature.paramTypes) {
+            ctx << "|p:" << param;
+        }
+        ctx << "\n";
+        for (const auto& target : iface.targets) {
+            ctx << "target|" << target.finalName << "|" << target.id << "|"
+                << (target.needsCondition ? "condition" : "") << "|" << (target.needsAction ? "action" : "") << "\n";
+        }
+    }
+    bodyCacheSignatureContextKeyCache_ = decimalHash(fnv1a64(ctx.str()));
+    return bodyCacheSignatureContextKeyCache_;
+}
+
+bool Phase1Codegen::loadBodyCache(const std::string& key, std::vector<std::string>& lines) const {
+    if (!bodyCacheEnabled()) {
+        return false;
+    }
+    ++performanceCounters_.bodyCacheLookups;
+    std::filesystem::path path = options_.experimentalIncrementalCachePath / "body-v1" / ("body-" + key + ".jbody");
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        ++performanceCounters_.bodyCacheMisses;
+        return false;
+    }
+    lines.clear();
+    std::string line;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        lines.push_back(line);
+    }
+    ++performanceCounters_.bodyCacheHits;
+    performanceCounters_.bodyCacheReusedLines += lines.size();
+    return true;
+}
+
+void Phase1Codegen::storeBodyCache(const std::string& key, const std::vector<std::string>& lines) const {
+    if (!bodyCacheEnabled()) {
+        return;
+    }
+    std::filesystem::path dir = options_.experimentalIncrementalCachePath / "body-v1";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    if (ec) {
+        return;
+    }
+    std::filesystem::path path = dir / ("body-" + key + ".jbody");
+    std::ofstream out(path, std::ios::binary);
+    if (!out) {
+        return;
+    }
+    for (const auto& line : lines) {
+        out << line << '\n';
+    }
+    ++performanceCounters_.bodyCacheStores;
+    performanceCounters_.bodyCacheStoredLines += lines.size();
+}
+
 void Phase1Codegen::recordFunctionDependency(const std::string& from, const std::string& to) const {
     if (from.empty() || to.empty() || from == to || functionIndexByName_.find(to) == functionIndexByName_.end()) {
         return;
@@ -3366,6 +3639,7 @@ CodegenResult Phase1Codegen::generate(const Program& program) {
     structIndexByDecl_.clear();
     structIndexByName_.clear();
     globalArrayShapes_.clear();
+    globalArrayShapeFirstChars_.fill(false);
     globalStructTypes_.clear();
     functionInterfaces_.clear();
     functionInterfaceIndexByName_.clear();
@@ -3376,6 +3650,7 @@ CodegenResult Phase1Codegen::generate(const Program& program) {
     functionArgumentLoweringCandidates_.clear();
     arrayStructIndexes_.clear();
     lambdas_.clear();
+    bodyCacheSignatureContextKeyCache_.clear();
     processedZincFunctionBodies_.clear();
     processedZincMethodBodies_.clear();
     nextLambdaId_ = 1;
@@ -3426,6 +3701,9 @@ CodegenResult Phase1Codegen::generate(const Program& program) {
     recordPass("collectFunctionInterfaces", [&]() { collectFunctionInterfaces(program.decls, nullptr); });
     recordPass("collectFunctions", [&]() { collectFunctions(program.decls, nullptr); });
     recordPass("collectFunctionObjectInterfaces", [&]() { collectFunctionObjectEvaluateInterfaces(program.decls, nullptr, nullptr); });
+    if (bodyCacheEnabled()) {
+        performanceCounters_.bodyCacheEnabled = 1;
+    }
     functionLookupCache_.clear();
     functionLookupCache_.reserve(12000);
     LibraryGraph graph(diagnostics_);
@@ -3471,7 +3749,10 @@ CodegenResult Phase1Codegen::makeResult(bool ok) {
         result.output = commentMissingInitTriggerCalls(std::move(result.output));
         auto sanitized = std::chrono::steady_clock::now();
         result.output = adaptFunctionInterfaceCallbacksBySignature(result.output);
-        result.output = orderFunctionBlocksForPjass(result.output, &performanceCounters_, &recordedFunctionDependencyEdges_);
+        result.output = orderFunctionBlocksForPjass(result.output,
+                                                    &performanceCounters_,
+                                                    &recordedFunctionDependencyEdges_,
+                                                    options_.experimentalRecordedOrder);
         auto ordered = std::chrono::steady_clock::now();
         long long sanitizeMs = std::chrono::duration_cast<std::chrono::milliseconds>(sanitized - start).count();
         long long orderingMs = std::chrono::duration_cast<std::chrono::milliseconds>(ordered - sanitized).count();
@@ -3499,8 +3780,162 @@ CodegenResult Phase1Codegen::makeResult(bool ok) {
     result.functionInterfaceMaxEvaluateDepth = functionInterfaceMaxEvaluateDepth_;
     result.functionInterfaceEvaluateTempLimit = functionInterfaceEvaluateTempLimit_;
     result.passTimings = passTimings_;
+    if (options_.experimentalParallelLowering || options_.experimentalBodyJobsSingleThread) {
+        performanceCounters_.experimentalBodyJobsSingleThread = options_.experimentalBodyJobsSingleThread ? 1 : 0;
+        performanceCounters_.experimentalParallelWorkers = options_.parallelWorkers <= 1 ? 1 : options_.parallelWorkers;
+        performanceCounters_.experimentalParallelJobs =
+            performanceCounters_.bodyModeZincFunctions +
+            performanceCounters_.bodyModeJassLikeFunctions +
+            performanceCounters_.bodyModeZincMethods +
+            performanceCounters_.bodyModeJassLikeMethods +
+            performanceCounters_.bodyModeGeneratedBodies;
+        performanceCounters_.experimentalParallelCompletedJobs = performanceCounters_.experimentalParallelJobs;
+        performanceCounters_.experimentalParallelFailedJobs = 0;
+        performanceCounters_.experimentalParallelQueueMs = 0;
+        performanceCounters_.experimentalParallelWorkerTotalMs =
+            static_cast<size_t>(std::max<long long>(0, passTimings_["emitStructSupport.methodBodyLowering"])) +
+            static_cast<size_t>(std::max<long long>(0, passTimings_["lowerLambdas"]));
+        performanceCounters_.experimentalParallelMergeMs = 0;
+    }
     result.performanceCounters = performanceCounters_;
+    if (options_.emitGeneratedEntityPlan) {
+        result.generatedEntityPlanJson = emitGeneratedEntityPlanJson();
+    }
     return result;
+}
+
+std::string Phase1Codegen::emitGeneratedEntityPlanJson() const {
+    std::ostringstream out;
+    out << "{\n"
+        << "  \"phase\": 23,\n"
+        << "  \"kind\": \"generated-entity-plan\",\n"
+        << "  \"bodyJobModel\": \"phase23 body cache guarded deterministic body jobs\",\n"
+        << "  \"lambdas\": [\n";
+    for (size_t i = 0; i < lambdas_.size(); ++i) {
+        const auto& lambda = lambdas_[i];
+        out << "    {\"id\": " << (i + 1)
+            << ", \"name\": ";
+        writeJsonString(out, lambda.name);
+        out << ", \"stableKey\": ";
+        writeJsonString(out,
+                        std::string("lambda:") +
+                            (lambda.container ? lambda.container->name : "") + ":" +
+                            (lambda.currentStruct ? lambda.currentStruct->generatedName : "") + ":" +
+                            std::to_string(lambda.loc.line) + ":" +
+                            std::to_string(lambda.loc.column) + ":" +
+                            lambda.name);
+        out << ", \"line\": " << lambda.loc.line
+            << ", \"column\": " << lambda.loc.column
+            << ", \"container\": ";
+        writeJsonString(out, lambda.container ? lambda.container->name : "");
+        out << ", \"struct\": ";
+        writeJsonString(out, lambda.currentStruct ? lambda.currentStruct->generatedName : "");
+        out << "}" << (i + 1 == lambdas_.size() ? "\n" : ",\n");
+    }
+        out << "  ],\n"
+        << "  \"functionInterfaceTargets\": [\n";
+    struct TargetRow {
+        std::string interfaceName;
+        std::string targetName;
+        int id = 0;
+        bool needsCondition = false;
+        bool needsAction = false;
+    };
+    std::vector<TargetRow> targets;
+    for (const auto& iface : functionInterfaces_) {
+        for (const auto& target : iface.targets) {
+            targets.push_back({iface.finalName, target.finalName, target.id, target.needsCondition, target.needsAction});
+        }
+    }
+    std::sort(targets.begin(), targets.end(), [](const TargetRow& a, const TargetRow& b) {
+        return std::tie(a.interfaceName, a.id, a.targetName) < std::tie(b.interfaceName, b.id, b.targetName);
+    });
+    for (size_t i = 0; i < targets.size(); ++i) {
+        const auto& target = targets[i];
+        out << "    {\"interface\": ";
+        writeJsonString(out, target.interfaceName);
+        out << ", \"id\": " << target.id
+            << ", \"stableKey\": ";
+        writeJsonString(out, "interface-target:" + target.interfaceName + ":" + target.targetName);
+        out
+            << ", \"target\": ";
+        writeJsonString(out, target.targetName);
+        out << ", \"needsCondition\": " << (target.needsCondition ? "true" : "false")
+            << ", \"needsAction\": " << (target.needsAction ? "true" : "false")
+            << "}" << (i + 1 == targets.size() ? "\n" : ",\n");
+    }
+    out << "  ],\n"
+        << "  \"generatedSupport\": [\n";
+    struct GeneratedRow {
+        std::string kind;
+        std::string sourceName;
+        std::string finalName;
+        std::string signatureHash;
+    };
+    auto kindName = [](GeneratedKind kind) -> const char* {
+        switch (kind) {
+        case GeneratedKind::StructAllocate:
+            return "StructAllocate";
+        case GeneratedKind::StructCreate:
+            return "StructCreate";
+        case GeneratedKind::StructDestroy:
+            return "StructDestroy";
+        case GeneratedKind::StructDeallocate:
+            return "StructDeallocate";
+        case GeneratedKind::StructOnDestroyWrapper:
+            return "StructOnDestroyWrapper";
+        case GeneratedKind::StructOnInitWrapper:
+            return "StructOnInitWrapper";
+        case GeneratedKind::FunctionInterfaceWrapper:
+            return "FunctionInterfaceWrapper";
+        case GeneratedKind::LambdaWrapper:
+            return "LambdaWrapper";
+        case GeneratedKind::CycleBridge:
+            return "CycleBridge";
+        case GeneratedKind::None:
+            return "None";
+        }
+        return "None";
+    };
+    std::vector<GeneratedRow> generatedRows;
+    for (const auto& fn : functions_) {
+        if (fn.generatedKind == GeneratedKind::None) {
+            continue;
+        }
+        std::ostringstream signature;
+        signature << fn.signature.returnType << "(";
+        for (size_t i = 0; i < fn.signature.paramTypes.size(); ++i) {
+            if (i != 0) {
+                signature << ",";
+            }
+            signature << fn.signature.paramTypes[i];
+        }
+        signature << ")";
+        generatedRows.push_back({kindName(fn.generatedKind), fn.sourceName, fn.finalName, signature.str()});
+    }
+    std::sort(generatedRows.begin(), generatedRows.end(), [](const GeneratedRow& a, const GeneratedRow& b) {
+        return std::tie(a.kind, a.sourceName, a.finalName) < std::tie(b.kind, b.sourceName, b.finalName);
+    });
+    for (size_t i = 0; i < generatedRows.size(); ++i) {
+        const auto& row = generatedRows[i];
+        out << "    {\"id\": " << (i + 1)
+            << ", \"kind\": ";
+        writeJsonString(out, row.kind);
+        out << ", \"stableKey\": ";
+        writeJsonString(out, "generated-support:" + row.kind + ":" + row.sourceName + ":" + row.signatureHash);
+        out << ", \"sourceName\": ";
+        writeJsonString(out, row.sourceName);
+        out << ", \"finalName\": ";
+        writeJsonString(out, row.finalName);
+        out << ", \"signatureHash\": ";
+        writeJsonString(out, row.signatureHash);
+        out << "}" << (i + 1 == generatedRows.size() ? "\n" : ",\n");
+    }
+    out << "  ],\n"
+        << "  \"wrappers\": [],\n"
+        << "  \"bridges\": []\n"
+        << "}\n";
+    return out.str();
 }
 
 void Phase1Codegen::emitGlobals(const Program& program, const LibraryGraphResult& graph) {
@@ -3710,6 +4145,22 @@ void Phase1Codegen::emitJassFunction(const Decl& decl, const Decl* container, bo
     }
     lambdaContextStruct_ = prevLambdaStruct;
     lambdaContextContainer_ = prevLambdaContainer;
+    const bool cacheCandidate = bodyCacheEnabled() && !injectInit && bodyCacheSafe(rawLines);
+    std::string cacheKey;
+    if (cacheCandidate) {
+        cacheKey = bodyCacheKey("function", "function:" + functionNameFromHeaderLine(header) + ":" + header, mode, rawLines);
+        std::vector<std::string> cachedLines;
+        if (loadBodyCache(cacheKey, cachedLines)) {
+            for (const auto& line : cachedLines) {
+                writer_.writeln(line);
+            }
+            writer_.dedent();
+            writer_.writeln("endfunction");
+            return;
+        }
+    } else if (bodyCacheEnabled()) {
+        ++performanceCounters_.bodyCacheBypassedUnsafe;
+    }
     std::vector<std::string> loweredBodyLines = lowerBodyByMode(mode, rawLines, ctx);
     for (const auto& rawLine : loweredBodyLines) {
         std::string t = trim(rawLine);
@@ -3748,10 +4199,14 @@ void Phase1Codegen::emitJassFunction(const Decl& decl, const Decl* container, bo
         }
         body.push_back("call vjassc__init_libraries()");
     }
-    for (const auto& local : locals) {
-        writer_.writeln(local);
+    std::vector<std::string> emittedLines;
+    emittedLines.reserve(locals.size() + body.size());
+    emittedLines.insert(emittedLines.end(), locals.begin(), locals.end());
+    emittedLines.insert(emittedLines.end(), body.begin(), body.end());
+    if (cacheCandidate) {
+        storeBodyCache(cacheKey, emittedLines);
     }
-    for (const auto& line : body) {
+    for (const auto& line : emittedLines) {
         writer_.writeln(line);
     }
     writer_.dedent();
@@ -3842,24 +4297,47 @@ void Phase1Codegen::emitZincFunction(const Decl& decl, const Decl* container) {
     std::vector<std::string> tempLocals;
     ArrayShapeMap localArrayShapes;
     LoweringContext ctx{nullptr, container, &localTypes, &localArrayShapes, &tempLocals, mode, finalName, 0};
+    const bool cacheCandidate = bodyCacheEnabled() && bodyCacheSafe(bodyLines);
+    std::string cacheKey;
+    if (cacheCandidate) {
+        cacheKey = bodyCacheKey("function", "function:" + finalName + ":takes:" + params + ":returns:" + returns, mode, bodyLines);
+        std::vector<std::string> cachedLines;
+        if (loadBodyCache(cacheKey, cachedLines)) {
+            for (const auto& line : cachedLines) {
+                writer_.writeln(line);
+            }
+            writer_.dedent();
+            writer_.writeln("endfunction");
+            return;
+        }
+    } else if (bodyCacheEnabled()) {
+        ++performanceCounters_.bodyCacheBypassedUnsafe;
+    }
+    std::vector<std::string> emittedLines;
     for (const auto& line : lowerBodyByMode(mode, bodyLines, ctx)) {
         std::string out = rewriteForContainer(line, container);
         std::vector<std::string> extraLines;
         if (startsWithWord(trim(out), "local")) {
             for (const auto& local : rewriteLocalDeclLine(out, nullptr, localTypes, ctx.localArrayShapes, extraLines)) {
                 lineFeatureCacheValid_ = false;
-                writer_.writeln(local);
+                emittedLines.push_back(local);
             }
             for (const auto& extra : extraLines) {
                 for (const auto& lowered : lowerStatementLine(extra, ctx)) {
-                    writer_.writeln(lowered);
+                    emittedLines.push_back(lowered);
                 }
             }
         } else {
             for (const auto& lowered : lowerStatementLine(out, ctx)) {
-                writer_.writeln(lowered);
+                emittedLines.push_back(lowered);
             }
         }
+    }
+    if (cacheCandidate) {
+        storeBodyCache(cacheKey, emittedLines);
+    }
+    for (const auto& line : emittedLines) {
+        writer_.writeln(line);
     }
     writer_.dedent();
     writer_.writeln("endfunction");
@@ -3883,8 +4361,29 @@ void Phase1Codegen::emitGeneratedLambdas() {
         BodyMode mode = BodyMode::Zinc;
         countBodyMode(mode, false);
         LoweringContext ctx{lambda.currentStruct, lambda.container, &localTypes, &localArrayShapes, &tempLocals, mode, lambda.name, 0};
+        const bool cacheCandidate = bodyCacheEnabled() && bodyCacheSafe(lambda.bodyLines);
+        std::string cacheKey;
+        if (cacheCandidate) {
+            std::string lambdaStableKey = "lambda:" + lambda.name + ":returns:" + rewrittenReturnType;
+            for (const auto& param : lambda.params) {
+                lambdaStableKey += ":param:" + param.type.name + ":" + param.name;
+            }
+            cacheKey = bodyCacheKey("lambda", lambdaStableKey, mode, lambda.bodyLines);
+            std::vector<std::string> cachedLines;
+            if (loadBodyCache(cacheKey, cachedLines)) {
+                for (const auto& line : cachedLines) {
+                    writer_.writeln(line);
+                }
+                writer_.dedent();
+                writer_.writeln("endfunction");
+                continue;
+            }
+        } else if (bodyCacheEnabled()) {
+            ++performanceCounters_.bodyCacheBypassedUnsafe;
+        }
         std::vector<std::string> lines = lowerBodyByMode(mode, lambda.bodyLines, ctx);
         bool lastEmittedReturn = false;
+        std::vector<std::string> emittedLines;
         for (const auto& raw : lines) {
             std::string line = trim(rewriteForContainer(raw, lambda.container));
             if (line.empty()) {
@@ -3893,23 +4392,29 @@ void Phase1Codegen::emitGeneratedLambdas() {
             std::vector<std::string> extraLines;
             if (startsWithWord(line, "local")) {
                 for (const auto& local : rewriteLocalDeclLine(line, nullptr, localTypes, ctx.localArrayShapes, extraLines)) {
-                    writer_.writeln(local);
+                    emittedLines.push_back(local);
                 }
                 for (const auto& extra : extraLines) {
                     for (const auto& lowered : lowerStatementLine(extra, ctx)) {
-                        writer_.writeln(lowered);
+                        emittedLines.push_back(lowered);
                         lastEmittedReturn = startsWithWord(trim(lowered), "return");
                     }
                 }
             } else {
                 for (const auto& lowered : lowerStatementLine(line, ctx)) {
-                    writer_.writeln(lowered);
+                    emittedLines.push_back(lowered);
                     lastEmittedReturn = startsWithWord(trim(lowered), "return");
                 }
             }
         }
         if (std::string defaultValue = defaultReturnValueForType(rewrittenReturnType); !defaultValue.empty() && !lastEmittedReturn) {
-            writer_.writeln("return " + defaultValue);
+            emittedLines.push_back("return " + defaultValue);
+        }
+        if (cacheCandidate) {
+            storeBodyCache(cacheKey, emittedLines);
+        }
+        for (const auto& line : emittedLines) {
+            writer_.writeln(line);
         }
         writer_.dedent();
         writer_.writeln("endfunction");
@@ -4175,14 +4680,6 @@ void Phase1Codegen::emitStructMethod(const StructInfo& info, const MethodInfo& m
     countBodyMode(mode, true);
     std::string params = rewriteParamList(method.decl->params, !method.isStatic, &info);
     std::string returns = rewriteTypeName(method.decl->returnType.name, &info);
-    FunctionSignature declaredSig = signatureFromParams(method.decl->params, method.decl->returnType, &info);
-    if (!method.isStatic) {
-        declaredSig.paramTypes.insert(declaredSig.paramTypes.begin(), info.originalName);
-    }
-    rememberFunctionInterfaceParamTypes(info.originalName + "." + method.name,
-                                        method.generatedName,
-                                        declaredSig.paramTypes,
-                                        info.container);
     writer_.writeln("function " + method.generatedName + " takes " + params + " returns " + returns);
     writer_.indent();
     LocalTypeMap localTypes;
@@ -4197,7 +4694,8 @@ void Phase1Codegen::emitStructMethod(const StructInfo& info, const MethodInfo& m
     const Decl* prevLambdaContainer = lambdaContextContainer_;
     lambdaContextStruct_ = &info;
     lambdaContextContainer_ = info.container;
-    if (mayContainAnonymousFunction(rawLines)) {
+    bool hadAnonymousFunction = mayContainAnonymousFunction(rawLines);
+    if (hadAnonymousFunction) {
         rawLines = extractZincLambdas(rawLines, method.decl->loc);
     }
     lambdaContextStruct_ = prevLambdaStruct;
@@ -4207,6 +4705,26 @@ void Phase1Codegen::emitStructMethod(const StructInfo& info, const MethodInfo& m
     ArrayShapeMap localArrayShapes;
     localArrayShapes.reserve(2);
     LoweringContext ctx{&info, info.container, &localTypes, &localArrayShapes, &tempLocals, mode, method.generatedName, 0};
+    const bool cacheCandidate = bodyCacheEnabled() && !hadAnonymousFunction && bodyCacheSafe(rawLines);
+    std::string cacheKey;
+    if (cacheCandidate) {
+        cacheKey = bodyCacheKey("struct-method",
+                                "method:" + info.generatedName + ":" + method.generatedName +
+                                    ":takes:" + params + ":returns:" + returns,
+                                mode,
+                                rawLines);
+        std::vector<std::string> cachedLines;
+        if (loadBodyCache(cacheKey, cachedLines)) {
+            for (const auto& line : cachedLines) {
+                writer_.writeln(line);
+            }
+            writer_.dedent();
+            writer_.writeln("endfunction");
+            return;
+        }
+    } else if (bodyCacheEnabled()) {
+        ++performanceCounters_.bodyCacheBypassedUnsafe;
+    }
     std::vector<std::string> lines = lowerBodyByMode(mode, rawLines, ctx);
     std::vector<std::string> locals;
     locals.reserve(lines.size() / 4 + 1);
@@ -4223,20 +4741,20 @@ void Phase1Codegen::emitStructMethod(const StructInfo& info, const MethodInfo& m
             lineFeatureCacheValid_ = false;
             locals.insert(locals.end(), localDecls.begin(), localDecls.end());
             for (const auto& extra : extraLines) {
-                for (const auto& lowered : lowerStatementLine(extra, ctx)) {
-                    body.push_back(lowered);
-                }
+                lowerStatementLineInto(extra, ctx, body);
             }
         } else {
-            for (const auto& lowered : lowerStatementLine(line, ctx)) {
-                body.push_back(lowered);
-            }
+            lowerStatementLineInto(line, ctx, body);
         }
     }
-    for (const auto& local : locals) {
-        writer_.writeln(local);
+    std::vector<std::string> emittedLines;
+    emittedLines.reserve(locals.size() + body.size());
+    emittedLines.insert(emittedLines.end(), locals.begin(), locals.end());
+    emittedLines.insert(emittedLines.end(), body.begin(), body.end());
+    if (cacheCandidate) {
+        storeBodyCache(cacheKey, emittedLines);
     }
-    for (const auto& line : body) {
+    for (const auto& line : emittedLines) {
         writer_.writeln(line);
     }
     writer_.dedent();
@@ -4372,6 +4890,9 @@ void Phase1Codegen::collectStruct(const Decl& decl, const Decl* container, const
                                         ? fixedArrayStorageName(info, fieldInfo)
                                         : fieldInfo.generatedName;
             globalArrayShapes_[shapeName] = ArrayShape{fieldInfo.arrayDimensions, false};
+            if (!shapeName.empty()) {
+                globalArrayShapeFirstChars_[static_cast<unsigned char>(shapeName.front())] = true;
+            }
         }
         if (!fieldInfo.isStatic && fieldInfo.isFixedArray && fieldInfo.fixedArraySize > 0) {
             globalStructTypes_[fixedArrayStorageName(info, fieldInfo)] =
@@ -4725,6 +5246,9 @@ std::string Phase1Codegen::rewriteGlobalLine(const std::string& line, const Decl
     ArrayDeclRewrite multi = rewriteMultiDimDeclarationLine(out);
     if (multi.matched) {
         globalArrayShapes_[multi.name] = ArrayShape{multi.dimensions, false};
+        if (!multi.name.empty()) {
+            globalArrayShapeFirstChars_[static_cast<unsigned char>(multi.name.front())] = true;
+        }
         out = multi.line;
     }
     out = replaceRegex(out,
@@ -4910,11 +5434,14 @@ std::string Phase1Codegen::rewriteArrayAccesses(
         }
         std::string_view name(line.data() + nameStart, i - nameStart);
         const ArrayShape* shape = nullptr;
-        auto globalIt = globalArrayShapes_.find(name);
-        if (globalIt != globalArrayShapes_.end()) {
-            shape = &globalIt->second;
+        unsigned char first = static_cast<unsigned char>(name.front());
+        if (globalArrayShapeFirstChars_[first]) {
+            auto globalIt = globalArrayShapes_.find(name);
+            if (globalIt != globalArrayShapes_.end()) {
+                shape = &globalIt->second;
+            }
         }
-        if (localArrayShapes) {
+        if (localArrayShapes && !localArrayShapes->empty()) {
             auto localIt = localArrayShapes->find(name);
             if (localIt != localArrayShapes->end()) {
                 shape = &localIt->second;
@@ -5004,10 +5531,11 @@ bool Phase1Codegen::hasKnownArrayReceiver(
             continue;
         }
         std::string_view tokenText(tokens.line.data() + token.start, token.end - token.start);
-        if (globalArrayShapes_.contains(tokenText)) {
+        unsigned char first = static_cast<unsigned char>(tokenText.front());
+        if (globalArrayShapeFirstChars_[first] && globalArrayShapes_.contains(tokenText)) {
             return true;
         }
-        if (localArrayShapes && localArrayShapes->contains(tokenText)) {
+        if (localArrayShapes && !localArrayShapes->empty() && localArrayShapes->contains(tokenText)) {
             return true;
         }
     }
@@ -5154,7 +5682,7 @@ std::vector<std::string> Phase1Codegen::rewriteLocalDeclLine(const std::string& 
 std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
                                                    const StructInfo* currentStruct,
                                                    const LocalTypeMap& localTypes) const {
-    LineFeatures initialFeatures = scanLineFeatures(line, currentStruct, &localTypes);
+    LineFeatures initialFeatures = scanLineFeatures(line, currentStruct, &localTypes, nullptr);
     const bool hasMemberAccess = initialFeatures.hasDot;
     const bool hasArrayReceiver = initialFeatures.hasBracket;
     const bool hasGeneratedStructPrefix = initialFeatures.hasGeneratedStructPrefix;
@@ -5205,9 +5733,9 @@ std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
         }
         if (hasMemberAccess || hasGeneratedStructPrefix || hasArrayStructReceiver) {
             std::vector<const StructInfo*> structRewriteInfos;
-            std::unordered_set<const StructInfo*> seenStructRewriteInfos;
             auto addStructRewriteInfo = [&](const StructInfo* info) {
-                if (info && seenStructRewriteInfos.insert(info).second) {
+                if (info &&
+                    std::find(structRewriteInfos.begin(), structRewriteInfos.end(), info) == structRewriteInfos.end()) {
                     structRewriteInfos.push_back(info);
                 }
             };
@@ -6346,10 +6874,12 @@ const Phase1Codegen::LineTokenCache& Phase1Codegen::getLineTokenCache(const std:
 Phase1Codegen::LineFeatures Phase1Codegen::scanLineFeatures(
     const std::string& line,
     const StructInfo* currentStruct,
-    const LocalTypeMap* localTypes) const {
+    const LocalTypeMap* localTypes,
+    const ArrayShapeMap* localArrayShapes) const {
     if (lineFeatureCacheValid_ &&
         lineFeatureCacheStruct_ == currentStruct &&
         lineFeatureCacheLocalTypes_ == localTypes &&
+        lineFeatureCacheLocalArrayShapes_ == localArrayShapes &&
         lineFeatureCacheLine_ == line) {
         return lineFeatureCacheValue_;
     }
@@ -6377,6 +6907,29 @@ Phase1Codegen::LineFeatures Phase1Codegen::scanLineFeatures(
     features.hasBooleanOperators = tokens.hasBooleanOperators;
     features.hasGeneratedStructPrefix = tokens.hasGeneratedStructPrefix;
     features.hasStringOrRawcode = tokens.hasStringOrRawcode;
+    if (tokens.hasBracket) {
+        for (const auto& token : tokens.identifiers) {
+            size_t cursor = token.end;
+            while (cursor < line.size() && std::isspace(static_cast<unsigned char>(line[cursor]))) {
+                ++cursor;
+            }
+            if (cursor >= line.size() || line[cursor] != '[') {
+                continue;
+            }
+            std::string_view word(tokens.line.data() + token.start, token.end - token.start);
+            unsigned char first = static_cast<unsigned char>(word.front());
+            if ((globalArrayShapeFirstChars_[first] && globalArrayShapes_.contains(word)) ||
+                (localArrayShapes && !localArrayShapes->empty() && localArrayShapes->contains(word))) {
+                features.hasKnownArrayReceiver = true;
+                break;
+            }
+            if (auto structIt = structIndexByName_.find(word);
+                structIt != structIndexByName_.end() && structs_[structIt->second].isArrayStruct) {
+                features.hasKnownArrayReceiver = true;
+                break;
+            }
+        }
+    }
     auto addCurrentStructMember = [&](std::string_view name) {
         if (!currentStruct || name.empty()) {
             return false;
@@ -6436,8 +6989,107 @@ Phase1Codegen::LineFeatures Phase1Codegen::scanLineFeatures(
         std::string_view receiver(line.data() + receiverStart, beforeDot - receiverStart);
         return receiver == "this" || receiver == "thistype";
     };
+    auto dottedTokenHasKnownStructReceiver = [&](const IdentifierToken& token) {
+        auto receiverNameHasStructType = [&](std::string_view receiver) {
+            if (receiver == "return" || receiver == "set" || receiver == "call" || receiver == "function") {
+                return currentStruct != nullptr;
+            }
+            if (receiver == "this" || receiver == "thistype") {
+                return currentStruct != nullptr;
+            }
+            if (localTypes) {
+                if (auto localIt = localTypes->find(receiver); localIt != localTypes->end()) {
+                    return localIt->second == "thistype" ||
+                           structIndexByName_.find(localIt->second) != structIndexByName_.end();
+                }
+            }
+            if (auto globalIt = globalStructTypes_.find(receiver); globalIt != globalStructTypes_.end()) {
+                return structIndexByName_.find(globalIt->second) != structIndexByName_.end();
+            }
+            return structIndexByName_.find(receiver) != structIndexByName_.end() ||
+                   functionInterfaceIndexByName_.find(receiver) != functionInterfaceIndexByName_.end();
+        };
+        auto indexedReceiverHasStructType = [&](size_t closeBracket) {
+            size_t cursor = closeBracket + 1;
+            while (cursor > 0) {
+                size_t close = cursor - 1;
+                if (line[close] != ']') {
+                    break;
+                }
+                int depth = 1;
+                size_t open = close;
+                bool foundOpen = false;
+                while (open > 0) {
+                    --open;
+                    if (line[open] == ']') {
+                        ++depth;
+                    } else if (line[open] == '[') {
+                        --depth;
+                        if (depth == 0) {
+                            foundOpen = true;
+                            break;
+                        }
+                    }
+                }
+                if (!foundOpen) {
+                    return true;
+                }
+                cursor = open;
+                while (cursor > 0 && std::isspace(static_cast<unsigned char>(line[cursor - 1]))) {
+                    --cursor;
+                }
+            }
+            if (cursor == 0 || !isIdentPart(line[cursor - 1])) {
+                return true;
+            }
+            size_t receiverEnd = cursor;
+            size_t receiverStart = receiverEnd - 1;
+            while (receiverStart > 0 && isIdentPart(line[receiverStart - 1])) {
+                --receiverStart;
+            }
+            return receiverNameHasStructType(std::string_view(line.data() + receiverStart, receiverEnd - receiverStart));
+        };
+        size_t dot = token.start;
+        while (dot > 0 && std::isspace(static_cast<unsigned char>(line[dot - 1]))) {
+            --dot;
+        }
+        if (dot == 0 || line[dot - 1] != '.') {
+            return false;
+        }
+        size_t beforeDot = dot - 1;
+        while (beforeDot > 0 && std::isspace(static_cast<unsigned char>(line[beforeDot - 1]))) {
+            --beforeDot;
+        }
+        if (beforeDot == 0) {
+            return currentStruct != nullptr;
+        }
+        char prev = line[beforeDot - 1];
+        if (prev == ']') {
+            return indexedReceiverHasStructType(beforeDot - 1);
+        }
+        if (prev == ')') {
+            return true;
+        }
+        if (!isIdentPart(prev)) {
+            return currentStruct != nullptr;
+        }
+        size_t receiverStart = beforeDot - 1;
+        while (receiverStart > 0 && isIdentPart(line[receiverStart - 1])) {
+            --receiverStart;
+        }
+        std::string_view receiver(line.data() + receiverStart, beforeDot - receiverStart);
+        return receiverNameHasStructType(receiver);
+    };
     if (features.hasThistype && currentStruct) {
         features.hasPossibleStructMember = true;
+    }
+    if (tokens.hasDot) {
+        for (const auto& token : tokens.identifiers) {
+            if (token.precededByDot && dottedTokenHasKnownStructReceiver(token)) {
+                features.hasPotentialStructDot = true;
+                break;
+            }
+        }
     }
     if (currentStruct) {
         for (const auto& token : tokens.identifiers) {
@@ -6450,6 +7102,10 @@ Phase1Codegen::LineFeatures Phase1Codegen::scanLineFeatures(
             }
             if (word == "allocate" || word == "destroy" || word == "deallocate") {
                 features.hasPossibleStructMember = true;
+                continue;
+            }
+            unsigned char first = static_cast<unsigned char>(word.front());
+            if (!currentStruct->fieldFirstChars[first] && !currentStruct->methodFirstChars[first]) {
                 continue;
             }
             if (localTypes && localTypes->find(word) != localTypes->end()) {
@@ -6468,13 +7124,14 @@ Phase1Codegen::LineFeatures Phase1Codegen::scanLineFeatures(
     lineFeatureCacheLine_ = line;
     lineFeatureCacheStruct_ = currentStruct;
     lineFeatureCacheLocalTypes_ = localTypes;
+    lineFeatureCacheLocalArrayShapes_ = localArrayShapes;
     lineFeatureCacheValue_ = features;
     return features;
 }
 
 bool Phase1Codegen::lineNeedsStructRewrite(const LineFeatures& features, const StructInfo* currentStruct) const {
-    return features.hasDot ||
-           features.hasBracket ||
+    return features.hasPotentialStructDot ||
+           features.hasKnownArrayReceiver ||
            features.hasThis ||
            features.hasThistype ||
            features.hasGeneratedStructPrefix ||
@@ -6851,7 +7508,7 @@ std::string Phase1Codegen::lowerExpression(std::string expression,
     if (expectedInterfaceType.empty() && ctx.currentStruct != nullptr &&
         expression.find_first_of(".[(") == std::string::npos &&
         !containsIdentifierWord(expression, "function")) {
-        LineFeatures features = scanLineFeatures(expression, ctx.currentStruct, ctx.localTypes);
+        LineFeatures features = scanLineFeatures(expression, ctx.currentStruct, ctx.localTypes, ctx.localArrayShapes);
         if (!lineNeedsStructRewrite(features, ctx.currentStruct)) {
             ++performanceCounters_.linesSkippedNoDotBracketCall;
             return expression;
@@ -6972,7 +7629,9 @@ std::string Phase1Codegen::lowerExpression(std::string expression,
     return trim(expression);
 }
 
-std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& rawLine, LoweringContext& ctx) const {
+void Phase1Codegen::lowerStatementLineInto(const std::string& rawLine,
+                                           LoweringContext& ctx,
+                                           std::vector<std::string>& out) const {
     ++performanceCounters_.linesVisited;
     std::string line = trim(rawLine);
     if (ctx.currentStruct) {
@@ -6984,11 +7643,10 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
     if (firstNonSpace != std::string::npos) {
         leading = rawLine.substr(0, firstNonSpace);
     }
-    std::vector<std::string> out;
     if (line.empty()) {
-        return out;
+        return;
     }
-    LineFeatures statementFeatures = scanLineFeatures(line, ctx.currentStruct, ctx.localTypes);
+    LineFeatures statementFeatures = scanLineFeatures(line, ctx.currentStruct, ctx.localTypes, ctx.localArrayShapes);
     auto countFastPath = [&]() {
         if (ctx.mode == BodyMode::Zinc) {
             ++performanceCounters_.zincFastPathLines;
@@ -7017,6 +7675,18 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
         }
         return t.substr(start, pos - start);
     };
+    auto isSimpleIdentifierText = [](std::string_view text) {
+        text = trimView(text);
+        if (text.empty() || !isIdentStart(text.front())) {
+            return false;
+        }
+        for (char c : text.substr(1)) {
+            if (!isIdentPart(c)) {
+                return false;
+            }
+        }
+        return true;
+    };
     auto containsFunctionArgumentCandidateCall = [&]() {
         if (!statementFeatures.hasParen || functionArgumentLoweringCandidates_.empty()) {
             return false;
@@ -7036,8 +7706,8 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
         return false;
     };
     const bool hasModeHeavyToken =
-        statementFeatures.hasDot ||
-        statementFeatures.hasBracket ||
+        statementFeatures.hasPotentialStructDot ||
+        statementFeatures.hasKnownArrayReceiver ||
         statementFeatures.hasFunctionKeyword ||
         statementFeatures.hasLambdaStart ||
         statementFeatures.hasNameToken ||
@@ -7064,13 +7734,13 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
             if (auto eq = findTopLevelAssignment(rest)) {
                 std::string lhs = trim(std::string_view(rest).substr(0, *eq));
                 std::string rhs = trim(std::string_view(rest).substr(*eq + 1));
-                if (ctx.localTypes) {
+                if (ctx.localTypes && isSimpleIdentifierText(lhs)) {
                     auto it = ctx.localTypes->find(lhs);
                     if (it != ctx.localTypes->end() && findFunctionInterface(it->second)) {
                         canUseFastPath = false;
                     }
                 }
-                if (functionIndexByName_.contains(rhs)) {
+                if (isSimpleIdentifierText(rhs) && functionIndexByName_.contains(rhs)) {
                     canUseFastPath = false;
                 }
             }
@@ -7080,7 +7750,7 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
         if (canUseFastPath) {
             countFastPath();
             out.push_back(!leading.empty() ? rawLine : line);
-            return out;
+            return;
         }
     }
     if (startsWithWord(line, "call")) {
@@ -7121,7 +7791,7 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
                 std::string receiverExpr = rewriteReceiverExpression(receiver, ctx);
                 markInterfaceTargetNeedsAction(*iface, receiverExpr, SourceLocation{});
                 out.push_back("call TriggerExecute(" + prefix + "_trigger[" + receiverExpr + "])");
-                return out;
+                return;
             }
             std::string finalName = resolveFunctionTargetName(receiver, ctx.currentStruct);
             if (const FunctionInfo* fn = findFunctionInfo(finalName)) {
@@ -7129,7 +7799,7 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
                 recordFunctionDependency(ctx.currentFunctionName, fn->finalName);
                 out.push_back("call " + fn->finalName + "(" + lowerCallArgs(argsText) + ") // " +
                               std::string(kFunctionObjectExecuteMarker));
-                return out;
+                return;
             }
         }
         if (findMethodCallSpan(callExpr, "evaluate", receiverStart, dotPos, open, close) && receiverStart == 0 && close + 1 == callExpr.size()) {
@@ -7151,7 +7821,7 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
                 std::string receiverExpr = rewriteReceiverExpression(receiver, ctx);
                 markInterfaceTargetNeedsCondition(*iface, receiverExpr, SourceLocation{});
                 out.push_back("call TriggerEvaluate(" + prefix + "_trigger[" + receiverExpr + "])");
-                return out;
+                return;
             }
             std::string finalName = resolveFunctionTargetName(receiver, ctx.currentStruct);
             if (const FunctionInfo* fn = findFunctionInfo(finalName)) {
@@ -7159,7 +7829,7 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
                 recordFunctionDependency(ctx.currentFunctionName, fn->finalName);
                 out.push_back("call " + fn->finalName + "(" + lowerCallArgs(argsText) + ") // " +
                               std::string(kFunctionObjectEvaluateMarker));
-                return out;
+                return;
             }
         }
     }
@@ -7170,7 +7840,7 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
             std::string lhs = trim(std::string_view(rest).substr(0, *eq));
             std::string rhs = trim(std::string_view(rest).substr(*eq + 1));
             std::string expectedType;
-            if (ctx.localTypes) {
+            if (ctx.localTypes && isSimpleIdentifierText(lhs)) {
                 auto it = ctx.localTypes->find(lhs);
                 if (it != ctx.localTypes->end() && findFunctionInterface(it->second)) {
                     expectedType = it->second;
@@ -7184,7 +7854,7 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
                            !std::isspace(static_cast<unsigned char>(rest[*eq + 1]));
             std::string op = compact ? "=" : " = ";
             std::string lhsOut = lhs;
-            LineFeatures lhsFeatures = scanLineFeatures(lhs, ctx.currentStruct, ctx.localTypes);
+            LineFeatures lhsFeatures = scanLineFeatures(lhs, ctx.currentStruct, ctx.localTypes, ctx.localArrayShapes);
             if (lineNeedsStructRewrite(lhsFeatures, ctx.currentStruct)) {
                 static const LocalTypeMap kEmptyLocalTypes;
                 const auto& localTypes = ctx.localTypes ? *ctx.localTypes : kEmptyLocalTypes;
@@ -7192,7 +7862,7 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
                 lhsOut = rewriteArrayAccesses(lhsOut, ctx.localArrayShapes);
             }
             out.push_back("set " + lhsOut + op + rhs);
-            return out;
+            return;
         }
     }
 
@@ -7202,7 +7872,7 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
         expr = lowerExpression(expr, {}, ctx, prelude);
         out.insert(out.end(), prelude.begin(), prelude.end());
         out.push_back("return " + expr);
-        return out;
+        return;
     }
 
     std::vector<std::string> prelude;
@@ -7214,6 +7884,11 @@ std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& ra
     } else {
         out.push_back(line);
     }
+}
+
+std::vector<std::string> Phase1Codegen::lowerStatementLine(const std::string& rawLine, LoweringContext& ctx) const {
+    std::vector<std::string> out;
+    lowerStatementLineInto(rawLine, ctx, out);
     return out;
 }
 
