@@ -5732,6 +5732,174 @@ std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
             }
         }
         if (hasMemberAccess || hasGeneratedStructPrefix || hasArrayStructReceiver) {
+            auto rewriteIndexedStructReceivers = [&](const StructInfo& info,
+                                                     const std::vector<std::string>& receiverNames) {
+                std::vector<std::string> names;
+                names.reserve(receiverNames.size());
+                for (const auto& receiverName : receiverNames) {
+                    if (receiverName.empty()) {
+                        continue;
+                    }
+                    if (std::find(names.begin(), names.end(), receiverName) == names.end()) {
+                        names.push_back(receiverName);
+                    }
+                }
+                if (names.empty()) {
+                    return;
+                }
+
+                bool changed = true;
+                int guard = 0;
+                while (changed && guard++ < 16) {
+                    changed = false;
+                    bool inString = false;
+                    bool inRaw = false;
+                    bool escaped = false;
+                    for (size_t pos = 0; pos < text.size();) {
+                        if (!inString && !inRaw && pos + 1 < text.size() && text[pos] == '/' && text[pos + 1] == '/') {
+                            break;
+                        }
+                        char c = text[pos];
+                        if (inString) {
+                            if (escaped) {
+                                escaped = false;
+                            } else if (c == '\\') {
+                                escaped = true;
+                            } else if (c == '"') {
+                                inString = false;
+                            }
+                            ++pos;
+                            continue;
+                        }
+                        if (inRaw) {
+                            if (c == '\'') {
+                                inRaw = false;
+                            }
+                            ++pos;
+                            continue;
+                        }
+                        if (c == '"') {
+                            inString = true;
+                            ++pos;
+                            continue;
+                        }
+                        if (c == '\'') {
+                            inRaw = true;
+                            ++pos;
+                            continue;
+                        }
+
+                        const std::string* matchedReceiver = nullptr;
+                        for (const auto& receiverName : names) {
+                            if (pos + receiverName.size() > text.size() ||
+                                text.compare(pos, receiverName.size(), receiverName) != 0) {
+                                continue;
+                            }
+                            if (pos > 0 && isIdentPart(text[pos - 1])) {
+                                continue;
+                            }
+                            size_t afterName = pos + receiverName.size();
+                            if (afterName < text.size() && isIdentPart(text[afterName])) {
+                                continue;
+                            }
+                            matchedReceiver = &receiverName;
+                            break;
+                        }
+                        if (!matchedReceiver) {
+                            ++pos;
+                            continue;
+                        }
+
+                        size_t afterName = pos + matchedReceiver->size();
+                        while (afterName < text.size() && std::isspace(static_cast<unsigned char>(text[afterName]))) {
+                            ++afterName;
+                        }
+                        if (afterName >= text.size() || text[afterName] != '[') {
+                            pos += matchedReceiver->size();
+                            continue;
+                        }
+                        size_t receiverClose = findMatchingBracketOutsideProtected(text, afterName);
+                        if (receiverClose == std::string::npos) {
+                            break;
+                        }
+                        std::string receiverExpr = trim(text.substr(afterName + 1, receiverClose - afterName - 1));
+                        size_t receiverEnd = receiverClose + 1;
+                        size_t cursor = receiverEnd;
+                        while (cursor < text.size() && std::isspace(static_cast<unsigned char>(text[cursor]))) {
+                            ++cursor;
+                        }
+
+                        if (cursor < text.size() && text[cursor] == '.') {
+                            size_t memberStart = cursor + 1;
+                            while (memberStart < text.size() &&
+                                   std::isspace(static_cast<unsigned char>(text[memberStart]))) {
+                                ++memberStart;
+                            }
+                            if (memberStart >= text.size() || !isIdentStart(text[memberStart])) {
+                                pos = memberStart;
+                                continue;
+                            }
+                            size_t memberEnd = memberStart + 1;
+                            while (memberEnd < text.size() && isIdentPart(text[memberEnd])) {
+                                ++memberEnd;
+                            }
+                            std::string memberName = text.substr(memberStart, memberEnd - memberStart);
+                            size_t afterMember = memberEnd;
+                            while (afterMember < text.size() &&
+                                   std::isspace(static_cast<unsigned char>(text[afterMember]))) {
+                                ++afterMember;
+                            }
+
+                            if (afterMember < text.size() && text[afterMember] == '(') {
+                                const MethodInfo* method = findMethod(info, memberName);
+                                if (method && !method->isStatic) {
+                                    std::string replacement = method->generatedName + "(" + receiverExpr +
+                                                              (method->decl->params.empty() ? "" : ", ");
+                                    text.replace(pos, afterMember + 1 - pos, replacement);
+                                    pos += replacement.size();
+                                    changed = true;
+                                    continue;
+                                }
+                            }
+
+                            const FieldInfo* field = findField(info, memberName);
+                            if (field && !field->isStatic) {
+                                if (field->isFixedArray && field->fixedArraySize > 0 &&
+                                    field->arrayDimensions.size() <= 1 &&
+                                    afterMember < text.size() && text[afterMember] == '[') {
+                                    size_t fieldIndexClose = findMatchingBracketOutsideProtected(text, afterMember);
+                                    if (fieldIndexClose == std::string::npos) {
+                                        break;
+                                    }
+                                    std::string indexExpr = trim(text.substr(afterMember + 1,
+                                                                             fieldIndexClose - afterMember - 1));
+                                    std::string replacement = fixedArrayStorageName(info, *field) + "[" +
+                                                              field->generatedName + "[" + receiverExpr + "]+" +
+                                                              indexExpr + "]";
+                                    text.replace(pos, fieldIndexClose + 1 - pos, replacement);
+                                    pos += replacement.size();
+                                    changed = true;
+                                    continue;
+                                }
+                                std::string replacement = field->generatedName + "[" + receiverExpr + "]";
+                                text.replace(pos, memberEnd - pos, replacement);
+                                pos += replacement.size();
+                                changed = true;
+                                continue;
+                            }
+
+                            pos = memberEnd;
+                            continue;
+                        }
+
+                        std::string replacement = "(" + receiverExpr + ")";
+                        text.replace(pos, receiverEnd - pos, replacement);
+                        pos += replacement.size();
+                        changed = true;
+                    }
+                }
+            };
+
             std::vector<const StructInfo*> structRewriteInfos;
             auto addStructRewriteInfo = [&](const StructInfo* info) {
                 if (info &&
@@ -5877,28 +6045,10 @@ std::string Phase1Codegen::rewriteStructExpression(const std::string& line,
                 }
                 if (info.isArrayStruct) {
                     std::vector<std::string> receiverNames{info.originalName, info.generatedName};
-                    for (const auto& receiverName : receiverNames) {
-                        std::string receiverPattern = "\\b" + regexEscape(receiverName) + R"(\s*\[\s*([^\]]+)\s*\])";
-                        for (const auto& field : info.fields) {
-                            if (field.isStatic) {
-                                continue;
-                            }
-                            text = replaceRegex(text,
-                                                receiverPattern + R"(\s*\.\s*)" + regexEscape(field.name) + R"(\b)",
-                                                field.generatedName + "[$1]");
-                        }
-                        for (const auto& method : info.methods) {
-                            if (method.isStatic) {
-                                continue;
-                            }
-                            text = replaceRegex(text,
-                                                receiverPattern + R"(\s*\.\s*)" + regexEscape(method.name) + R"(\s*\()",
-                                                method.generatedName + "($1" + (method.decl->params.empty() ? "" : ", "));
-                        }
-                        text = replaceRegex(text,
-                                            receiverPattern,
-                                            "($1)");
+                    if (currentStruct == &info && text.find("thistype") != std::string::npos) {
+                        receiverNames.push_back("thistype");
                     }
+                    rewriteIndexedStructReceivers(info, receiverNames);
                 }
             }
         }

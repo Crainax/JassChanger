@@ -208,6 +208,7 @@ int main(int argc, char** argv) {
         {"phase18_body_mode_generated_support", "", fixtures / "phase18_body_mode_generated_support.expected.j"},
         {"phase18_zinc_inline_else_if_chain", "", fixtures / "phase18_zinc_inline_else_if_chain.expected.j"},
         {"phase18_zinc_else_if_after_comment", "", fixtures / "phase18_zinc_else_if_after_comment.expected.j"},
+        {"phase23_array_struct_nested_index_receiver", "", fixtures / "phase23_array_struct_nested_index_receiver.expected.j"},
     };
 
     bool ok = true;
