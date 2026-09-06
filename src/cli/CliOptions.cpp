@@ -363,7 +363,7 @@ void printHelp(std::ostream& out) {
 }
 
 void printVersion(std::ostream& out) {
-    out << "vjassc phase23 0.23.0\n";
+    out << "vjassc phase23 0.23.1\n";
 }
 
 } // namespace vjassc

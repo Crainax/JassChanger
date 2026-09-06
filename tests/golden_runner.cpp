@@ -93,6 +93,8 @@ int main(int argc, char** argv) {
     };
 
     std::vector<GoldenCase> cases = {
+        {"custom_handle_types", "", fixtures / "custom_handle_types.expected.j"},
+        {"custom_handle_types", "--mode fast", fixtures / "custom_handle_types.expected.j"},
         {"01_globals_native", "", fixtures / "01_globals_native.expected.j"},
         {"02_debug_release", "--release", fixtures / "02_debug_release.expected.release.j"},
         {"02_debug_release", "--debug", fixtures / "02_debug_release.expected.debug.j"},

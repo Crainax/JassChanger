@@ -316,8 +316,8 @@ private:
     void emitStructGlobals();
     void emitStructGlobalBlock(const StructInfo& info);
     void emitFunctionInterfaceGlobals();
-    void emitTypesAndNatives(const Program& program, const LibraryGraphResult& graph);
-    void emitTypeOrNative(const Decl& decl);
+    void emitTypesAndNatives(const Program& program, const LibraryGraphResult& graph, DeclKind kind);
+    void emitTypeOrNative(const Decl& decl, DeclKind kind);
     void emitFunctions(const Program& program, const LibraryGraphResult& graph);
     void emitDeclFunctions(const Decl& decl, const Decl* container);
     void emitJassFunction(const Decl& decl, const Decl* container, bool injectInit);

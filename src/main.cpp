@@ -1148,7 +1148,7 @@ bool inputEligibleForEarlyCache(std::string_view text) {
 
 std::string incrementalCacheKey(const CliOptions& options, std::string_view inputText) {
     std::ostringstream key;
-    key << "vjassc-phase23-cache-v1\n"
+    key << "vjassc-phase23-cache-v2\n"
         << "mode=" << compileModeName(options.mode) << "\n"
         << "debug=" << (options.debugMode ? "1" : "0") << "\n"
         << "warn=" << (options.warnMode ? "1" : "0") << "\n"
